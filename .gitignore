@@ -1,0 +1,14 @@
+/data
+__pycache__
+/pdbs
+*.yml
+SESSION_SUMMARY.md
+*.pt
+*.log
+.claude/
+.vscode/
+.pytest_cache/
+CLAUDE.md
+*.tex
+*.egg-info/
+.DS_Store

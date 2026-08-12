@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eqfsa"
+version = "0.1.0"
+description = "EqFSA: SE(3)-Equivariant Fourier Space Attention for solvation free-energy prediction"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Adithya Rao" }]
+dependencies = [
+    "torch",
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "h5py",
+    "rdkit",
+    "pyyaml",
+    "e3nn",
+]
+
+[project.optional-dependencies]
+experiments = [
+    "mace-torch",
+    "schnetpack==0.3",
+    "deepmd-kit",
+    "openbabel",
+    "shap",
+    "scikit-learn",
+]
+
+[project.urls]
+Repository = "https://github.com/Adithya-Rao1/Eq-FSA"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["stage_1*", "stage_2*", "diagnostics*", "utils*", "log_setup*"]
