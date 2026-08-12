@@ -21,48 +21,55 @@ Training follows a two-stage strategy bottom up and top-down strategy for learni
 
 ## Main equations
 
-**Local (short-range) update.** For atom `i` at layer `m`, the type-`l` feature update is
+**Local (short-range) update.** For atom $i$ at layer $m$, the type-$\ell$ feature update is
 
-```
-h_i^{l,m+1} = W^{lm} h_i^{m,m} + sigma( sum_{j in N_i} sum_{k=0}^{m} alpha_ij * W_V^{lk}(x_j - x_i) h_j^{k,0} )
-```
+$$
+h_i^{\ell, m+1} = W^{\ell m} h_i^{m,m} + \sigma\left( \sum_{j \in \mathcal{N}_i} \sum_{k=0}^{m} \alpha_{ij}\, W_V^{\ell k}(x_j - x_i)\, h_j^{k,0} \right)
+$$
 
-where `sigma` is an activation, `⊗` (in the tensor-product sense) contracts spherical-harmonic
-edge features with neighbor features, and
+where $\sigma$ is an activation and $\alpha_{ij}$, $W_V^{\ell k}$ are given by
 
-```
-alpha_ij = Phi( f(h_i, h_j, e_ij) )
-f(h_i, h_j, e_ij) = Psi(e_ij) * sigma( sum_{k=0}^{m} W^{0k} (h_i^{k,m} || h_j^{k,0}) )
-W_V^{lk} = sum_{J=|k-l|}^{k+l} rho(||x_j - x_i||) * unvec( Q^{lk,T} Y_J(x_j - x_i) )
-```
+$$
+\alpha_{ij} = \Phi\big(f(h_i, h_j, e_{ij})\big)
+$$
 
-`Phi` is softmax, `Psi` is an MLP, `rho` is a scalar radial network, `Y_J` are spherical harmonics,
-and `Q^{lk}` are the associated Clebsch-Gordan coefficients. This is implemented by `SRAttention`
-and `EnergyLayer` in `src/stage_1/attention.py` / `src/stage_1/model.py`.
+$$
+f(h_i, h_j, e_{ij}) = \Psi(e_{ij}) \cdot \sigma\left(\sum_{k=0}^{m} W^{0k}\left(h_i^{k,m} \,\Vert\, h_j^{k,0}\right)\right)
+$$
 
-**Long-range (master-node) update.** For a virtual global node `a` centered at the graph's
+$$
+W_V^{\ell k} = \sum_{J=|k-\ell|}^{\ell+k} \rho(\lVert x_j - x_i \rVert)\, \mathrm{unvec}\big(Q^{\ell k \top} Y_J(x_j - x_i)\big)
+$$
+
+$\Phi$ is softmax, $\Psi$ is an MLP, $\rho$ is a scalar radial network, $Y_J$ are spherical
+harmonics, and $Q^{\ell k}$ are the associated Clebsch-Gordan coefficients. This is implemented by
+`SRAttention` and `EnergyLayer` in `src/stage_1/attention.py` / `src/stage_1/model.py`.
+
+**Long-range (master-node) update.** For a virtual global node $a$ centered at the graph's
 center of mass, the type-0 feature update is
 
-```
-g_a^{m+1} = W g_a^m + sum_{i,j in G} sum_{k in Lambda'} Psi_g(h~(G), e_ij) * exp(i k . (x_j - x_i)) * alpha_ij * W_V g_a^m
-```
+$$
+g_a^{m+1} = W g_a^m + \sum_{i,j \in \mathcal{G}} \sum_{k \in \Lambda'} \Psi_g(\tilde{h}(\mathcal{G}), e_{ij})\, \exp\!\big(i k^\top (x_j - x_i)\big) \cdot \alpha_{ij} W_V g_a^m
+$$
 
-with wave vectors `k` set by an energy cutoff, and
+with wave vectors $k$ set by an energy cutoff, and
 
-```
-alpha_ij = Phi( Psi(h_i^{0,m}, h_j^{0,m}, g_a^m) )
-W_V = Psi(g_a^m) * sigma( sum_{k=0}^{m} W^{0k} (h_i^{k,m} || h_j^{k,m}) )
-```
+$$
+\alpha_{ij} = \Phi\big(\Psi(h_i^{0,m}, h_j^{0,m}, g_a^m)\big)
+$$
+
+$$
+W_V = \Psi(g_a^m) \cdot \sigma\left(\sum_{k=0}^{m} W^{0k}\left(h_i^{k,m} \,\Vert\, h_j^{k,m}\right)\right)
+$$
 
 **Stage-1 training objective (energy + force matching).**
 
-```
-L_1 = (1 / N_b) * sum_{l=1}^{N_b} [ lambda_1 * (U_l - U_hat_l)^2
-                                    + lambda_2 * sum_{i=1}^{N_l,a} sum_{n=1}^{3} (F_{iln} - F_hat_{iln})^2 ]
-```
+$$
+\mathcal{L}_1 = \frac{1}{N_b} \sum_{l=1}^{N_b} \left[ \lambda_1 (U_l - \hat{U}_l)^2 + \lambda_2 \sum_{i=1}^{N_{l,a}} \sum_{n=1}^{3} \left(F_{iln} - \hat{F}_{iln}\right)^2 \right]
+$$
 
-where `N_b` is the batch size, `N_{l,a}` the number of atoms in configuration `l`, `U` the
-potential energy, and `F` the per-atom, per-direction force; `lambda_1`/`lambda_2` weight the
+where $N_b$ is the batch size, $N_{l,a}$ the number of atoms in configuration $l$, $U$ the
+potential energy, and $F$ the per-atom, per-direction force; $\lambda_1$/$\lambda_2$ weight the
 energy and force terms respectively (`--lambda1`/`--lambda2` in `train_spice.py`, defaults `1.0`
 and `0.5`).
 
@@ -70,12 +77,12 @@ and `0.5`).
 embedded via Morgan fingerprints and physicochemical descriptors, and a combined similarity
 distance is computed as
 
-```
-D_ij = 0.5 * (1 - T_sim(m_i, m_j)) + 0.5 * d(x_i, x_j)
-```
+$$
+D_{ij} = \frac{1}{2}\big(1 - T_{\mathrm{sim}}(m_i, m_j)\big) + \frac{1}{2} d(x_i, x_j)
+$$
 
-where `T_sim` is Tanimoto similarity over fingerprints and `d` is Euclidean distance over
-standardized descriptors; farthest-point sampling on `D` then selects a diverse held-out solvent
+where $T_{\mathrm{sim}}$ is Tanimoto similarity over fingerprints and $d$ is Euclidean distance over
+standardized descriptors; farthest-point sampling on $D$ then selects a diverse held-out solvent
 set.
 
 ## Installation
@@ -86,9 +93,9 @@ cd Eq-FSA
 pip install -e .
 ```
 
-Note: some modules import a few additional internal packages (`embeddings.bases`, `data_processing`,
-`diffusion`, `log_setup`) that are not part of this repository and must be available separately on
-the `PYTHONPATH` for training/inference to run end-to-end.
+Note: `stage_1/experiments/load_solvtum.py` depends on the `solvatum` git submodule
+(`src/stage_1/solvatum`) — clone with `git clone --recurse-submodules` or run
+`git submodule update --init` after cloning.
 
 ## Usage
 
