@@ -47,6 +47,7 @@ def build_model_from_config(config: dict, device: torch.device) -> SPICEEnergyFo
         pw_e_cutoff=config.get("pw_e_cutoff"),
         n_master_nodes=config.get("n_master_nodes", 4),
         num_fusion_heads=config.get("num_fusion_heads", 4),
+        ablate_max_degree=config.get("ablate_max_degree"),
     ).to(device)
     return model
 

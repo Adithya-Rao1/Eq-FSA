@@ -78,7 +78,8 @@ def seed_equivariant_features(
     B, N = r.shape
     radial = radial_net(r.reshape(-1, 1)).view(B, N, 1)
     if diag_sink is not None:
-        diag_sink["min_abs_radial"] = float(radial.detach().abs().min())
+        masked_radial = radial.masked_fill(~node_mask.unsqueeze(-1), float("inf"))
+        diag_sink["min_abs_radial"] = float(masked_radial.detach().abs().min())
     scalar = combined_scalar.unsqueeze(-1)
 
     f1 = scalar * (radial.unsqueeze(-1) * Y1.unsqueeze(2))
@@ -141,7 +142,7 @@ class EnergyLayer(nn.Module):
     def __init__(
         self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int = 128,
         edge_cutoff: float = 5.0, n_max: int = 2, pw_e_cutoff: Optional[float] = None,
-        k_max: int = 0, edge_feat_dim: int = 8,
+        k_max: int = 0, edge_feat_dim: int = 8, ablate_max_degree: Optional[int] = None,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -149,6 +150,7 @@ class EnergyLayer(nn.Module):
         self.feature_dim = feature_dim
         self.edge_cutoff = edge_cutoff
         self.k_max = k_max
+        self.ablate_max_degree = ablate_max_degree
         self.sr_attn = SRAttention(
             radial_net, max_degree, feature_dim, hidden_dim, k_max=k_max, edge_feat_dim=edge_feat_dim,
         )
@@ -164,6 +166,7 @@ class EnergyLayer(nn.Module):
 
         self.W_master_self = IrrepLinear(feature_dim)
         self.master_attn = MasterNodeAttention(feature_dim, n_max, pw_e_cutoff)
+        self.master_ln = EquivariantLayerNorm(feature_dim, degree=0)
 
         self.layer_norm_in = nn.ModuleDict({
             str(l): EquivariantLayerNorm(feature_dim, degree=l)
@@ -229,14 +232,18 @@ class EnergyLayer(nn.Module):
             neighbor_term = self.sigma_gate[str(l)](neighbor_raw)
 
             f_out[l] = f_in[l] + self_term + neighbor_term
+            if self.ablate_max_degree is not None and l > self.ablate_max_degree:
+                f_out[l] = torch.zeros_like(f_out[l])
 
         f = self.readout(f_out)
         for l in range(self.max_degree + 1):
             f[l] = f[l] + f_out[l]
 
         # Global master-node recurrence
-        g_a_out = self.W_master_self(g_a_in) + self.master_attn(
-            g_a_in, f_in[0], x_wrapped, x_com, node_mask, V,
+        g_a_out = self.master_ln(
+            self.W_master_self(g_a_in) + self.master_attn(
+                g_a_in, f_in[0], x_wrapped, x_com, node_mask, V,
+            )
         )
         if self.diag_enabled:
             self._diag_g_a_norm = float(g_a_out.detach().norm())
@@ -262,6 +269,7 @@ class EnergyModel(nn.Module):
         n_master_nodes:   int = 4,
         num_fusion_heads: int = 4,
         edge_feat_dim:    int = 8,
+        ablate_max_degree: Optional[int] = None,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -270,6 +278,7 @@ class EnergyModel(nn.Module):
         self.max_degree = max_degree
         self.task       = task
         self.n_master_nodes = n_master_nodes
+        self.ablate_max_degree = ablate_max_degree
 
         self.input_embedding = nn.Embedding(num_atom_types, feature_dim)
         self.ln1             = nn.LayerNorm(feature_dim)
@@ -295,6 +304,7 @@ class EnergyModel(nn.Module):
             EnergyLayer(
                 radial_net, max_degree, feature_dim, hidden_dim, edge_cutoff, n_max, pw_e_cutoff,
                 k_max=_compute_k_max(m, max_degree), edge_feat_dim=edge_feat_dim,
+                ablate_max_degree=ablate_max_degree,
             )
             for m in range(num_layers)
         ])
@@ -329,6 +339,11 @@ class EnergyModel(nn.Module):
             combined_scalar, self.seed_radial_net, x, atomic_masses, node_mask, V,
             diag_sink=(self._diag_stats if self.diag_enabled else None),
         )
+        if self.ablate_max_degree is not None:
+            seeded = {
+                l: (v if l <= self.ablate_max_degree else torch.zeros_like(v))
+                for l, v in seeded.items()
+            }
         f0: Dict[int, torch.Tensor] = {0: f0_raw.unsqueeze(-1), 1: seeded[1], 2: seeded[2]}
         f: Dict[int, torch.Tensor] = dict(f0)
 
@@ -346,6 +361,11 @@ class EnergyModel(nn.Module):
             )
 
         fusion_out = self.master_fusion(f_atoms=f, g_a=g_a, x=minimum_image(x, V), x_com=x_com)
+        if self.ablate_max_degree is not None:
+            fusion_out = {
+                l: (v if l <= self.ablate_max_degree else torch.zeros_like(v))
+                for l, v in fusion_out.items()
+            }
         f = {l: f[l] + fusion_out[l] for l in f}
 
         f = self.readout(f)

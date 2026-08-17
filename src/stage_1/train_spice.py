@@ -36,6 +36,7 @@ class SPICEEnergyForceModel(nn.Module):
         pw_e_cutoff: float | None = None,
         n_master_nodes: int = 4,
         num_fusion_heads: int = 4,
+        ablate_max_degree: int | None = None,
     ):
         super().__init__()
         self.energy_model = EnergyModel(
@@ -51,6 +52,7 @@ class SPICEEnergyForceModel(nn.Module):
             n_master_nodes=n_master_nodes,
             num_fusion_heads=num_fusion_heads,
             edge_feat_dim=_EDGE_FEAT_DIM,
+            ablate_max_degree=ablate_max_degree,
         )
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
@@ -694,6 +696,7 @@ def run_training(config: dict, device: torch.device | None = None):
         pw_e_cutoff=config.get("pw_e_cutoff"),
         n_master_nodes=config.get("n_master_nodes", 4),
         num_fusion_heads=config.get("num_fusion_heads", 4),
+        ablate_max_degree=config.get("ablate_max_degree"),
     )
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -743,6 +746,7 @@ def main():
     parser.add_argument("--feature-dim", type=int, default=64)
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--max-degree", type=int, default=2)
+    parser.add_argument("--ablate-max-degree", type=int, default=None, choices=[0, 1], help="Feature-degree ablation study: zero out degree>l tensors at every point they're produced (seed features, each layer's SR/self output, master-fusion output), holding architecture and parameter count fixed at --max-degree=2. Omit for the full equivariant model.")
     parser.add_argument("--num-layers", type=int, default=4)
     parser.add_argument("--edge-cutoff", type=float, default=5.0)
     parser.add_argument("--box-padding", type=float, default=12.0, help="Vacuum spacing (Angstrom) around each molecule's auxiliary supercell")
