@@ -293,7 +293,7 @@ class EnergyModel(nn.Module):
             nn.LeakyReLU(),
             nn.Linear(feature_dim, n_master_nodes * feature_dim)
         )
-        init_linear_(self.master_expand, "leaky_relu")
+        init_sequential_(self.master_expand, "leaky_relu")
         self.master_expand_norm = EquivariantLayerNorm(feature_dim, degree=0)
 
         self.layers = nn.ModuleList([

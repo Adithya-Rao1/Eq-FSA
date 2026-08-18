@@ -112,7 +112,7 @@ class SRAttention(nn.Module):
 
         dist = x_rel_e.norm(dim=-1, keepdim=True)
         edge_feats = self.edge_input_norm(torch.cat([dist, edge_feat_e], dim=-1))
-        psi = self.psi_e_out(self.psi(edge_feats)).squeeze(-1)
+        psi = self.psi_e_out(self.psi_e(edge_feats)).squeeze(-1)
 
         scores_e = psi * score
 
