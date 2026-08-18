@@ -6,8 +6,8 @@ import torch
 from stage_1.model import EnergyLayer, seed_equivariant_features, masked_weighted_com
 from stage_1.train_spice import SPICEEnergyForceModel, compute_energy_and_forces, spice_loss
 from diagnostics.live_hook_training import attach_hooks, attach_grad_hooks, format_hook_report
-from utils.se3_utils import RadialNetwork, EquivariantLayerNorm, safe_norm, divide_or_zero, x_to_trig
-from utils.spherical_harm import get_spherical_harmonics_batched
+from utils.se3_utils import RadialNetwork, EquivariantLayerNorm
+from utils.spherical_harm import get_spherical_harmonics
 from utils.pw_bases import minimum_image
 from utils.calc_props import _MOL_FEAT_NAMES
 
@@ -186,21 +186,14 @@ def instrument_seed_pathway(model: SPICEEnergyForceModel, batch: dict):
         x_rel = x_wrapped - center.unsqueeze(1)
         report("x_rel", x_rel)
 
-        r_true = safe_norm(x_rel, dim=-1)
+        r_true = x_rel.norm(dim=-1)
         report("r_true", r_true)
         r = r_true.clamp(min=1e-8)
-        x_hat = divide_or_zero(x_rel, r_true.unsqueeze(-1))
-        report("x_hat", x_hat)
         has_dir = (r_true > 1e-7).unsqueeze(-1)
 
-        cos_theta, cos_phi, sin_phi = x_to_trig(x_hat)
-        report("cos_theta", cos_theta)
-        report("cos_phi", cos_phi)
-        report("sin_phi", sin_phi)
-
-        Y1 = get_spherical_harmonics_batched(1, cos_theta, cos_phi, sin_phi) * has_dir
+        Y1 = get_spherical_harmonics(1, x_rel) * has_dir
         report("Y1", Y1)
-        Y2 = get_spherical_harmonics_batched(2, cos_theta, cos_phi, sin_phi) * has_dir
+        Y2 = get_spherical_harmonics(2, x_rel) * has_dir
         report("Y2", Y2)
 
         radial = em.seed_radial_net(r.reshape(-1, 1)).view(B, N, 1)

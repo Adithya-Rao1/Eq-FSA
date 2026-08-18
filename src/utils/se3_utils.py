@@ -14,8 +14,6 @@ from diagnostics import counters
 from e3nn import o3
 
 _CG_CACHE: Dict[Tuple[int, int], Dict[int, torch.Tensor]] = {}
-_SH_BASIS_CHANGE_CACHE: Dict[int, torch.Tensor] = {}
-
 _HE_NONLINEARITIES = {"relu", "leaky_relu", "silu", "gelu", "selu", "elu"}
 
 def init_linear_(linear: nn.Linear, nonlinearity: str = "linear") -> None:
@@ -65,44 +63,14 @@ def cartesian_quadrupole(n: torch.Tensor) -> torch.Tensor:
     Qyz = Y * Z
     return torch.stack([Qxx, Qxy, Qxz, Qyy, Qyz], dim=-1)
 
-def fit_sh_basis_change(l: int, n_samples: int = 20000, tol: float = 1e-3) -> torch.Tensor:
-    if l in _SH_BASIS_CHANGE_CACHE:
-        return _SH_BASIS_CHANGE_CACHE[l]
-
-    n = torch.randn(n_samples, 3, dtype=torch.float64)
-
-    cos_theta, cos_phi, sin_phi = x_to_trig(n)
-
-    Y_custom = get_spherical_harmonics(l, cos_theta, cos_phi, sin_phi).to(torch.float64)
-    Y_e3nn   = o3.spherical_harmonics(l, n, normalize=True, normalization='component').to(torch.float64)  
-
-    U, *_ = torch.linalg.lstsq(Y_e3nn, Y_custom) 
-    resid = (Y_e3nn @ U - Y_custom).abs().max().item()
-    assert resid < tol, f"SH basis-change fit residual too high for l={l}: {resid:.2e}"
-
-    Uo, _, Vt = torch.linalg.svd(U)
-    U = (Uo @ Vt).to(torch.float32)
-
-    _SH_BASIS_CHANGE_CACHE[l] = U
-    return U
-
 def clebsch_gordan_matrix(l: int, k: int) -> Dict[int, torch.Tensor]:
     if (l, k) in _CG_CACHE:
         return _CG_CACHE[(l, k)]
 
-    U_l = fit_sh_basis_change(l).to(torch.float64)
-    U_k = fit_sh_basis_change(k).to(torch.float64)
-
     result: Dict[int, torch.Tensor] = {}
     for J in range(abs(l - k), l + k + 1):
-        U_J = fit_sh_basis_change(J).to(torch.float64)
-
-        w3j     = o3.wigner_3j(l, k, J).to(torch.float64)                  
-        Q_e3nn  = w3j.reshape((2 * l + 1) * (2 * k + 1), 2 * J + 1)        
-        K = torch.kron(U_l, U_k)                                          
-        Q_custom_J = K.T @ Q_e3nn @ U_J
-
-        result[J] = Q_custom_J.to(torch.float32)
+        w3j = o3.wigner_3j(l, k, J) * math.sqrt(2 * J + 1)
+        result[J] = w3j.reshape((2 * l + 1) * (2 * k + 1), 2 * J + 1)
 
     _CG_CACHE[(l, k)] = result
     return result
@@ -172,9 +140,7 @@ def equivariant_weight_matrix(
     if N == 0:
         return W
 
-    r      = x.norm(dim=-1, keepdim=True)
-    cos_theta, cos_alpha, sin_alpha = x_to_trig(x)
-
+    r  = x.norm(dim=-1, keepdim=True)
     cg = clebsch_gordan_matrix(l, k)
 
     for J in range(abs(l - k), l + k + 1):
@@ -192,7 +158,7 @@ def equivariant_weight_matrix(
 
         Q_J = cg[J].to(device=device, dtype=dtype)
 
-        Y_J = get_spherical_harmonics(J, cos_theta, cos_alpha, sin_alpha)
+        Y_J = get_spherical_harmonics(J, x)
 
         QTY = torch.einsum("ji,ni->nj", Q_J, Y_J)
         had = phi * QTY
@@ -307,9 +273,7 @@ def fit_sh_to_cartesian(l: int, target_fn, n_samples: int = 20000, tol: float = 
     n = torch.randn(n_samples, 3, dtype=torch.float64)
     n = n / n.norm(dim=-1, keepdim=True)
 
-    cos_theta, cos_phi, sin_phi = x_to_trig(n)
-
-    Y_l = get_spherical_harmonics(l, cos_theta, cos_phi, sin_phi)
+    Y_l = get_spherical_harmonics(l, n)
     T   = target_fn(n)
 
     M, *_ = torch.linalg.lstsq(Y_l, T)
@@ -481,8 +445,7 @@ def equivariant_weight_single_J(
     cg    = clebsch_gordan_matrix(l, k)
     Q_J   = cg[J].to(device=device, dtype=dtype)
 
-    cos_theta, cos_alpha, sin_alpha = x_to_trig(x)
-    Y_J = get_spherical_harmonics(J, cos_theta, cos_alpha, sin_alpha)
+    Y_J = get_spherical_harmonics(J, x)
 
     QTY = torch.einsum("ji,ni->nj", Q_J, Y_J)
     had = phi * QTY                               
