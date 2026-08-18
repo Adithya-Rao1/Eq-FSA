@@ -78,17 +78,20 @@ class SRAttention(nn.Module):
                 })
 
         self.pair_readout = nn.ModuleDict({
-            str(k): EquivariantNormReadout(2 * feature_dim, hidden_dim)
+            str(k): nn.Sequential(
+                EquivariantNormReadout(2 * feature_dim, hidden_dim),
+                EquivariantRMSNorm(hidden_dim, 1),
+                GatedNonlinearity(hidden_dim),
+            )
             for k in range(k_max + 1)
         })
-        self.score_act = nn.SiLU()
-
+        
         self.edge_input_norm = nn.RMSNorm(1 + edge_feat_dim)
         self.psi_e = scalar_ffn(1 + edge_feat_dim, hidden_dim)
         self.psi_e_out = nn.Sequential(
             nn.RMSNorm(1 + edge_feat_dim),
             nn.LeakyReLU(),
-            nn.Linear(1 + edge_feat_dim, 1)
+            nn.Linear(1 + edge_feat_dim, 1),
         )
         init_sequential_(self.psi_e_out, "leaky_relu")
 
@@ -108,7 +111,6 @@ class SRAttention(nn.Module):
             cat_k = torch.cat([f_in_i_e[k], f0_j_e[k]], dim=-2)
             contrib = self.pair_readout[str(k)](cat_k)
             score = contrib if score is None else score + contrib
-        score = self.score_act(score)
 
         dist = x_rel_e.norm(dim=-1, keepdim=True)
         edge_feats = self.edge_input_norm(torch.cat([dist, edge_feat_e], dim=-1))
