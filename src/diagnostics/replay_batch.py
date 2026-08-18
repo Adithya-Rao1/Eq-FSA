@@ -4,8 +4,8 @@ import sys
 import torch
 
 from stage_1.model import EnergyLayer, seed_equivariant_features, masked_weighted_com
-from stage_1.train_spice import SPICEEnergyForceModel, compute_energy_and_forces
-from diagnostics.live_hook_training import attach_hooks, format_hook_report
+from stage_1.train_spice import SPICEEnergyForceModel, compute_energy_and_forces, spice_loss
+from diagnostics.live_hook_training import attach_hooks, attach_grad_hooks, format_hook_report
 from utils.se3_utils import RadialNetwork, EquivariantLayerNorm, safe_norm, divide_or_zero, x_to_trig
 from utils.spherical_harm import get_spherical_harmonics_batched
 from utils.pw_bases import minimum_image
@@ -70,6 +70,39 @@ def describe_geometry(batch: dict):
         i, j = divmod(min_idx[b].item(), N)
         print(f"  molecule {b}: closest real-real contact = {min_dist[b].item():.4f} A between atoms ({i},{j})"
               f" [types {types_[b,i].item()},{types_[b,j].item()}]")
+
+
+def report_full_gradient_breakdown(model: SPICEEnergyForceModel, batch: dict, config: dict):
+    print("\n--- Full forward+backward replay with current hook coverage ---")
+    model.train()
+    mag_tracker = attach_hooks(model)
+    grad_tracker = attach_grad_hooks(model)
+    try:
+        U, F = compute_energy_and_forces(
+            model, batch["all_solute_x"], batch["all_solute_types"], batch["all_solute_masses"],
+            batch["all_solute_mask"], batch["V"], batch["mol_props"], batch["all_solute_edge_feats"],
+        )
+        energy_mean = config["energy_mean"]
+        energy_std = config["energy_std"]
+        force_rms = config["force_rms"]
+        U_n = (U - energy_mean) / energy_std
+        U_target_n = (batch["energy"] - energy_mean) / energy_std
+        F_n = F / force_rms
+        F_target_n = batch["solute_forces"] / force_rms
+        loss, energy_term, force_term = spice_loss(
+            U_n, U_target_n, F_n, F_target_n, batch["all_solute_mask"],
+            config["lambda1"], config["lambda2"],
+        )
+        loss.backward()
+        print(f"  loss={loss.item():.6g}  energy_term={energy_term.item():.6g}  force_term={force_term.item():.6g}")
+        print("\n  Forward-activation magnitudes (top 20):")
+        print(mag_tracker.report(top_k=20))
+        print("\n  Backward-activation-gradient norms (top 20 -- look here for the exploding module):")
+        print(grad_tracker.report(top_k=20))
+    finally:
+        mag_tracker.remove()
+        grad_tracker.remove()
+        model.zero_grad(set_to_none=True)
 
 
 def check_mol_props_raw(batch: dict, model: SPICEEnergyForceModel):
@@ -296,6 +329,9 @@ def main():
 
     model = rebuild_model(model_args, device, dtype)
     load_state_dict_allow_new_params(model, saved["model_state_dict"])
+
+    report_full_gradient_breakdown(model, batch, model_args)
+
     model.eval()
 
     report_master_attn_fix(model, batch)
