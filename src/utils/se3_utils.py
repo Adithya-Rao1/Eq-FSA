@@ -51,6 +51,23 @@ def scalar_ffn(feature_dim: int, hidden_dim: int) -> nn.Sequential:
     init_sequential_(seq, "leaky_relu")
     return seq
 
+def high_ord_ffn(feature_dim, hidden_dim, degree) -> nn.Sequential:
+    seq = nn.Sequential(
+            EquivariantLayerNorm(feature_dim, degree),
+            EquivariantLinear(feature_dim, hidden_dim),
+            EquivariantLayerNorm(hidden_dim, degree),
+            GatedNonlinearity(hidden_dim),
+            EquivariantLinear(hidden_dim, hidden_dim),
+            EquivariantLayerNorm(hidden_dim, degree),
+            GatedNonlinearity(hidden_dim),
+            EquivariantLinear(hidden_dim, hidden_dim),
+            EquivariantLayerNorm(hidden_dim, degree),
+            GatedNonlinearity(hidden_dim),
+            EquivariantLinear(hidden_dim, feature_dim),
+        )
+    
+    return seq
+
 def cartesian_dipole(n: torch.Tensor) -> torch.Tensor:
     return n
 

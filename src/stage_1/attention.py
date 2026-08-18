@@ -128,17 +128,20 @@ class SRAttention(nn.Module):
         return alpha_e, Wv_j_sr_flat
 
 class MasterNodeAttention(nn.Module):
-    def __init__(self, feature_dim: int, n_max: int, pw_e_cutoff: Optional[float] = None):
+    def __init__(self, feature_dim: int, n_max: int, pw_e_cutoff: Optional[float] = None, hidden_dim: int = 128):
         super().__init__()
         self.feature_dim = feature_dim
         self.n_max = n_max
         self.pw_e_cutoff = pw_e_cutoff
 
-        self.W_Q = EquivariantLinear(feature_dim, feature_dim)
-        self.w_q_norm = EquivariantLayerNorm(feature_dim, 0)
-        self.W_K = EquivariantLinear(feature_dim, feature_dim)
-        self.w_k_norm = EquivariantLayerNorm(feature_dim, 0)
-        self.W_V0 = EquivariantLinear(feature_dim, feature_dim)
+        self.W_Q = high_ord_ffn(feature_dim, hidden_dim, 1)
+        self.w_vq_norm = EquivariantLayerNorm(feature_dim, 1)
+
+        self.W_K = high_ord_ffn(feature_dim, hidden_dim, 1)
+        self.w_vk_norm = EquivariantLayerNorm(feature_dim, 1)
+
+        self.W_V0 = high_ord_ffn(feature_dim, hidden_dim, 1)
+        self.w_v0_norm = EquivariantLayerNorm(feature_dim, 1)
 
         self.alpha = nn.Parameter(torch.tensor(1.0))
         self.diag_enabled = False
@@ -157,8 +160,8 @@ class MasterNodeAttention(nn.Module):
         B, N_a, C, _ = g_a.shape
         m = node_mask.to(x.dtype)
 
-        Q = self.w_q_norm(self.W_Q(g_a)).squeeze(-1)
-        K = self.w_k_norm(self.W_K(f_in0)).squeeze(-1)
+        Q = self.w_vq_norm(self.W_Q(g_a)).squeeze(-1)
+        K = self.w_vk_norm(self.W_K(f_in0)).squeeze(-1)
         phi_Q = F.elu(Q) + 1
         phi_K = (F.elu(K) + 1) * m.unsqueeze(-1)
         phi_K_sum = phi_K.sum(dim=1)
@@ -175,7 +178,7 @@ class MasterNodeAttention(nn.Module):
         alpha = F.softplus(self.alpha) + 1e-4
         k2 = (kvecs ** 2).sum(dim=-1)
         damping = torch.exp(-k2 / (4.0 * alpha)) * mode_mask_f
-        damping_sum = damping.sum(dim=-1).clamp(min=1e-8)
+        damping_sum = damping.sum(dim=-1) # min=1.0 for k=0
         if self.diag_enabled:
             self._diag_damping_sum_min = float(damping_sum.detach().min())
 
@@ -183,7 +186,7 @@ class MasterNodeAttention(nn.Module):
         cos_g = torch.cos(phase_g) * mode_mask_f.unsqueeze(1)
         sin_g = torch.sin(phase_g) * mode_mask_f.unsqueeze(1)
 
-        V_proj0 = self.W_V0(f_in0)
+        V_proj0 = self.w_v0_norm(self.W_V0(f_in0))
 
         S_re0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, cos_g)
         S_im0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, sin_g)

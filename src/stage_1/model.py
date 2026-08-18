@@ -84,21 +84,6 @@ def seed_equivariant_features(
 
     return {1: f1, 2: f2}
 
-def _high_ord_ffn(feature_dim, hidden_dim, degree) -> nn.Sequential:
-    return nn.Sequential(
-            EquivariantLayerNorm(feature_dim, degree),
-            EquivariantLinear(feature_dim, hidden_dim),
-            EquivariantLayerNorm(hidden_dim, degree),
-            GatedNonlinearity(hidden_dim),
-            EquivariantLinear(hidden_dim, hidden_dim),
-            EquivariantLayerNorm(hidden_dim, degree),
-            GatedNonlinearity(hidden_dim),
-            EquivariantLinear(hidden_dim, hidden_dim),
-            EquivariantLayerNorm(hidden_dim, degree),
-            GatedNonlinearity(hidden_dim),
-            EquivariantLinear(hidden_dim, feature_dim),
-        )
-
 class Readout(nn.Module):
     def __init__(self, feature_dim, hidden_dim=128):
         super().__init__()
@@ -106,8 +91,8 @@ class Readout(nn.Module):
         self.hidden_dim = hidden_dim
 
         self.ffn0 = scalar_ffn(feature_dim, hidden_dim)
-        self.ffn1 = _high_ord_ffn(feature_dim, hidden_dim, 1)
-        self.ffn2 = _high_ord_ffn(feature_dim, hidden_dim, 2)
+        self.ffn1 = high_ord_ffn(feature_dim, hidden_dim, 1)
+        self.ffn2 = high_ord_ffn(feature_dim, hidden_dim, 2)
 
         self.ffn = [self.ffn0, self.ffn1, self.ffn2]
 
@@ -147,7 +132,7 @@ class EnergyLayer(nn.Module):
         })
 
         self.W_master_self = IrrepLinear(feature_dim)
-        self.master_attn = MasterNodeAttention(feature_dim, n_max, pw_e_cutoff)
+        self.master_attn = MasterNodeAttention(feature_dim, n_max, pw_e_cutoff, hidden_dim)
         self.master_ln = EquivariantLayerNorm(feature_dim, degree=0)
 
         self.layer_norm_in = nn.ModuleDict({
