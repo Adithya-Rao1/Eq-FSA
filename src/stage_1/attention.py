@@ -140,8 +140,13 @@ class MasterNodeAttention(nn.Module):
         self.W_K = high_ord_ffn(feature_dim, hidden_dim, 1)
         self.w_vk_norm = EquivariantRMSNorm(feature_dim, 1)
 
-        self.W_V0 = high_ord_ffn(feature_dim, hidden_dim, 1)
-        self.w_v0_norm = EquivariantRMSNorm(feature_dim, 1)
+        self.W_V0 = nn.Sequential(
+            scalar_ffn(feature_dim, hidden_dim),
+            nn.RMSNorm(feature_dim),
+        )
+
+        self.s_re_norm = nn.RMSNorm(feature_dim)
+        self.s_im_norm = nn.RMSNorm(feature_dim)
 
         self.alpha = nn.Parameter(torch.tensor(1.0))
         self.diag_enabled = False
@@ -186,10 +191,13 @@ class MasterNodeAttention(nn.Module):
         cos_g = torch.cos(phase_g) * mode_mask_f.unsqueeze(1)
         sin_g = torch.sin(phase_g) * mode_mask_f.unsqueeze(1)
 
-        V_proj0 = self.w_v0_norm(self.W_V0(f_in0))
+        V_proj0 = self.W_V0(f_in0.squeeze(-1)).unsqueeze(-1)
 
-        S_re0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, cos_g)
-        S_im0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, sin_g)
+        N_real = m.sum(dim=1).clamp(min=1).view(B, 1, 1, 1, 1)
+        raw_S_re0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, cos_g)
+        raw_S_im0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, sin_g)
+        S_re0 = (1.0 / N_real) * self.s_re_norm(raw_S_re0.transpose(-1, -2)).transpose(-1, -2)
+        S_im0 = (1.0 / N_real) * self.s_im_norm(raw_S_im0.transpose(-1, -2)).transpose(-1, -2)
 
         phase_com = torch.einsum("bi,bmi->bm", x_com, kvecs)
         cos_com = torch.cos(phase_com) * damping
