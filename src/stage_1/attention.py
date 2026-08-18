@@ -220,10 +220,16 @@ class MasterFusionAttention(nn.Module):
             str(l): EquivariantLinear(feature_dim, feature_dim) for l in range(max_degree + 1)
         })
         self.readout_K = nn.ModuleDict({
-            str(l): EquivariantLinear(feature_dim, feature_dim) for l in range(max_degree + 1)
+            str(l): nn.Sequential(
+                EquivariantLinear(feature_dim, feature_dim),
+                nn.RMSNorm(feature_dim)
+            ) for l in range(max_degree + 1)
         })
         self.readout_V = nn.ModuleDict({
-            str(l): EquivariantLinear(feature_dim, feature_dim) for l in range(max_degree + 1)
+            str(l): nn.Sequential(
+                EquivariantLinear(feature_dim, feature_dim),
+                nn.RMSNorm(feature_dim)
+            ) for l in range(max_degree + 1)
         })
         self.radial_K = nn.ModuleDict({
             f"{l}_0": nn.ModuleDict({str(l): radial_net(num_basis=2 * l + 1, hidden_dim=hidden_dim)})

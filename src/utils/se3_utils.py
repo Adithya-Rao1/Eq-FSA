@@ -125,6 +125,7 @@ class RadialNetwork(nn.Module):
             nn.RMSNorm(hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, num_heads, bias=False),
+            nn.RMSNorm(num_heads), # used for downstream tasks thus normalizing output head
         )
         init_sequential_(self.net, "silu")
 

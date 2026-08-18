@@ -123,7 +123,10 @@ class EnergyLayer(nn.Module):
         )
 
         self.W_V_self = nn.ModuleDict({
-            str(l): IrrepLinear(feature_dim)
+            str(l): nn.Sequential(
+                EquivariantLinear(feature_dim, feature_dim),
+                EquivariantRMSNorm(feature_dim, 1)
+            )
             for l in range(max_degree + 1)
         })
         self.sigma_gate = nn.ModuleDict({
