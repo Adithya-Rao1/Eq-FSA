@@ -293,8 +293,12 @@ class EnergyModel(nn.Module):
         self.ln2             = nn.LayerNorm(feature_dim)
         self.f0_ffn          = _scalar_ffn(feature_dim, hidden_dim)
         self.mol_ffn         = _scalar_ffn(feature_dim, hidden_dim)
-        self.seed_proj       = nn.Linear(2 * feature_dim, feature_dim)
-        init_linear_(self.seed_proj, "linear")
+        
+        self.seed_proj       = _scalar_ffn(2 * feature_dim, hidden_dim)
+        self.seed_proj_out   = nn.Linear(2 * feature_dim, feature_dim)
+        init_linear_(self.seed_proj_out, "linear")
+        self.seed_proj_norm  = nn.LayerNorm(feature_dim)
+       
         self.seed_radial_net = radial_net(num_basis=1, hidden_dim=hidden_dim)
 
         self.master_pool_agg = AggregateFeatures(
@@ -303,6 +307,7 @@ class EnergyModel(nn.Module):
         self.master_pool_ffn = _scalar_ffn(feature_dim, hidden_dim)
         self.master_expand   = nn.Linear(feature_dim, n_master_nodes * feature_dim)
         init_linear_(self.master_expand, "linear")
+        self.master_expand_norm = EquivariantLayerNorm(feature_dim, degree=0)
 
         self.layers = nn.ModuleList([
             EnergyLayer(
@@ -337,7 +342,8 @@ class EnergyModel(nn.Module):
         mol_ctx = self.mol_prop_emb(mol_props).unsqueeze(1).expand(-1, N, -1)
         mol_ffn_out = self.mol_ffn(self.ln2(mol_ctx))
 
-        combined_scalar = self.seed_proj(torch.cat([f0_ffn_out, mol_ffn_out], dim=-1))
+        combined_scalar = (self.seed_proj(torch.cat([f0_ffn_out, mol_ffn_out], dim=-1)))
+        combined_scalar = self.seed_proj_norm(self.seed_proj_out(combined_scalar))
 
         seeded = seed_equivariant_features(
             combined_scalar, self.seed_radial_net, x, atomic_masses, node_mask, V,
@@ -357,6 +363,7 @@ class EnergyModel(nn.Module):
         agg_per_atom = self.master_pool_agg(f0[0], f0[1], f0[2]).squeeze(-1)
         pooled = self.master_pool_ffn(masked_mean(agg_per_atom, node_mask))
         g_a = self.master_expand(pooled).view(B, self.n_master_nodes, -1).unsqueeze(-1)
+        g_a = self.master_expand_norm(g_a)
 
         for layer in self.layers:
             f, g_a = layer(
