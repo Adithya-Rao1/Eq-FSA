@@ -134,8 +134,10 @@ class RadialNetwork(nn.Module):
         )
         self.net = nn.Sequential(
             nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=False),
+            nn.LayerNorm(hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim, bias=False),
+            nn.LayerNorm(hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, num_heads, bias=False),
         )
