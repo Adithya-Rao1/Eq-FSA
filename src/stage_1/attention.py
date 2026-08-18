@@ -59,6 +59,27 @@ def _equivariant_inner_product(
         raise ValueError("No shared degrees between query and key.")
     return result
 
+class NormedPairReadout(nn.Module):
+    def __init__(self, C: int, hidden: int, floor: float = 0.5):
+        super().__init__()
+        self.floor = floor
+        self.equiv_proj = nn.Linear(C, hidden, bias=False)
+        init_linear_(self.equiv_proj, "linear")
+        self.hidden_ffn = nn.Sequential(
+            nn.Linear(hidden, hidden, bias=False),
+            nn.RMSNorm(hidden),
+            nn.SiLU(),
+        )
+        init_sequential_(self.hidden_ffn, "silu")
+        self.out = nn.Linear(hidden, 1, bias=False)
+        init_linear_(self.out, "linear")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        v = self.equiv_proj(x.transpose(-1, -2)).transpose(-1, -2)
+        norms = straight_through_norm(v, dim=-1, floor=self.floor)
+        h = self.hidden_ffn(norms)
+        return self.out(h).squeeze(-1)
+
 class SRAttention(nn.Module):
     def __init__(
         self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int,
@@ -78,11 +99,7 @@ class SRAttention(nn.Module):
                 })
 
         self.pair_readout = nn.ModuleDict({
-            str(k): nn.Sequential(
-                EquivariantNormReadout(2 * feature_dim, hidden_dim),
-                EquivariantRMSNorm(hidden_dim, 1),
-                GatedNonlinearity(hidden_dim),
-            )
+            str(k): NormedPairReadout(2 * feature_dim, hidden_dim)
             for k in range(k_max + 1)
         })
         
@@ -216,6 +233,16 @@ class MasterNodeAttention(nn.Module):
 
         return lr_master
 
+class EquivariantLinearRMSNorm(nn.Module):
+    def __init__(self, feature_dim: int):
+        super().__init__()
+        self.lin = EquivariantLinear(feature_dim, feature_dim)
+        self.norm = nn.RMSNorm(feature_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.lin(x)
+        return self.norm(y.transpose(-1, -2)).transpose(-1, -2)
+
 class MasterFusionAttention(nn.Module):
     def __init__(self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int, num_heads: int):
         super().__init__()
@@ -230,16 +257,10 @@ class MasterFusionAttention(nn.Module):
             str(l): EquivariantLinear(feature_dim, feature_dim) for l in range(max_degree + 1)
         })
         self.readout_K = nn.ModuleDict({
-            str(l): nn.Sequential(
-                EquivariantLinear(feature_dim, feature_dim),
-                nn.RMSNorm(feature_dim)
-            ) for l in range(max_degree + 1)
+            str(l): EquivariantLinearRMSNorm(feature_dim) for l in range(max_degree + 1)
         })
         self.readout_V = nn.ModuleDict({
-            str(l): nn.Sequential(
-                EquivariantLinear(feature_dim, feature_dim),
-                nn.RMSNorm(feature_dim)
-            ) for l in range(max_degree + 1)
+            str(l): EquivariantLinearRMSNorm(feature_dim) for l in range(max_degree + 1)
         })
         self.radial_K = nn.ModuleDict({
             f"{l}_0": nn.ModuleDict({str(l): radial_net(num_basis=2 * l + 1, hidden_dim=hidden_dim)})
