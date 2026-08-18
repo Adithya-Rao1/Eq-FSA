@@ -156,6 +156,14 @@ class EnergyLayer(nn.Module):
             str(l): EquivariantLayerNorm(feature_dim, degree=l)
             for l in range(max_degree + 1)
         })
+        self.layer_norm_mid = nn.ModuleDict({
+            str(l): EquivariantLayerNorm(feature_dim, degree=l)
+            for l in range(max_degree + 1)
+        })
+        self.layer_norm_out = nn.ModuleDict({
+            str(l): EquivariantLayerNorm(feature_dim, degree=l)
+            for l in range(max_degree + 1)
+        })
 
         self.readout = Readout(feature_dim, hidden_dim)
 
@@ -215,13 +223,13 @@ class EnergyLayer(nn.Module):
             ).view(B, N, C, 2 * l + 1)
             neighbor_term = self.sigma_gate[str(l)](neighbor_raw)
 
-            f_out[l] = f_in[l] + self_term + neighbor_term
+            f_out[l] = self.layer_norm_mid[str(l)](f_in[l] + self_term + neighbor_term)
             if self.ablate_max_degree is not None and l > self.ablate_max_degree:
                 f_out[l] = torch.zeros_like(f_out[l])
 
         f = self.readout(f_out)
         for l in range(self.max_degree + 1):
-            f[l] = f[l] + f_out[l]
+            f[l] = self.layer_norm_out[str(l)](f[l] + f_out[l])
 
         # Global master-node recurrence
         g_a_out = self.master_ln(
@@ -308,6 +316,10 @@ class EnergyModel(nn.Module):
         self.master_fusion = MasterFusionAttention(
             radial_net, max_degree, feature_dim, hidden_dim, num_heads=num_fusion_heads,
         )
+        self.layer_norm_fusion = nn.ModuleDict({
+            str(l): EquivariantLayerNorm(feature_dim, degree=l)
+            for l in range(max_degree + 1)
+        })
 
         self.readout = Readout(feature_dim, hidden_dim)
 
@@ -364,7 +376,7 @@ class EnergyModel(nn.Module):
                 l: (v if l <= self.ablate_max_degree else torch.zeros_like(v))
                 for l, v in fusion_out.items()
             }
-        f = {l: f[l] + fusion_out[l] for l in f}
+        f = {l: self.layer_norm_fusion[str(l)](f[l] + fusion_out[l]) for l in f}
 
         f = self.readout(f)
 
