@@ -67,10 +67,9 @@ def seed_equivariant_features(
     x_rel   = x_wrapped - center.unsqueeze(1)
     r_true  = safe_norm(x_rel, dim=-1)
     r       = r_true.clamp(min=1e-8)
-    x_hat   = divide_or_zero(x_rel, r_true.unsqueeze(-1))
     has_dir = (r_true > 1e-7).unsqueeze(-1)
 
-    cos_theta, cos_phi, sin_phi = x_to_trig(x_hat)
+    cos_theta, cos_phi, sin_phi = x_to_trig(x_rel)
 
     Y1 = get_spherical_harmonics_batched(1, cos_theta, cos_phi, sin_phi) * has_dir
     Y2 = get_spherical_harmonics_batched(2, cos_theta, cos_phi, sin_phi) * has_dir

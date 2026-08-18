@@ -33,9 +33,8 @@ def fit_sh_basis_change(l: int, n_samples: int = 20000, tol: float = 1e-3) -> to
         return _SH_BASIS_CHANGE_CACHE[l]
 
     n = torch.randn(n_samples, 3, dtype=torch.float64)
-    n_hat = safe_divide(n, safe_norm(n, keepdim=True))
 
-    cos_theta, cos_phi, sin_phi = x_to_trig(n_hat)
+    cos_theta, cos_phi, sin_phi = x_to_trig(n, floor=1e-7)
 
     Y_custom = get_spherical_harmonics(l, cos_theta, cos_phi, sin_phi).to(torch.float64)
     Y_e3nn   = o3.spherical_harmonics(l, n, normalize=True, normalization='component').to(torch.float64)  
@@ -133,8 +132,7 @@ def equivariant_weight_matrix(
         return W
 
     r      = safe_norm(x, dim=-1, keepdim=True)
-    x_hat  = safe_divide(x, r)
-    cos_theta, cos_alpha, sin_alpha = x_to_trig(x_hat)
+    cos_theta, cos_alpha, sin_alpha = x_to_trig(x)
 
     cg = clebsch_gordan_matrix(l, k)
 
@@ -268,7 +266,9 @@ def fit_sh_to_cartesian(l: int, target_fn, n_samples: int = 20000, tol: float = 
     n = torch.randn(n_samples, 3, dtype=torch.float64)
     n = n / n.norm(dim=-1, keepdim=True)
 
-    cos_theta, cos_phi, sin_phi = x_to_trig(n)
+    # Gradient-free fit (see fit_sh_basis_change) -- near-zero floor preserves the original
+    # high-precision forward value.
+    cos_theta, cos_phi, sin_phi = x_to_trig(n, floor=1e-7)
 
     Y_l = get_spherical_harmonics(l, cos_theta, cos_phi, sin_phi)
     T   = target_fn(n)
@@ -439,11 +439,9 @@ def equivariant_weight_single_J(
         return torch.zeros(0, 2 * l + 1, 2 * k + 1, device=device, dtype=dtype)
 
     cg    = clebsch_gordan_matrix(l, k)
-    Q_J   = cg[J].to(device=device, dtype=dtype) 
-    
-    r = safe_norm(x, keepdim=True)
-    x_hat = divide_or_zero(x, r)
-    cos_theta, cos_alpha, sin_alpha = x_to_trig(x_hat)
+    Q_J   = cg[J].to(device=device, dtype=dtype)
+
+    cos_theta, cos_alpha, sin_alpha = x_to_trig(x)
     Y_J = get_spherical_harmonics(J, cos_theta, cos_alpha, sin_alpha)
 
     QTY = torch.einsum("ji,ni->nj", Q_J, Y_J)

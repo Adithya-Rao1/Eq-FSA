@@ -262,14 +262,19 @@ def divide_or_zero(numerator: torch.Tensor, denom: torch.Tensor, tol: float = 1e
     result = numerator / denom_safe
     return torch.where(is_degenerate, torch.zeros_like(result), result)
 
-def x_to_trig(x: torch.Tensor):
-    norms = safe_norm(x, dim=-1, keepdim=True)
-    x_norm = divide_or_zero(x, norms)
+def floored_norm(x: torch.Tensor, dim: int = -1, keepdim: bool = False, floor: float = 1e-3) -> torch.Tensor:
+    sq = (x ** 2).sum(dim=dim, keepdim=True)
+    norm = torch.sqrt(sq + floor ** 2)
+    return norm if keepdim else norm.squeeze(dim)
+
+def x_to_trig(x: torch.Tensor, floor: float = 1e-3):
+    norms = floored_norm(x, dim=-1, keepdim=True, floor=floor)
+    x_norm = x / norms
 
     cos_theta = -x_norm[..., 2]
 
-    r_xy = safe_norm(x_norm[..., :2], dim=-1)
-    cos_phi = divide_or_zero(x_norm[..., 0], r_xy)
-    sin_phi = divide_or_zero(x_norm[..., 1], r_xy)
+    r_xy = floored_norm(x_norm[..., :2], dim=-1, keepdim=False, floor=floor)
+    cos_phi = x_norm[..., 0] / r_xy
+    sin_phi = x_norm[..., 1] / r_xy
 
     return cos_theta, cos_phi, sin_phi

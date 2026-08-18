@@ -159,7 +159,7 @@ class MasterNodeAttention(nn.Module):
         phi_K = (F.elu(K) + 1) * m.unsqueeze(-1)
         phi_K_sum = phi_K.sum(dim=1)
         Z_raw = torch.einsum("bac,bc->ba", phi_Q, phi_K_sum)
-        Z_floor = 1e-6
+        Z_floor = 1e-2
         Z = Z_floor * F.softplus((Z_raw - Z_floor) / Z_floor) + Z_floor
         if self.diag_enabled:
             self._diag_Z_min = float(Z.detach().min())
