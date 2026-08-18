@@ -83,12 +83,14 @@ class SRAttention(nn.Module):
         })
         self.score_act = nn.SiLU()
 
-        self.psi_e = nn.Sequential(
-            nn.Linear(1 + edge_feat_dim, hidden_dim), nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim), nn.SiLU(),
-            nn.Linear(hidden_dim, 1),
+        self.edge_input_norm = nn.LayerNorm(1 + edge_feat_dim)
+        self.psi_e = scalar_ffn(1 + edge_feat_dim, hidden_dim)
+        self.psi_e_out = nn.Sequential(
+            nn.LayerNorm(1 + edge_feat_dim),
+            nn.LeakyReLU(),
+            nn.Linear(1 + edge_feat_dim, 1)
         )
-        init_sequential_(self.psi_e, "silu")
+        init_sequential_(self.psi_e_out, "leaky_relu")
 
     def forward(
         self,
@@ -109,7 +111,8 @@ class SRAttention(nn.Module):
         score = self.score_act(score)
 
         dist = x_rel_e.norm(dim=-1, keepdim=True)
-        psi = self.psi_e(torch.cat([dist, edge_feat_e], dim=-1)).squeeze(-1)
+        edge_feats = self.edge_input_norm(torch.cat([dist, edge_feat_e], dim=-1))
+        psi = self.psi_e_out(self.psi(edge_feats)).squeeze(-1)
 
         scores_e = psi * score
 

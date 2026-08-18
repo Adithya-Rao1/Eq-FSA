@@ -35,6 +35,24 @@ def init_sequential_(seq: nn.Sequential, nonlinearity: str, final_nonlinearity: 
     if linears:
         init_linear_(linears[-1], final_nonlinearity)
 
+
+def scalar_ffn(feature_dim: int, hidden_dim: int) -> nn.Sequential:
+    seq = nn.Sequential(
+        nn.LayerNorm(feature_dim),
+        nn.Linear(feature_dim, hidden_dim),
+        nn.LayerNorm(hidden_dim),
+        nn.LeakyReLU(),
+        nn.Linear(hidden_dim, hidden_dim),
+        nn.LayerNorm(hidden_dim),
+        nn.LeakyReLU(),
+        nn.Linear(hidden_dim, hidden_dim),
+        nn.LayerNorm(hidden_dim),
+        nn.LeakyReLU(),
+        nn.Linear(hidden_dim, feature_dim),
+    )
+    init_sequential_(seq, "leaky_relu")
+    return seq
+
 def cartesian_dipole(n: torch.Tensor) -> torch.Tensor:
     return n
 
