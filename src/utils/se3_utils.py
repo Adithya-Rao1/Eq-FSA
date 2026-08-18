@@ -416,13 +416,8 @@ class EquivariantLayerNorm(nn.Module):
             if counters.DIAG_ENABLED and ((x.detach() ** 2).sum(dim=-1) < self.floor ** 2).any():
                 counters.incr("eqln_deg_gt0_near_degenerate")
             norm, x_dir = straight_through_norm_and_direction(x, dim=-1, floor=self.floor)
-            mean = norm.mean(dim=-1, keepdim=True)
-            centered = norm - mean
-            var = centered.detach().pow(2).mean(dim=-1, keepdim=True)
-            if counters.DIAG_ENABLED and (var < self.eps).any():
-                counters.incr("ln_clamp")
-            scale = var.clamp(min=self.eps).sqrt()
-            target = centered / scale * self.gamma + self.beta
+            rms = norm.detach().pow(2).mean(dim=-1, keepdim=True).sqrt()
+            target = norm / rms * self.gamma + self.beta
             return x_dir * target.unsqueeze(-1)
 
 def cg_for_J(l: int, k: int, J: int) -> torch.Tensor:
