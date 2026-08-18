@@ -53,15 +53,15 @@ def scalar_ffn(feature_dim: int, hidden_dim: int) -> nn.Sequential:
 
 def high_ord_ffn(feature_dim, hidden_dim, degree) -> nn.Sequential:
     seq = nn.Sequential(
-            EquivariantLayerNorm(feature_dim, degree),
+            EquivariantRMSNorm(feature_dim, degree),
             EquivariantLinear(feature_dim, hidden_dim),
-            EquivariantLayerNorm(hidden_dim, degree),
+            EquivariantRMSNorm(hidden_dim, degree),
             GatedNonlinearity(hidden_dim),
             EquivariantLinear(hidden_dim, hidden_dim),
-            EquivariantLayerNorm(hidden_dim, degree),
+            EquivariantRMSNorm(hidden_dim, degree),
             GatedNonlinearity(hidden_dim),
             EquivariantLinear(hidden_dim, hidden_dim),
-            EquivariantLayerNorm(hidden_dim, degree),
+            EquivariantRMSNorm(hidden_dim, degree),
             GatedNonlinearity(hidden_dim),
             EquivariantLinear(hidden_dim, feature_dim),
         )
@@ -414,32 +414,34 @@ class EquivariantLinear(nn.Module):
     def forward(self, x):
         return self.weight(x.transpose(-1, -2)).transpose(-1, -2)
 
-class EquivariantLayerNorm(nn.Module):
-    def __init__(self, num_channels: int, degree: int, eps: float = 1e-8, floor: float = 0.5):
+class EquivariantRMSNorm(nn.Module):
+    def __init__(
+        self,
+        num_channels: int,
+        degree: int,
+        eps: float = 1e-8,
+        floor: float = 0.5,
+    ):
         super().__init__()
         self.degree = degree
         self.eps = eps
         self.floor = floor
         self.gamma = nn.Parameter(torch.ones(num_channels))
-        self.beta  = nn.Parameter(torch.zeros(num_channels))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.degree == 0:
             v = x.squeeze(-1)
-            mean = v.mean(dim=-1, keepdim=True)
-            centered = v - mean
-            var = centered.detach().pow(2).mean(dim=-1, keepdim=True)
-            if counters.DIAG_ENABLED and (var < self.eps).any():
-                counters.incr("ln_clamp")
-            scale = var.clamp(min=self.eps).sqrt()
-            v = centered / scale * self.gamma + self.beta
+            rms = v.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
+            if counters.DIAG_ENABLED and (rms < self.eps).any():
+                counters.incr("rmsnorm_near_zero")
+            v = (v / rms) * self.gamma
             return v.unsqueeze(-1)
         else:
-            if counters.DIAG_ENABLED and ((x.detach() ** 2).sum(dim=-1) < self.floor ** 2).any():
-                counters.incr("eqln_deg_gt0_near_degenerate")
-            norm, x_dir = straight_through_norm_and_direction(x, dim=-1, floor=self.floor)
-            rms = norm.detach().pow(2).mean(dim=-1, keepdim=True).sqrt()
-            target = norm / rms * self.gamma + self.beta
+            if counters.DIAG_ENABLED and ((x ** 2).sum(dim=-1) < self.floor ** 2).any():
+                counters.incr("eqln_deg_gt0_near_degenerate") 
+            norm, x_dir = straight_through_norm_and_direction(x, dim=-1, floor=self.floor,)
+            rms = norm.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
+            target = (norm / rms) * self.gamma
             return x_dir * target.unsqueeze(-1)
 
 def cg_for_J(l: int, k: int, J: int) -> torch.Tensor:

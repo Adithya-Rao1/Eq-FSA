@@ -133,18 +133,18 @@ class EnergyLayer(nn.Module):
 
         self.W_master_self = IrrepLinear(feature_dim)
         self.master_attn = MasterNodeAttention(feature_dim, n_max, pw_e_cutoff, hidden_dim)
-        self.master_ln = EquivariantLayerNorm(feature_dim, degree=0)
+        self.master_ln = EquivariantRMSNorm(feature_dim, degree=0)
 
         self.layer_norm_in = nn.ModuleDict({
-            str(l): EquivariantLayerNorm(feature_dim, degree=l)
+            str(l): EquivariantRMSNorm(feature_dim, degree=l)
             for l in range(max_degree + 1)
         })
         self.layer_norm_mid = nn.ModuleDict({
-            str(l): EquivariantLayerNorm(feature_dim, degree=l)
+            str(l): EquivariantRMSNorm(feature_dim, degree=l)
             for l in range(max_degree + 1)
         })
         self.layer_norm_out = nn.ModuleDict({
-            str(l): EquivariantLayerNorm(feature_dim, degree=l)
+            str(l): EquivariantRMSNorm(feature_dim, degree=l)
             for l in range(max_degree + 1)
         })
 
@@ -285,7 +285,7 @@ class EnergyModel(nn.Module):
             nn.Linear(feature_dim, n_master_nodes * feature_dim)
         )
         init_sequential_(self.master_expand, "leaky_relu")
-        self.master_expand_norm = EquivariantLayerNorm(feature_dim, degree=0)
+        self.master_expand_norm = EquivariantRMSNorm(feature_dim, degree=0)
 
         self.layers = nn.ModuleList([
             EnergyLayer(
@@ -300,7 +300,7 @@ class EnergyModel(nn.Module):
             radial_net, max_degree, feature_dim, hidden_dim, num_heads=num_fusion_heads,
         )
         self.layer_norm_fusion = nn.ModuleDict({
-            str(l): EquivariantLayerNorm(feature_dim, degree=l)
+            str(l): EquivariantRMSNorm(feature_dim, degree=l)
             for l in range(max_degree + 1)
         })
 

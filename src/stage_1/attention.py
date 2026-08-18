@@ -135,13 +135,13 @@ class MasterNodeAttention(nn.Module):
         self.pw_e_cutoff = pw_e_cutoff
 
         self.W_Q = high_ord_ffn(feature_dim, hidden_dim, 1)
-        self.w_vq_norm = EquivariantLayerNorm(feature_dim, 1)
+        self.w_vq_norm = EquivariantRMSNorm(feature_dim, 1)
 
         self.W_K = high_ord_ffn(feature_dim, hidden_dim, 1)
-        self.w_vk_norm = EquivariantLayerNorm(feature_dim, 1)
+        self.w_vk_norm = EquivariantRMSNorm(feature_dim, 1)
 
         self.W_V0 = high_ord_ffn(feature_dim, hidden_dim, 1)
-        self.w_v0_norm = EquivariantLayerNorm(feature_dim, 1)
+        self.w_v0_norm = EquivariantRMSNorm(feature_dim, 1)
 
         self.alpha = nn.Parameter(torch.tensor(1.0))
         self.diag_enabled = False

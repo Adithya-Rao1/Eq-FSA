@@ -14,7 +14,7 @@ import torch.nn.functional as nnf
 from torch.utils.data import DataLoader, random_split
 
 from stage_1.model import EnergyModel, masked_mean
-from utils.se3_utils import RadialNetwork, EquivariantNormReadout, EquivariantLayerNorm, EquivariantLinear
+from utils.se3_utils import RadialNetwork, EquivariantNormReadout, EquivariantRMSNorm, EquivariantLinear
 from stage_1.spice_dataset import SPICEDataset, spice_collate_fn, _EDGE_FEAT_DIM
 from log_setup.utils import logger
 from diagnostics import counters
@@ -57,15 +57,15 @@ class SPICEEnergyForceModel(nn.Module):
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
         self.out = nn.Sequential(
-            EquivariantLayerNorm(feature_dim, degree=0),
+            EquivariantRMSNorm(feature_dim, degree=0),
             EquivariantLinear(feature_dim, hidden_dim, nonlinearity="leaky_relu"),
-            EquivariantLayerNorm(hidden_dim, degree=0),
+            EquivariantRMSNorm(hidden_dim, degree=0),
             nn.LeakyReLU(),
             EquivariantLinear(hidden_dim, hidden_dim, nonlinearity="leaky_relu"),
-            EquivariantLayerNorm(hidden_dim, degree=0),
+            EquivariantRMSNorm(hidden_dim, degree=0),
             nn.LeakyReLU(),
             EquivariantLinear(hidden_dim, hidden_dim, nonlinearity="leaky_relu"),
-            EquivariantLayerNorm(hidden_dim, degree=0),
+            EquivariantRMSNorm(hidden_dim, degree=0),
             nn.LeakyReLU(),
             EquivariantLinear(hidden_dim, 1),
         )

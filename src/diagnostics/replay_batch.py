@@ -6,7 +6,7 @@ import torch
 from stage_1.model import EnergyLayer, seed_equivariant_features, masked_weighted_com
 from stage_1.train_spice import SPICEEnergyForceModel, compute_energy_and_forces, spice_loss
 from diagnostics.live_hook_training import attach_hooks, attach_grad_hooks, format_hook_report
-from utils.se3_utils import RadialNetwork, EquivariantLayerNorm
+from utils.se3_utils import RadialNetwork, EquivariantRMSNorm
 from utils.spherical_harm import get_spherical_harmonics
 from utils.pw_bases import minimum_image
 from utils.calc_props import _MOL_FEAT_NAMES
@@ -246,7 +246,7 @@ def run_forward_with_f0_stats(model: SPICEEnergyForceModel, batch: dict, label: 
 def apply_f0_normalization_patch(model: SPICEEnergyForceModel):
     for layer in model.energy_model.layers:
         norms = torch.nn.ModuleDict({
-            str(l): EquivariantLayerNorm(layer.feature_dim, degree=l).to(
+            str(l): EquivariantRMSNorm(layer.feature_dim, degree=l).to(
                 next(layer.parameters()).device, next(layer.parameters()).dtype)
             for l in range(layer.max_degree + 1)
         })
