@@ -46,9 +46,9 @@ def masked_mean(feat: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
 def safe_minimum_image_cutoff(V: torch.Tensor, cutoff: float) -> torch.Tensor:
     a1, a2, a3 = V[..., 0], V[..., 1], V[..., 2]
     volume = torch.linalg.det(V).abs()
-    d1 = volume / torch.cross(a2, a3, dim=-1).norm(dim=-1).clamp(min=1e-12)
-    d2 = volume / torch.cross(a1, a3, dim=-1).norm(dim=-1).clamp(min=1e-12)
-    d3 = volume / torch.cross(a1, a2, dim=-1).norm(dim=-1).clamp(min=1e-12)
+    d1 = volume / torch.cross(a2, a3, dim=-1).norm(dim=-1).clamp(min=1e-8)
+    d2 = volume / torch.cross(a1, a3, dim=-1).norm(dim=-1).clamp(min=1e-8)
+    d3 = volume / torch.cross(a1, a2, dim=-1).norm(dim=-1).clamp(min=1e-8)
     min_width = torch.minimum(torch.minimum(d1, d2), d3)
     return torch.minimum(torch.full_like(min_width, cutoff), 0.5 * min_width)
 
@@ -65,7 +65,7 @@ def seed_equivariant_features(
     center, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask)
 
     x_rel   = x_wrapped - center.unsqueeze(1)
-    r_true  = safe_norm(x_rel, dim=-1)
+    r_true  = x_rel.norm(dim=-1)
     r       = r_true.clamp(min=1e-8)
     has_dir = (r_true > 1e-7).unsqueeze(-1)
 

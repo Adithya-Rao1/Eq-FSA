@@ -199,17 +199,7 @@ class SPICETrainer:
         )
 
     def _setup_explosion_skip(self):
-        # Independent of --diagnostics: uses the total grad norm already computed every step
-        # for the existing non-finite check, so it costs nothing extra and runs unconditionally.
-        self._skip_exploding_enabled = bool(self.config.get("skip_exploding_batches", True))
-        self._skip_grad_norm_floor = self.config.get("skip_grad_norm_floor", 50.0)
-        self._skip_drift = DriftDetector(
-            ["total"],
-            decay=self.config.get("skip_ema_decay", 0.98),
-            k=self.config.get("skip_grad_norm_k", 6.0),
-        )
         self._n_skipped_nonfinite = 0
-        self._n_skipped_exploding = 0
 
     def _setup_csv_logging(self):
         csv_path = self.config.get("csv_path") or os.path.join(self.config.get("ckpt_dir", "."), "loss_log.csv")
@@ -466,7 +456,7 @@ class SPICETrainer:
         self.model.train()
         logger.info(f"Epoch {epoch}")
         epoch_loss, epoch_start = 0.0, time.time()
-        epoch_skipped_nonfinite, epoch_skipped_exploding = 0, 0
+        epoch_skipped_nonfinite = 0
 
         for batch_idx, batch in enumerate(self.train_loader):
             self.optimizer.zero_grad(set_to_none=True)
@@ -485,13 +475,6 @@ class SPICETrainer:
                 norms = torch._foreach_norm(grads)
                 total_norm_sq = torch.stack(norms).pow(2).sum()
             is_finite = bool(torch.isfinite(total_norm_sq).item())
-            total_norm = float(total_norm_sq.sqrt().item()) if is_finite else float("inf")
-
-            skip_exploding, skip_reasons = False, {}
-            if self._skip_exploding_enabled and is_finite:
-                skip_exploding, skip_reasons = self._skip_drift.update_and_check(
-                    {"total": total_norm}, self._skip_grad_norm_floor,
-                )
 
             should_log = batch_idx % self.config.get("log_interval", 10) == 0
 
@@ -523,14 +506,6 @@ class SPICETrainer:
                 self.optimizer.zero_grad(set_to_none=True)
                 self._n_skipped_nonfinite += 1
                 epoch_skipped_nonfinite += 1
-            elif skip_exploding:
-                logger.warning(
-                    f"  [WARN] Exploding gradient at step {self.global_step} "
-                    f"(total_norm={total_norm:.4g}), skipping batch: {skip_reasons}"
-                )
-                self.optimizer.zero_grad(set_to_none=True)
-                self._n_skipped_exploding += 1
-                epoch_skipped_exploding += 1
             else:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.get("grad_clip_norm", 1.0))
                 self.optimizer.step()
@@ -543,7 +518,7 @@ class SPICETrainer:
             max_steps = self.config.get("max_steps")
             hit_max_steps = bool(max_steps) and self.global_step >= max_steps
 
-            batch_skipped = (not is_finite) or skip_exploding
+            batch_skipped = not is_finite
             if should_log or batch_skipped:
                 extra = {
                     "energy_term": float(energy_term.item()),
@@ -577,11 +552,10 @@ class SPICETrainer:
                 break
 
         avg_loss = epoch_loss / max(batch_idx + 1, 1)
-        if epoch_skipped_nonfinite or epoch_skipped_exploding:
+        if epoch_skipped_nonfinite:
             logger.info(
-                f"Epoch {epoch}: skipped {epoch_skipped_nonfinite} non-finite + "
-                f"{epoch_skipped_exploding} exploding-gradient batches out of {batch_idx + 1} "
-                f"(cumulative: {self._n_skipped_nonfinite} non-finite, {self._n_skipped_exploding} exploding)."
+                f"Epoch {epoch}: skipped {epoch_skipped_nonfinite} non-finite-gradient batches "
+                f"out of {batch_idx + 1} (cumulative: {self._n_skipped_nonfinite})."
             )
         self._log_csv_row("train_epoch_avg", epoch, loss=avg_loss)
         return avg_loss
@@ -793,10 +767,6 @@ def main():
     parser.add_argument("--edge-cutoff", type=float, default=5.0)
     parser.add_argument("--box-padding", type=float, default=12.0, help="Vacuum spacing (Angstrom) around each molecule's auxiliary supercell")
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
-    parser.add_argument("--skip-exploding-batches", action=argparse.BooleanOptionalAction, default=True, help="Skip the optimizer step (zero the gradients, log it, move to the next batch) for any step whose total gradient norm is flagged by an always-on EMA drift detector, in addition to the existing unconditional skip for non-finite (NaN/Inf) gradients. Independent of --diagnostics -- reuses the total grad norm already computed every step, not the more expensive per-bucket diagnostics loop. Disable with --no-skip-exploding-batches.")
-    parser.add_argument("--skip-grad-norm-floor", type=float, default=50.0, help="Absolute total-grad-norm value that always counts as exploding for --skip-exploding-batches, regardless of the adaptive EMA bound (matches --diag-explode-threshold's default)")
-    parser.add_argument("--skip-grad-norm-k", type=float, default=6.0, help="Number of EMA-stddevs above the rolling mean total grad norm that counts as exploding for --skip-exploding-batches")
-    parser.add_argument("--skip-ema-decay", type=float, default=0.98, help="EMA decay for the rolling total-grad-norm baseline used by --skip-exploding-batches")
     parser.add_argument("--n-max", type=int, default=1)
     parser.add_argument("--pw-e-cutoff", type=float, default=None, help="Long-range k-space energy cutoff (k_max = sqrt(2*e_cutoff)); caps |k| independent of box size. Not a reliable substitute for keeping --n-max small -- filtering high-k modes did not consistently fix instability at n_max=4 in testing")
     parser.add_argument("--num-atom-types", type=int, default=23, help="mappings.py padding + 22 element types (incl. Li)")

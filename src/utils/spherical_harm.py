@@ -262,12 +262,12 @@ def divide_or_zero(numerator: torch.Tensor, denom: torch.Tensor, tol: float = 1e
     result = numerator / denom_safe
     return torch.where(is_degenerate, torch.zeros_like(result), result)
 
-def floored_norm(x: torch.Tensor, dim: int = -1, keepdim: bool = False, floor: float = 1e-3) -> torch.Tensor:
+def floored_norm(x: torch.Tensor, dim: int = -1, keepdim: bool = False, floor: float = 1e-8) -> torch.Tensor:
     sq = (x ** 2).sum(dim=dim, keepdim=True)
     norm = torch.sqrt(sq + floor ** 2)
     return norm if keepdim else norm.squeeze(dim)
 
-def x_to_trig(x: torch.Tensor, floor: float = 1e-3):
+def x_to_trig(x: torch.Tensor, floor: float = 1e-8):
     norms = floored_norm(x, dim=-1, keepdim=True, floor=floor)
     x_norm = x / norms
 

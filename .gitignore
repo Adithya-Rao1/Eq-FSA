@@ -13,3 +13,4 @@ CLAUDE.md
 *.egg-info/
 .DS_Store
 *.bib
+*.csv

@@ -107,7 +107,7 @@ class SRAttention(nn.Module):
             score = contrib if score is None else score + contrib
         score = self.score_act(score)
 
-        dist = x_rel_e.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        dist = x_rel_e.norm(dim=-1, keepdim=True)
         psi = self.psi_e(torch.cat([dist, edge_feat_e], dim=-1)).squeeze(-1)
 
         scores_e = psi * score
@@ -159,8 +159,7 @@ class MasterNodeAttention(nn.Module):
         phi_K = (F.elu(K) + 1) * m.unsqueeze(-1)
         phi_K_sum = phi_K.sum(dim=1)
         Z_raw = torch.einsum("bac,bc->ba", phi_Q, phi_K_sum)
-        Z_floor = 1e-2
-        Z = Z_floor * F.softplus((Z_raw - Z_floor) / Z_floor) + Z_floor
+        Z = Z_raw.clamp(min=1e-8)
         if self.diag_enabled:
             self._diag_Z_min = float(Z.detach().min())
 
@@ -172,7 +171,7 @@ class MasterNodeAttention(nn.Module):
         alpha = F.softplus(self.alpha) + 1e-4
         k2 = (kvecs ** 2).sum(dim=-1)
         damping = torch.exp(-k2 / (4.0 * alpha)) * mode_mask_f
-        damping_sum = damping.sum(dim=-1).clamp(min=1e-6)
+        damping_sum = damping.sum(dim=-1).clamp(min=1e-8)
         if self.diag_enabled:
             self._diag_damping_sum_min = float(damping_sum.detach().min())
 

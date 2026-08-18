@@ -8,7 +8,6 @@ _BASE_CLI_KEYS = [
     "log_interval", "save_every", "val_every",
     "device", "diagnostics", "diag_skip_hooks", "diag_skip_buckets", "diag_explode_threshold",
     "diag_ema_decay", "diag_drift_k", "diag_ring_k", "diag_ckpt_every", "diag_ckpt_keep",
-    "skip_grad_norm_floor", "skip_grad_norm_k", "skip_ema_decay",
 ]
 _FULL_EPOCH_NOMINAL_CEILING = 10_000_000
 

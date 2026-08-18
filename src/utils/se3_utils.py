@@ -34,7 +34,7 @@ def fit_sh_basis_change(l: int, n_samples: int = 20000, tol: float = 1e-3) -> to
 
     n = torch.randn(n_samples, 3, dtype=torch.float64)
 
-    cos_theta, cos_phi, sin_phi = x_to_trig(n, floor=1e-7)
+    cos_theta, cos_phi, sin_phi = x_to_trig(n)
 
     Y_custom = get_spherical_harmonics(l, cos_theta, cos_phi, sin_phi).to(torch.float64)
     Y_e3nn   = o3.spherical_harmonics(l, n, normalize=True, normalization='component').to(torch.float64)  
@@ -78,12 +78,14 @@ class RadialNetwork(nn.Module):
         cutoff_radius: float = 5.0,
         num_heads:     int = 1,
         edge_feature_dim: int = 0,
+        envelope_floor: float = 0.02,
     ):
         super().__init__()
         self.num_basis     = num_basis
         self.cutoff_radius = cutoff_radius
         self.num_heads     = num_heads
         self.edge_feature_dim = edge_feature_dim
+        self.envelope_floor = envelope_floor
 
         centres = torch.linspace(0.0, cutoff_radius, num_basis)
         self.register_buffer("centres", centres)
@@ -93,7 +95,13 @@ class RadialNetwork(nn.Module):
             "inv_width_sq",
             torch.tensor(-1.0 / (2.0 * width ** 2)),
         )
-        # f(r) = 0.5*(cos(pi*r/cutoff)+1) for r < cutoff, else 0
+        # f(r) = (1-floor)*0.5*(cos(pi*r/cutoff)+1) + floor for r < cutoff, else floor.
+        # Atoms beyond the cutoff (e.g. relative to a molecule's center of mass, which has
+        # no graph-level distance cutoff enforcing locality the way SR-attention edges do)
+        # previously got an exactly-zero radial signal here, not just a small one -- confirmed
+        # via min_abs_radial reading exactly 0.0 on every real training batch. The envelope
+        # floor keeps a small but nonzero signal past the cutoff instead of hard-zeroing it;
+        # the underlying Gaussian rbf term still decays further for genuinely distant atoms.
         self.net = nn.Sequential(
             nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=False),
             nn.SiLU(),
@@ -103,13 +111,13 @@ class RadialNetwork(nn.Module):
         )
 
     def _basis(self, r: torch.Tensor) -> torch.Tensor:
-        diff    = r - self.centres.unsqueeze(0)          
-        rbf     = torch.exp(self.inv_width_sq * diff * diff) 
+        diff    = r - self.centres.unsqueeze(0)
+        rbf     = torch.exp(self.inv_width_sq * diff * diff)
 
-        r_scaled = (r / self.cutoff_radius).clamp(max=1.0)         
-        envelope = 0.5 * (torch.cos(math.pi * r_scaled) + 1.0)
+        r_scaled = (r / self.cutoff_radius).clamp(max=1.0)
+        envelope = (1.0 - self.envelope_floor) * 0.5 * (torch.cos(math.pi * r_scaled) + 1.0) + self.envelope_floor
 
-        return rbf * envelope   
+        return rbf * envelope
 
     def forward(self, r: torch.Tensor, edge_feat: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
         basis = self._basis(r)
@@ -131,7 +139,7 @@ def equivariant_weight_matrix(
     if N == 0:
         return W
 
-    r      = safe_norm(x, dim=-1, keepdim=True)
+    r      = x.norm(dim=-1, keepdim=True)
     cos_theta, cos_alpha, sin_alpha = x_to_trig(x)
 
     cg = clebsch_gordan_matrix(l, k)
@@ -266,9 +274,7 @@ def fit_sh_to_cartesian(l: int, target_fn, n_samples: int = 20000, tol: float = 
     n = torch.randn(n_samples, 3, dtype=torch.float64)
     n = n / n.norm(dim=-1, keepdim=True)
 
-    # Gradient-free fit (see fit_sh_basis_change) -- near-zero floor preserves the original
-    # high-precision forward value.
-    cos_theta, cos_phi, sin_phi = x_to_trig(n, floor=1e-7)
+    cos_theta, cos_phi, sin_phi = x_to_trig(n)
 
     Y_l = get_spherical_harmonics(l, cos_theta, cos_phi, sin_phi)
     T   = target_fn(n)
@@ -356,11 +362,9 @@ class GatedNonlinearity(nn.Module):
         super().__init__()
         self.floor = floor
         self.gate_lin = nn.Linear(num_channels, num_channels)
-        self.leaky_relu = nn.LeakyReLU()
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         norm = straight_through_norm(x, dim=-1, floor=self.floor)
-        gate = self.leaky_relu(self.gate_lin(norm))
+        gate = torch.tanh(self.gate_lin(norm))
         return x * gate.unsqueeze(-1)
 
 class EquivariantNormReadout(nn.Module):
@@ -389,7 +393,7 @@ class EquivariantLinear(nn.Module):
         return self.weight(x.transpose(-1, -2)).transpose(-1, -2)
 
 class EquivariantLayerNorm(nn.Module):
-    def __init__(self, num_channels: int, degree: int, eps: float = 1e-5, floor: float = 0.5):
+    def __init__(self, num_channels: int, degree: int, eps: float = 1e-8, floor: float = 0.5):
         super().__init__()
         self.degree = degree
         self.eps = eps
@@ -406,7 +410,7 @@ class EquivariantLayerNorm(nn.Module):
             if counters.DIAG_ENABLED and (var < self.eps).any():
                 counters.incr("ln_clamp")
             scale = var.clamp(min=self.eps).sqrt()
-            v = safe_divide(centered, scale) * self.gamma + self.beta
+            v = centered / scale * self.gamma + self.beta
             return v.unsqueeze(-1)
         else:
             if counters.DIAG_ENABLED and ((x.detach() ** 2).sum(dim=-1) < self.floor ** 2).any():
@@ -418,7 +422,7 @@ class EquivariantLayerNorm(nn.Module):
             if counters.DIAG_ENABLED and (var < self.eps).any():
                 counters.incr("ln_clamp")
             scale = var.clamp(min=self.eps).sqrt()
-            target = safe_divide(centered, scale) * self.gamma + self.beta
+            target = centered / scale * self.gamma + self.beta
             return x_dir * target.unsqueeze(-1)
 
 def cg_for_J(l: int, k: int, J: int) -> torch.Tensor:
