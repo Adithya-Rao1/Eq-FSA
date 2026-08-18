@@ -36,15 +36,15 @@ def init_sequential_(seq: nn.Sequential, nonlinearity: str, final_nonlinearity: 
 
 def scalar_ffn(feature_dim: int, hidden_dim: int) -> nn.Sequential:
     seq = nn.Sequential(
-        nn.LayerNorm(feature_dim),
+        nn.RMSNorm(feature_dim),
         nn.Linear(feature_dim, hidden_dim),
-        nn.LayerNorm(hidden_dim),
+        nn.RMSNorm(hidden_dim),
         nn.LeakyReLU(),
         nn.Linear(hidden_dim, hidden_dim),
-        nn.LayerNorm(hidden_dim),
+        nn.RMSNorm(hidden_dim),
         nn.LeakyReLU(),
         nn.Linear(hidden_dim, hidden_dim),
-        nn.LayerNorm(hidden_dim),
+        nn.RMSNorm(hidden_dim),
         nn.LeakyReLU(),
         nn.Linear(hidden_dim, feature_dim),
     )
@@ -119,10 +119,10 @@ class RadialNetwork(nn.Module):
         )
         self.net = nn.Sequential(
             nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=False),
-            nn.LayerNorm(hidden_dim),
+            nn.RMSNorm(hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim, bias=False),
-            nn.LayerNorm(hidden_dim),
+            nn.RMSNorm(hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, num_heads, bias=False),
         )
@@ -313,13 +313,13 @@ class AggregateFeatures(nn.Module):
 
         self.out = nn.Sequential(
             nn.Linear(3*out_feat_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+            nn.RMSNorm(hidden_dim),
             nn.SELU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+            nn.RMSNorm(hidden_dim),
             nn.SELU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+            nn.RMSNorm(hidden_dim),
             nn.SELU(),
             nn.Linear(hidden_dim, out_feat_dim)
         )

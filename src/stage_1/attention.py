@@ -83,10 +83,10 @@ class SRAttention(nn.Module):
         })
         self.score_act = nn.SiLU()
 
-        self.edge_input_norm = nn.LayerNorm(1 + edge_feat_dim)
+        self.edge_input_norm = nn.RMSNorm(1 + edge_feat_dim)
         self.psi_e = scalar_ffn(1 + edge_feat_dim, hidden_dim)
         self.psi_e_out = nn.Sequential(
-            nn.LayerNorm(1 + edge_feat_dim),
+            nn.RMSNorm(1 + edge_feat_dim),
             nn.LeakyReLU(),
             nn.Linear(1 + edge_feat_dim, 1)
         )

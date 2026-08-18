@@ -256,22 +256,22 @@ class EnergyModel(nn.Module):
         self.ablate_max_degree = ablate_max_degree
 
         self.input_embedding = nn.Embedding(num_atom_types, feature_dim)
-        self.ln1             = nn.LayerNorm(feature_dim)
+        self.ln1             = nn.RMSNorm(feature_dim)
         self.mol_prop_emb    = nn.Sequential(
                             scalar_ffn(_MOL_FEAT_DIM, hidden_dim),
-                            nn.LayerNorm(_MOL_FEAT_DIM),
+                            nn.RMSNorm(_MOL_FEAT_DIM),
                             nn.LeakyReLU(),
                             nn.Linear(_MOL_FEAT_DIM, feature_dim)
                         )
         init_sequential_(self.mol_prop_emb, "leaky_relu")
-        self.ln2             = nn.LayerNorm(feature_dim)
+        self.ln2             = nn.RMSNorm(feature_dim)
         self.f0_ffn          = scalar_ffn(feature_dim, hidden_dim)
         self.mol_ffn         = scalar_ffn(feature_dim, hidden_dim)
         
         self.seed_proj       = scalar_ffn(2 * feature_dim, hidden_dim)
         self.seed_proj_out   = nn.Linear(2 * feature_dim, feature_dim)
         init_linear_(self.seed_proj_out, "linear")
-        self.seed_proj_norm  = nn.LayerNorm(feature_dim)
+        self.seed_proj_norm  = nn.RMSNorm(feature_dim)
        
         self.seed_radial_net = radial_net(num_basis=1, hidden_dim=hidden_dim)
 
@@ -280,7 +280,7 @@ class EnergyModel(nn.Module):
         )
         self.master_pool_ffn = scalar_ffn(feature_dim, hidden_dim)
         self.master_expand   = nn.Sequential(
-            nn.LayerNorm(feature_dim),
+            nn.RMSNorm(feature_dim),
             nn.LeakyReLU(),
             nn.Linear(feature_dim, n_master_nodes * feature_dim)
         )
@@ -457,26 +457,26 @@ class SolventLayer(nn.Module):
         # Implicit interaction modules
         self.cav_rad_i = nn.Sequential(
             nn.Linear(feature_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+            nn.RMSNorm(hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, 2 * hidden_dim),
-            nn.LayerNorm(2 * hidden_dim),
+            nn.RMSNorm(2 * hidden_dim),
             nn.GELU(),
             nn.Linear(2 * hidden_dim, 2 * hidden_dim),
-            nn.LayerNorm(2 * hidden_dim),
+            nn.RMSNorm(2 * hidden_dim),
             nn.GELU(),
             nn.Linear(2 * hidden_dim, 1),
         )
 
         self.cav_rad_j = nn.Sequential(
             nn.Linear(feature_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+            nn.RMSNorm(hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, 2 * hidden_dim),
-            nn.LayerNorm(2 * hidden_dim),
+            nn.RMSNorm(2 * hidden_dim),
             nn.GELU(),
             nn.Linear(2 * hidden_dim, 2 * hidden_dim),
-            nn.LayerNorm(2 * hidden_dim),
+            nn.RMSNorm(2 * hidden_dim),
             nn.GELU(),
             nn.Linear(2 * hidden_dim, 1)
         )
