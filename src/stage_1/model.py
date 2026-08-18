@@ -87,7 +87,7 @@ def seed_equivariant_features(
     return {1: f1, 2: f2}
 
 def _scalar_ffn(feature_dim: int, hidden_dim: int) -> nn.Sequential:
-    return nn.Sequential(
+    seq = nn.Sequential(
         nn.LayerNorm(feature_dim),
         nn.Linear(feature_dim, hidden_dim),
         nn.LayerNorm(hidden_dim),
@@ -100,6 +100,8 @@ def _scalar_ffn(feature_dim: int, hidden_dim: int) -> nn.Sequential:
         nn.LeakyReLU(),
         nn.Linear(hidden_dim, feature_dim),
     )
+    init_sequential_(seq, "leaky_relu")
+    return seq
 
 def _high_ord_ffn(feature_dim, hidden_dim, degree) -> nn.Sequential:
     return nn.Sequential(
@@ -287,10 +289,12 @@ class EnergyModel(nn.Module):
                             nn.LeakyReLU(),
                             nn.Linear(_MOL_FEAT_DIM, feature_dim)
                         )
+        init_sequential_(self.mol_prop_emb, "leaky_relu")
         self.ln2             = nn.LayerNorm(feature_dim)
         self.f0_ffn          = _scalar_ffn(feature_dim, hidden_dim)
         self.mol_ffn         = _scalar_ffn(feature_dim, hidden_dim)
         self.seed_proj       = nn.Linear(2 * feature_dim, feature_dim)
+        init_linear_(self.seed_proj, "linear")
         self.seed_radial_net = radial_net(num_basis=1, hidden_dim=hidden_dim)
 
         self.master_pool_agg = AggregateFeatures(
@@ -298,6 +302,7 @@ class EnergyModel(nn.Module):
         )
         self.master_pool_ffn = _scalar_ffn(feature_dim, hidden_dim)
         self.master_expand   = nn.Linear(feature_dim, n_master_nodes * feature_dim)
+        init_linear_(self.master_expand, "linear")
 
         self.layers = nn.ModuleList([
             EnergyLayer(

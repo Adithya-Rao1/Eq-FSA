@@ -16,6 +16,25 @@ from e3nn import o3
 _CG_CACHE: Dict[Tuple[int, int], Dict[int, torch.Tensor]] = {}
 _SH_BASIS_CHANGE_CACHE: Dict[int, torch.Tensor] = {}
 
+_HE_NONLINEARITIES = {"relu", "leaky_relu", "silu", "gelu", "selu", "elu"}
+
+def init_linear_(linear: nn.Linear, nonlinearity: str = "linear") -> None:
+    if nonlinearity in _HE_NONLINEARITIES:
+        kaiming_kind = "relu" if nonlinearity == "relu" else "leaky_relu"
+        a = 0.01 if nonlinearity == "leaky_relu" else 0.0
+        nn.init.kaiming_normal_(linear.weight, a=a, nonlinearity=kaiming_kind)
+    else:
+        nn.init.xavier_normal_(linear.weight)
+    if linear.bias is not None:
+        nn.init.zeros_(linear.bias)
+
+def init_sequential_(seq: nn.Sequential, nonlinearity: str, final_nonlinearity: str = "linear") -> None:
+    linears = [m for m in seq if isinstance(m, nn.Linear)]
+    for lin in linears[:-1]:
+        init_linear_(lin, nonlinearity)
+    if linears:
+        init_linear_(linears[-1], final_nonlinearity)
+
 def cartesian_dipole(n: torch.Tensor) -> torch.Tensor:
     return n
 
@@ -95,13 +114,6 @@ class RadialNetwork(nn.Module):
             "inv_width_sq",
             torch.tensor(-1.0 / (2.0 * width ** 2)),
         )
-        # f(r) = (1-floor)*0.5*(cos(pi*r/cutoff)+1) + floor for r < cutoff, else floor.
-        # Atoms beyond the cutoff (e.g. relative to a molecule's center of mass, which has
-        # no graph-level distance cutoff enforcing locality the way SR-attention edges do)
-        # previously got an exactly-zero radial signal here, not just a small one -- confirmed
-        # via min_abs_radial reading exactly 0.0 on every real training batch. The envelope
-        # floor keeps a small but nonzero signal past the cutoff instead of hard-zeroing it;
-        # the underlying Gaussian rbf term still decays further for genuinely distant atoms.
         self.net = nn.Sequential(
             nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=False),
             nn.SiLU(),
@@ -109,6 +121,7 @@ class RadialNetwork(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_dim, num_heads, bias=False),
         )
+        init_sequential_(self.net, "silu")
 
     def _basis(self, r: torch.Tensor) -> torch.Tensor:
         diff    = r - self.centres.unsqueeze(0)
@@ -289,6 +302,7 @@ class AggregateFeatures(nn.Module):
     def __init__(self, out_feat_dim, inp_feat_dim, hidden_dim=128):
         super().__init__()
         self.f0_norm = nn.Linear(inp_feat_dim, 1)
+        init_linear_(self.f0_norm, "linear")
         self.f1_norm = EquivariantNormReadout(inp_feat_dim)
         self.f2_norm = EquivariantNormReadout(inp_feat_dim)
 
@@ -308,6 +322,7 @@ class AggregateFeatures(nn.Module):
             nn.SELU(),
             nn.Linear(hidden_dim, out_feat_dim)
         )
+        init_sequential_(self.out, "selu")
 
     def forward(self, f0, f1, f2):
         f0_inv = self.f0_norm(f0.squeeze(-1)).unsqueeze(-1)
@@ -323,9 +338,10 @@ class AggregateFeatures(nn.Module):
         return f_out
 
 class IrrepLinear(nn.Module):
-    def __init__(self, channels):
+    def __init__(self, channels, nonlinearity: str = "linear"):
         super().__init__()
         self.weight = nn.Linear(channels, channels, bias=False)
+        init_linear_(self.weight, nonlinearity)
 
     def forward(self, x):
         x = x.transpose(-1,-2)
@@ -336,9 +352,10 @@ class EquivariantReadout(nn.Module):
     def __init__(self, C: int, hidden: int = 64):
         super().__init__()
         self.proj = nn.Linear(C, 1, bias=False)
+        init_linear_(self.proj, "linear")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.transpose(-1, -2)     
+        x = x.transpose(-1, -2)
         x = self.proj(x)             
         return x.squeeze(-1)        
 
@@ -362,6 +379,7 @@ class GatedNonlinearity(nn.Module):
         super().__init__()
         self.floor = floor
         self.gate_lin = nn.Linear(num_channels, num_channels)
+        init_linear_(self.gate_lin, "tanh")
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         norm = straight_through_norm(x, dim=-1, floor=self.floor)
         gate = torch.tanh(self.gate_lin(norm))
@@ -372,11 +390,13 @@ class EquivariantNormReadout(nn.Module):
         super().__init__()
         self.floor = floor
         self.equiv_proj = nn.Linear(C, hidden, bias=False)
+        init_linear_(self.equiv_proj, "linear")
         self.mlp = nn.Sequential(
             nn.Linear(hidden, hidden, bias=False),
             nn.SiLU(),
             nn.Linear(hidden, 1, bias=False),
         )
+        init_sequential_(self.mlp, "silu")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         v = self.equiv_proj(x.transpose(-1, -2))
@@ -385,9 +405,10 @@ class EquivariantNormReadout(nn.Module):
         return self.mlp(norms).squeeze(-1)
 
 class EquivariantLinear(nn.Module):
-    def __init__(self, cin, cout):
+    def __init__(self, cin, cout, nonlinearity: str = "linear"):
         super().__init__()
         self.weight = nn.Linear(cin, cout, bias=False)
+        init_linear_(self.weight, nonlinearity)
 
     def forward(self, x):
         return self.weight(x.transpose(-1, -2)).transpose(-1, -2)

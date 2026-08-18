@@ -58,13 +58,13 @@ class SPICEEnergyForceModel(nn.Module):
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
         self.out = nn.Sequential(
             EquivariantLayerNorm(feature_dim, degree=0),
-            EquivariantLinear(feature_dim, hidden_dim),
+            EquivariantLinear(feature_dim, hidden_dim, nonlinearity="leaky_relu"),
             EquivariantLayerNorm(hidden_dim, degree=0),
             nn.LeakyReLU(),
-            EquivariantLinear(hidden_dim, hidden_dim),
+            EquivariantLinear(hidden_dim, hidden_dim, nonlinearity="leaky_relu"),
             EquivariantLayerNorm(hidden_dim, degree=0),
             nn.LeakyReLU(),
-            EquivariantLinear(hidden_dim, hidden_dim),
+            EquivariantLinear(hidden_dim, hidden_dim, nonlinearity="leaky_relu"),
             EquivariantLayerNorm(hidden_dim, degree=0),
             nn.LeakyReLU(),
             EquivariantLinear(hidden_dim, 1),
@@ -569,6 +569,8 @@ class SPICETrainer:
         avg = val_loss / max(len(self.val_loader), 1)
         self._log_csv_row("validation", epoch, loss=avg)
         self.model.train()
+        if self.diag:
+            counters.snapshot_and_reset()
         return avg
 
     def save_checkpoint(self, epoch: int, val_loss: float, is_best: bool = False):

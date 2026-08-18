@@ -88,6 +88,7 @@ class SRAttention(nn.Module):
             nn.Linear(hidden_dim, hidden_dim), nn.SiLU(),
             nn.Linear(hidden_dim, 1),
         )
+        init_sequential_(self.psi_e, "silu")
 
     def forward(
         self,
