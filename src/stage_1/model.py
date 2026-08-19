@@ -3,6 +3,7 @@ import math
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 from typing import Dict, Optional, Tuple
 
 from stage_1.attention import SRAttention, MasterNodeAttention, MasterFusionAttention, SRCrossAttention
@@ -228,6 +229,12 @@ class EnergyLayer(nn.Module):
 
         return f, g_a_out
 
+def _run_energy_layer(layer, f_in, f0, g_a_in, x, x_com, edge_feats, node_mask, V):
+    return layer(
+        f_in=f_in, f0=f0, g_a_in=g_a_in, x=x, x_com=x_com,
+        edge_feats=edge_feats, node_mask=node_mask, V=V,
+    )
+
 def _compute_k_max(m: int, max_degree: int) -> int:
     return m if m <= max_degree else m % max_degree
 
@@ -248,6 +255,7 @@ class EnergyModel(nn.Module):
         num_fusion_heads: int = 4,
         edge_feat_dim:    int = 8,
         ablate_max_degree: Optional[int] = None,
+        grad_checkpoint: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -257,6 +265,7 @@ class EnergyModel(nn.Module):
         self.task       = task
         self.n_master_nodes = n_master_nodes
         self.ablate_max_degree = ablate_max_degree
+        self.grad_checkpoint = grad_checkpoint
 
         self.input_embedding = nn.Embedding(num_atom_types, feature_dim)
         self.ln1             = nn.RMSNorm(feature_dim)
@@ -351,10 +360,16 @@ class EnergyModel(nn.Module):
         g_a = self.master_expand_norm(g_a)
 
         for layer in self.layers:
-            f, g_a = layer(
-                f_in=f, f0=f0, g_a_in=g_a, x=x, x_com=x_com,
-                edge_feats=edge_feats, node_mask=node_mask, V=V,
-            )
+            if self.grad_checkpoint and self.training:
+                f, g_a = checkpoint(
+                    _run_energy_layer, layer, f, f0, g_a, x, x_com, edge_feats, node_mask, V,
+                    use_reentrant=False,
+                )
+            else:
+                f, g_a = layer(
+                    f_in=f, f0=f0, g_a_in=g_a, x=x, x_com=x_com,
+                    edge_feats=edge_feats, node_mask=node_mask, V=V,
+                )
 
         fusion_out = self.master_fusion(f_atoms=f, g_a=g_a, x=minimum_image(x, V), x_com=x_com)
         if self.ablate_max_degree is not None:

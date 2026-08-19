@@ -37,6 +37,7 @@ class SPICEEnergyForceModel(nn.Module):
         n_master_nodes: int = 4,
         num_fusion_heads: int = 4,
         ablate_max_degree: int | None = None,
+        grad_checkpoint: bool = False,
     ):
         super().__init__()
         self.energy_model = EnergyModel(
@@ -53,6 +54,7 @@ class SPICEEnergyForceModel(nn.Module):
             num_fusion_heads=num_fusion_heads,
             edge_feat_dim=_EDGE_FEAT_DIM,
             ablate_max_degree=ablate_max_degree,
+            grad_checkpoint=grad_checkpoint,
         )
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
@@ -715,6 +717,7 @@ def run_training(config: dict, device: torch.device | None = None):
         n_master_nodes=config.get("n_master_nodes", 4),
         num_fusion_heads=config.get("num_fusion_heads", 4),
         ablate_max_degree=config.get("ablate_max_degree"),
+        grad_checkpoint=config.get("grad_checkpoint", False),
     )
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -769,6 +772,7 @@ def main():
     parser.add_argument("--edge-cutoff", type=float, default=5.0)
     parser.add_argument("--box-padding", type=float, default=12.0, help="Vacuum spacing (Angstrom) around each molecule's auxiliary supercell")
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
+    parser.add_argument("--grad-checkpoint", action="store_true", help="Wrap each EnergyLayer in torch.utils.checkpoint (use_reentrant=False) during training to cut activation memory at the same batch size, at the cost of recomputing each layer's forward during backward (~20-30%% slower per step). No numerical-precision tradeoff, unlike --bf16 (removed -- verified to corrupt forces on this model, see git history).")
     parser.add_argument("--n-max", type=int, default=1)
     parser.add_argument("--pw-e-cutoff", type=float, default=None, help="Long-range k-space energy cutoff (k_max = sqrt(2*e_cutoff)); caps |k| independent of box size. Not a reliable substitute for keeping --n-max small -- filtering high-k modes did not consistently fix instability at n_max=4 in testing")
     parser.add_argument("--num-atom-types", type=int, default=23, help="mappings.py padding + 22 element types (incl. Li)")
