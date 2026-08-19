@@ -30,6 +30,8 @@ experiments = [
     "openbabel",
     "shap",
     "scikit-learn",
+    "torch_geometric",
+    "nequip",
 ]
 
 [project.urls]

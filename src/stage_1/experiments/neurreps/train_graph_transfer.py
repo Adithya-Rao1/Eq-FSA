@@ -16,7 +16,6 @@ from stage_1.experiments.neurreps.synthetic_dataset import (
     GraphTransferDataset,
     graph_transfer_collate_fn,
 )
-from stage_1.experiments.neurreps.egnn_baseline import EGNNModel
 from stage_1.experiments.neurreps.eqfsa_classifier import EqFSAClassifier
 from stage_1.experiments.neurreps.metrics import EmbeddingCapture, jacobian_sensitivity, mi_lower_bound
 
@@ -34,7 +33,7 @@ def _to_device(batch: dict, device: torch.device) -> dict:
 
 
 def call_model(model, variant: str, batch: dict) -> torch.Tensor:
-    if variant == "egnn":
+    if variant in ("dimenet", "nequip_allegro"):
         return model(batch["x"], batch["types"], batch["mask"], batch["target_idx"], edge_feats=batch["edge_feats"])
     return model(
         batch["x"], batch["types"], batch["masses"], batch["mask"], batch["V"],
@@ -43,20 +42,26 @@ def call_model(model, variant: str, batch: dict) -> torch.Tensor:
 
 
 def build_model_for_variant(variant: str, realized_r: int, classes: int, num_atom_types: int, config: dict):
-    if variant == "egnn":
-        num_layers = max(1, realized_r + config["egnn_layer_margin"])
-        return EGNNModel(
-            num_node_types=num_atom_types, hidden_dim=config["egnn_hidden_dim"],
-            num_layers=num_layers, cutoff=config["cutoff"], classes=classes,
-            edge_feat_dim=GRAPH_EDGE_FEAT_DIM,
+    if variant == "dimenet":
+        from stage_1.experiments.neurreps.dimenet_baseline import DimeNetPlusPlusClassifier
+        num_layers = max(1, realized_r + config["baseline_layer_margin"])
+        return DimeNetPlusPlusClassifier(
+            num_node_types=num_atom_types, classes=classes, num_layers=num_layers,
+            cutoff=config["cutoff"],
         )
-    if variant in ("eqfsa_full", "eqfsa_invariant_only"):
-        ablate = 0 if variant == "eqfsa_invariant_only" else None
+    if variant == "nequip_allegro":
+        from stage_1.experiments.neurreps.nequip_allegro_baseline import NequIPAllegroClassifier
+        num_layers = max(1, realized_r + config["baseline_layer_margin"])
+        return NequIPAllegroClassifier(
+            num_node_types=num_atom_types, classes=classes, num_layers=num_layers,
+            cutoff=config["cutoff"],
+        )
+    if variant == "eqfsa_full":
         return EqFSAClassifier(
             radial_net=RadialNetwork, num_atom_types=num_atom_types, max_degree=2,
             num_layers=config["eqfsa_num_layers"], feature_dim=config["feature_dim"],
             hidden_dim=config["hidden_dim"], edge_cutoff=config["cutoff"], n_max=1,
-            classes=classes, ablate_max_degree=ablate, edge_feat_dim=GRAPH_EDGE_FEAT_DIM,
+            classes=classes, edge_feat_dim=GRAPH_EDGE_FEAT_DIM,
         )
     raise ValueError(f"Unknown variant {variant!r}")
 
@@ -146,11 +151,13 @@ def main():
     parser.add_argument(
         "--r-values", type=int, nargs="+", default=[8, 10, 12, 14, 16, 18, 20, 24],
     )
-    parser.add_argument("--variants", type=str, nargs="+", default=["egnn", "eqfsa_full", "eqfsa_invariant_only"])
+    parser.add_argument("--variants", type=str, nargs="+", default=["dimenet", "nequip_allegro", "eqfsa_full"])
     parser.add_argument("--classes", type=int, default=5)
-    parser.add_argument("--eqfsa-num-layers", type=int, default=4, help="Fixed depth for both Eq-FSA variants, independent of r")
-    parser.add_argument("--egnn-layer-margin", type=int, default=4, help="EGNN depth = realized_r + this margin, to rule out underreaching")
-    parser.add_argument("--egnn-hidden-dim", type=int, default=32)
+    parser.add_argument("--eqfsa-num-layers", type=int, default=4, help="Fixed depth for Eq-FSA, independent of r")
+    parser.add_argument(
+        "--baseline-layer-margin", type=int, default=4,
+        help="DimeNet++/NequIP-Allegro depth = realized_r + this margin, to rule out underreaching",
+    )
     parser.add_argument("--feature-dim", type=int, default=24)
     parser.add_argument("--hidden-dim", type=int, default=32)
     parser.add_argument("--cutoff", type=float, default=5.0)

@@ -15,9 +15,9 @@ _GRIDLINE = "#e1e0d9"
 _AXIS = "#c3c2b7"
 
 _VARIANT_STYLE = {
-    "egnn": {"color": "#c0392b", "marker": "o", "label": "EGNN"},
-    "eqfsa_full": {"color": "#2a78d6", "marker": "s", "label": "Eq-FSA (full)"},
-    "eqfsa_invariant_only": {"color": "#7c8b60", "marker": "^", "label": "Eq-FSA (invariant-only)"},
+    "dimenet": {"color": "#c0392b", "marker": "o", "label": "DimeNet++"},
+    "nequip_allegro": {"color": "#7c8b60", "marker": "^", "label": "NequIP"},
+    "eqfsa_full": {"color": "#2a78d6", "marker": "s", "label": "Eq-FSA"},
 }
 
 _METRICS = [
