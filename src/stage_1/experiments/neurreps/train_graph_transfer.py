@@ -140,7 +140,9 @@ def train_one_config(topology: str, r: int, variant: str, config: dict) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--topologies", type=str, nargs="+", default=["chain", "folded_chain", "clique_chain"])
+    parser.add_argument(
+        "--topologies", type=str, nargs="+", default=["chain", "clique_chain"],
+    )
     parser.add_argument(
         "--r-values", type=int, nargs="+", default=[8, 10, 12, 14, 16, 18, 20, 24],
     )
