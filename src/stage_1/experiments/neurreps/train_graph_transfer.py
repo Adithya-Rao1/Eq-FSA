@@ -141,7 +141,9 @@ def train_one_config(topology: str, r: int, variant: str, config: dict) -> dict:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--topologies", type=str, nargs="+", default=["chain", "folded_chain", "clique_chain"])
-    parser.add_argument("--r-values", type=int, nargs="+", default=[2, 4, 6, 8, 10, 12, 16, 20])
+    parser.add_argument(
+        "--r-values", type=int, nargs="+", default=[8, 10, 12, 14, 16, 18, 20, 24],
+    )
     parser.add_argument("--variants", type=str, nargs="+", default=["egnn", "eqfsa_full", "eqfsa_invariant_only"])
     parser.add_argument("--classes", type=int, default=5)
     parser.add_argument("--eqfsa-num-layers", type=int, default=4, help="Fixed depth for both Eq-FSA variants, independent of r")

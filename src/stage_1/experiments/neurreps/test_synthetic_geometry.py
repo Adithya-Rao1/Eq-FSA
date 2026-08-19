@@ -10,13 +10,11 @@ from stage_1.experiments.neurreps.synthetic_geometry import (
 
 R_VALUES = [2, 4, 6, 8, 10, 12]
 
-
 def test_chain_realized_r_matches_nominal():
     for r in R_VALUES:
         rng = torch.Generator().manual_seed(1000 + r)
         inst = build_topology_geometry("chain", r, rng=rng)
         assert inst["realized_r"] == r, f"chain r={r}: realized {inst['realized_r']}"
-
 
 def test_chain_euclid_distance_bounded():
     confinement_radius = 25.0
@@ -29,6 +27,22 @@ def test_chain_euclid_distance_bounded():
     first_half_growth = euclids[len(euclids) // 2] - euclids[0]
     second_half_growth = euclids[-1] - euclids[len(euclids) // 2]
     assert second_half_growth < first_half_growth
+
+PLATEAU_R_VALUES = [8, 10, 12, 14, 16, 18, 20, 24]
+
+def test_chain_euclid_is_flat_over_the_sweeps_default_r_range():
+    euclids = []
+    for r in PLATEAU_R_VALUES:
+        rng = torch.Generator().manual_seed(6000 + r)
+        inst = build_topology_geometry("chain", r, rng=rng)
+        euclids.append(inst["realized_euclid"])
+    mean = sum(euclids) / len(euclids)
+    for r, e in zip(PLATEAU_R_VALUES, euclids):
+        assert abs(e - mean) / mean < 0.3, (
+            f"euclid at r={r} ({e:.2f}) deviates >30% from the plateau mean ({mean:.2f}) -- "
+            f"the 'roughly constant Euclidean distance' property no longer holds over "
+            f"train_graph_transfer.py's default r-values: {list(zip(PLATEAU_R_VALUES, euclids))}"
+        )
 
 
 def test_clique_chain_clique_is_fully_connected():
@@ -55,7 +69,6 @@ def test_folded_chain_shorter_than_plain_chain_at_matched_atom_count():
         f"folded_chain's shortcut should shorten realized r vs a plain chain of the same length "
         f"(folded={folded['realized_r']}, plain={r_plain_matched})"
     )
-
 
 def test_realized_graph_and_r_edge_symmetry():
     rng = torch.Generator().manual_seed(5000)
