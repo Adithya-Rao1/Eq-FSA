@@ -19,6 +19,7 @@ dependencies = [
     "rdkit",
     "pyyaml",
     "e3nn",
+    "networkx",
 ]
 
 [project.optional-dependencies]
