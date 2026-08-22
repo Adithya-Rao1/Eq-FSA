@@ -171,9 +171,6 @@ def run_config(
         result = train_one_realization(topology, r, variant, config, seed=seed)
         for k in keys:
             per_realization[k].append(result[k])
-        # Raw per-realization values, not just the aggregated mean/std below -- needed for any
-        # significance test (e.g. Mann-Whitney U) across realizations, which can't be reconstructed
-        # from summary statistics alone.
         if raw_writer is not None:
             raw_row = {
                 "topology": topology, "variant": variant, "nominal_r": r,
