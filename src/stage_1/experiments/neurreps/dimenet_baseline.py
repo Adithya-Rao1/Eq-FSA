@@ -3,7 +3,9 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from torch_geometric.nn import radius_graph
 from torch_geometric.nn.models import DimeNetPlusPlus
+from torch_geometric.nn.models.dimenet import triplets
 
 
 class DimeNetPlusPlusClassifier(nn.Module):
@@ -52,4 +54,31 @@ class DimeNetPlusPlusClassifier(nn.Module):
         batch_vec = torch.arange(B, device=device).unsqueeze(1).expand(B, N)[mask]
         z = types[mask]
         pos = x[mask]
-        return self.dimenet(z, pos, batch_vec)
+        
+        d = self.dimenet
+        edge_index = radius_graph(pos, r=d.cutoff, batch=batch_vec, max_num_neighbors=d.max_num_neighbors)
+        i, j, idx_i, idx_j, idx_k, idx_kj, idx_ji = triplets(edge_index, num_nodes=z.size(0))
+
+        dist = (pos[i] - pos[j]).pow(2).sum(dim=-1).sqrt()
+        pos_jk, pos_ij = pos[idx_j] - pos[idx_k], pos[idx_i] - pos[idx_j]
+        a = (pos_ij * pos_jk).sum(dim=-1)
+        b = torch.cross(pos_ij, pos_jk, dim=1).norm(dim=-1)
+        angle = torch.atan2(b, a)
+
+        rbf = d.rbf(dist)
+        sbf = d.sbf(dist, angle, idx_kj)
+
+        h = d.emb(z, rbf, i, j)
+        P = d.output_blocks[0](h, rbf, i, num_nodes=pos.size(0))
+        for interaction_block, output_block in zip(d.interaction_blocks, d.output_blocks[1:]):
+            h = interaction_block(h, rbf, sbf, idx_kj, idx_ji)
+            P = P + output_block(h, rbf, i, num_nodes=pos.size(0))
+
+        real_per_graph = mask.long().sum(dim=1)
+        graph_start = torch.cat(
+            [torch.zeros(1, dtype=torch.long, device=device), real_per_graph.cumsum(0)[:-1]]
+        )
+        local_rank = mask.long().cumsum(dim=1) - 1
+        flat_target = graph_start + local_rank[torch.arange(B, device=device), target_idx]
+
+        return P[flat_target]
