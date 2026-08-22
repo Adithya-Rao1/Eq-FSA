@@ -7,6 +7,7 @@ from torch_geometric.nn import radius_graph
 
 from nequip.data import AtomicDataDict
 from nequip.model import NequIPGNNModel
+from nequip.utils.global_state import set_global_state
 
 
 class NequIPAllegroClassifier(nn.Module):
@@ -27,19 +28,24 @@ class NequIPAllegroClassifier(nn.Module):
         self.max_num_neighbors = max_num_neighbors
         self.type_names = [f"T{i}" for i in range(num_node_types)]
 
-        self.backbone = NequIPGNNModel(
-            seed=0,
-            model_dtype=model_dtype,
-            type_names=self.type_names,
-            r_max=cutoff,
-            num_layers=num_layers,
-            l_max=l_max,
-            parity=parity,
-            num_features=num_features,
-            radial_mlp_depth=1,
-            radial_mlp_width=num_features,
-            do_derivatives=False,
-        )
+        prev_default_dtype = torch.get_default_dtype()
+        set_global_state()
+        try:
+            self.backbone = NequIPGNNModel(
+                seed=0,
+                model_dtype=model_dtype,
+                type_names=self.type_names,
+                r_max=cutoff,
+                num_layers=num_layers,
+                l_max=l_max,
+                parity=parity,
+                num_features=num_features,
+                radial_mlp_depth=1,
+                radial_mlp_width=num_features,
+                do_derivatives=False,
+            )
+        finally:
+            torch.set_default_dtype(prev_default_dtype)
         self.classifier_head = nn.Linear(num_features, classes)
 
     @property
