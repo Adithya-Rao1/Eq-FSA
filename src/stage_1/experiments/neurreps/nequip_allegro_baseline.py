@@ -52,7 +52,7 @@ class NequIPAllegroClassifier(nn.Module):
 
     @property
     def input_embedding_module(self) -> nn.Module:
-        return self.backbone.model.type_embed
+        return self.backbone.model.func.type_embed.embed_module
 
     def forward(
         self,
