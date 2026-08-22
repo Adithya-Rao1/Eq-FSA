@@ -158,15 +158,31 @@ def _mean_std(values: list[float]) -> tuple[float, float]:
     return mean, math.sqrt(var)
 
 
-def run_config(topology: str, r: int, variant: str, config: dict) -> dict:
+def run_config(
+    topology: str, r: int, variant: str, config: dict,
+    raw_writer: "csv.DictWriter | None" = None, raw_file=None,
+) -> dict:
     base_seed = config["seed"]
     keys = ["r", "euclid", "val_error", "jacobian_sensitivity", "mi_lower_bound", "n_params"]
     per_realization = {k: [] for k in keys}
 
     for i in range(config["num_realizations"]):
-        result = train_one_realization(topology, r, variant, config, seed=base_seed + i * 7919)
+        seed = base_seed + i * 7919
+        result = train_one_realization(topology, r, variant, config, seed=seed)
         for k in keys:
             per_realization[k].append(result[k])
+        # Raw per-realization values, not just the aggregated mean/std below -- needed for any
+        # significance test (e.g. Mann-Whitney U) across realizations, which can't be reconstructed
+        # from summary statistics alone.
+        if raw_writer is not None:
+            raw_row = {
+                "topology": topology, "variant": variant, "nominal_r": r,
+                "realization_idx": i, "seed": seed,
+                **{k: result[k] for k in keys},
+            }
+            raw_writer.writerow(raw_row)
+            raw_file.flush()
+            os.fsync(raw_file.fileno())
 
     row = {"topology": topology, "variant": variant, "nominal_r": r, "num_realizations": config["num_realizations"]}
     for k in keys:
@@ -225,32 +241,40 @@ def main():
 
     os.makedirs(config["outdir"], exist_ok=True)
     csv_path = config["csv_path"] or os.path.join(config["outdir"], "results.csv")
+    raw_csv_path = os.path.join(config["outdir"], "results_raw.csv")
+    raw_keys = ["r", "euclid", "val_error", "jacobian_sensitivity", "mi_lower_bound", "n_params"]
+    raw_fieldnames = ["topology", "variant", "nominal_r", "realization_idx", "seed"] + raw_keys
 
     rows = []
-    for topology in config["topologies"]:
-        for r in config["r_values"]:
-            for variant in config["variants"]:
-                print(f"=== {topology} r={r} variant={variant} ({config['num_realizations']} realizations) ===", flush=True)
-                t0 = time.time()
-                result = run_config(topology, r, variant, config)
-                result["train_time_s"] = time.time() - t0
-                print(
-                    f"  realized_r={result['r']:.1f}+/-{result['r_std']:.1f} "
-                    f"euclid={result['euclid']:.2f}+/-{result['euclid_std']:.2f} "
-                    f"error={result['val_error']:.3f}+/-{result['val_error_std']:.3f} "
-                    f"jacobian={result['jacobian_sensitivity']:.4g}+/-{result['jacobian_sensitivity_std']:.4g} "
-                    f"mi={result['mi_lower_bound']:.4f}+/-{result['mi_lower_bound_std']:.4f} "
-                    f"({result['train_time_s']:.1f}s)",
-                    flush=True,
-                )
-                rows.append(result)
-
-    fieldnames = list(rows[0].keys()) if rows else []
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    writer = None
+    with open(csv_path, "w", newline="") as csv_file, open(raw_csv_path, "w", newline="") as raw_file:
+        raw_writer = csv.DictWriter(raw_file, fieldnames=raw_fieldnames)
+        raw_writer.writeheader()
+        for topology in config["topologies"]:
+            for r in config["r_values"]:
+                for variant in config["variants"]:
+                    print(f"=== {topology} r={r} variant={variant} ({config['num_realizations']} realizations) ===", flush=True)
+                    t0 = time.time()
+                    result = run_config(topology, r, variant, config, raw_writer=raw_writer, raw_file=raw_file)
+                    result["train_time_s"] = time.time() - t0
+                    print(
+                        f"  realized_r={result['r']:.1f}+/-{result['r_std']:.1f} "
+                        f"euclid={result['euclid']:.2f}+/-{result['euclid_std']:.2f} "
+                        f"error={result['val_error']:.3f}+/-{result['val_error_std']:.3f} "
+                        f"jacobian={result['jacobian_sensitivity']:.4g}+/-{result['jacobian_sensitivity_std']:.4g} "
+                        f"mi={result['mi_lower_bound']:.4f}+/-{result['mi_lower_bound_std']:.4f} "
+                        f"({result['train_time_s']:.1f}s)",
+                        flush=True,
+                    )
+                    rows.append(result)
+                    if writer is None:
+                        writer = csv.DictWriter(csv_file, fieldnames=list(result.keys()))
+                        writer.writeheader()
+                    writer.writerow(result)
+                    csv_file.flush()
+                    os.fsync(csv_file.fileno())
     print(f"Wrote {len(rows)} rows to {csv_path}")
+    print(f"Wrote raw per-realization rows to {raw_csv_path}")
 
     from stage_1.experiments.neurreps.plot_oversquashing_metrics import plot_oversquashing_metrics
     plot_oversquashing_metrics(csv_path, config["outdir"])
