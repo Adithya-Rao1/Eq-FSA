@@ -162,10 +162,8 @@ class MasterNodeAttention(nn.Module):
         self.W_V0 = nn.Sequential(
             scalar_ffn(feature_dim, hidden_dim),
             nn.RMSNorm(feature_dim),
-        )
-
-        self.s_re_norm = nn.RMSNorm(feature_dim)
-        self.s_im_norm = nn.RMSNorm(feature_dim)
+        )       
+        self.s_ri_norm = nn.RMSNorm(2 * feature_dim)
 
         self.alpha = nn.Parameter(torch.tensor(1.0))
         self.diag_enabled = False
@@ -215,8 +213,9 @@ class MasterNodeAttention(nn.Module):
         N_real = m.sum(dim=1).clamp(min=1).view(B, 1, 1, 1, 1)
         raw_S_re0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, cos_g)
         raw_S_im0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, sin_g)
-        S_re0 = (1.0 / N_real) * self.s_re_norm(raw_S_re0.transpose(-1, -2)).transpose(-1, -2)
-        S_im0 = (1.0 / N_real) * self.s_im_norm(raw_S_im0.transpose(-1, -2)).transpose(-1, -2)
+        raw_S_ri = torch.cat([raw_S_re0, raw_S_im0], dim=-2)
+        S_ri = (1.0 / N_real) * self.s_ri_norm(raw_S_ri.transpose(-1, -2)).transpose(-1, -2)
+        S_re0, S_im0 = S_ri.split(self.feature_dim, dim=-2)
 
         phase_com = torch.einsum("bi,bmi->bm", x_com, kvecs)
         cos_com = torch.cos(phase_com) * damping

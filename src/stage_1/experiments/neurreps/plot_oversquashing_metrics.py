@@ -61,16 +61,19 @@ def plot_oversquashing_metrics(csv_path: str, outdir: str) -> None:
             for row in rows:
                 if row["topology"] != topology:
                     continue
-                by_variant[row["variant"]].append((int(row["r"]), float(row[metric_key])))
+                by_variant[row["variant"]].append(
+                    (float(row["r"]), float(row[metric_key]), float(row.get(f"{metric_key}_std", 0.0)))
+                )
 
             for variant, points in by_variant.items():
                 points.sort(key=lambda p: p[0])
                 xs = [p[0] for p in points]
                 ys = [p[1] for p in points]
+                yerr = [p[2] for p in points]
                 style = _VARIANT_STYLE.get(variant, {"color": "#888888", "marker": "x", "label": variant})
-                ax.plot(
-                    xs, ys, color=style["color"], marker=style["marker"], markersize=5,
-                    linewidth=1.6, label=style["label"],
+                ax.errorbar(
+                    xs, ys, yerr=yerr, color=style["color"], marker=style["marker"], markersize=5,
+                    linewidth=1.6, capsize=3, elinewidth=1.0, label=style["label"],
                 )
             ax.legend(fontsize=7, frameon=False)
 

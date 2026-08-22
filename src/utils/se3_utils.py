@@ -80,16 +80,26 @@ def cartesian_quadrupole(n: torch.Tensor) -> torch.Tensor:
     Qyz = Y * Z
     return torch.stack([Qxx, Qxy, Qxz, Qyy, Qyz], dim=-1)
 
-def clebsch_gordan_matrix(l: int, k: int) -> Dict[int, torch.Tensor]:
-    if (l, k) in _CG_CACHE:
-        return _CG_CACHE[(l, k)]
+def clebsch_gordan_matrix(l: int, k: int, dtype: torch.dtype = None) -> Dict[int, torch.Tensor]:
+    # Cache key MUST include dtype: o3.wigner_3j computes natively at whatever dtype is
+    # requested (verified: float64 differs from float32-then-upcast by ~1.5e-8, real precision,
+    # not relabeling), so a dtype-less cache key means whichever precision happens to touch a
+    # given (l,k) FIRST in the process permanently seeds it there -- silently truncating every
+    # later caller that wanted higher precision, with no error, just excess floating-point error
+    # that looks like a "known ceiling" (this caused base_tests.py's 3 previously-misdiagnosed
+    # failures; see stage_1/CLAUDE.md's 2026-08-21 correction).
+    if dtype is None:
+        dtype = torch.get_default_dtype()
+    key = (l, k, dtype)
+    if key in _CG_CACHE:
+        return _CG_CACHE[key]
 
     result: Dict[int, torch.Tensor] = {}
     for J in range(abs(l - k), l + k + 1):
-        w3j = o3.wigner_3j(l, k, J) * math.sqrt(2 * J + 1)
+        w3j = o3.wigner_3j(l, k, J, dtype=dtype) * math.sqrt(2 * J + 1)
         result[J] = w3j.reshape((2 * l + 1) * (2 * k + 1), 2 * J + 1)
 
-    _CG_CACHE[(l, k)] = result
+    _CG_CACHE[key] = result
     return result
 
 class RadialNetwork(nn.Module):
@@ -159,7 +169,7 @@ def equivariant_weight_matrix(
         return W
 
     r  = x.norm(dim=-1, keepdim=True)
-    cg = clebsch_gordan_matrix(l, k)
+    cg = clebsch_gordan_matrix(l, k, dtype=dtype)
 
     for J in range(abs(l - k), l + k + 1):
         if J not in cg:
@@ -462,7 +472,7 @@ def equivariant_weight_single_J(
     if x.shape[0] == 0:
         return torch.zeros(0, 2 * l + 1, 2 * k + 1, device=device, dtype=dtype)
 
-    cg    = clebsch_gordan_matrix(l, k)
+    cg    = clebsch_gordan_matrix(l, k, dtype=dtype)
     Q_J   = cg[J].to(device=device, dtype=dtype)
 
     Y_J = get_spherical_harmonics(J, x)

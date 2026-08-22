@@ -22,6 +22,7 @@ from utils.calc_props import _MOL_FEAT_DIM
 from stage_1.spice_dataset import _EDGE_FEAT_DIM
 
 torch.manual_seed(0)
+torch.set_default_dtype(torch.double)
 
 ATOL = 1e-9
 RTOL = 1e-9

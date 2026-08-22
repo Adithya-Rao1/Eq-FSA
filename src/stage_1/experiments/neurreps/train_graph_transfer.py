@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import os
 import time
 
@@ -66,24 +67,20 @@ def build_model_for_variant(variant: str, realized_r: int, classes: int, num_ato
     raise ValueError(f"Unknown variant {variant!r}")
 
 
-def train_one_config(topology: str, r: int, variant: str, config: dict) -> dict:
+def train_one_realization(topology: str, r: int, variant: str, config: dict, seed: int) -> dict:
     classes = config["classes"]
     samples = config["samples_per_config"]
-    seed = config["seed"]
 
-    dataset = GraphTransferDataset(
-        topology, r, classes, samples, seed=seed, cutoff=config["cutoff"],
-        bond_length=config["bond_length"], confinement_radius=config["confinement_radius"],
-    )
+    dataset = GraphTransferDataset(topology, r, classes, samples, seed=seed, cutoff=config["cutoff"])
     realized_r = dataset.realized_r
     realized_euclid = dataset.realized_euclid
-    source_idx_val = dataset.source_idx
-    num_atom_types = classes + 1
+    label_idx = dataset.label_idx
+    num_atom_types = dataset.num_atom_types
 
     n_val = max(1, int(round(len(dataset) * config["val_fraction"])))
     n_train = len(dataset) - n_val
     train_ds, val_ds = random_split(
-        dataset, [n_train, n_val], generator=torch.Generator().manual_seed(seed + 2),
+        dataset, [n_train, n_val], generator=torch.Generator().manual_seed(seed + 100000),
     )
     train_loader = DataLoader(
         train_ds, batch_size=config["batch_size"], shuffle=True, collate_fn=graph_transfer_collate_fn,
@@ -114,10 +111,10 @@ def train_one_config(topology: str, r: int, variant: str, config: dict) -> dict:
     for batch in val_loader:
         batch = _to_device(batch, device)
         B = batch["labels"].shape[0]
-        source_idx_t = torch.full((B,), source_idx_val, dtype=torch.long, device=device)
+        label_idx_t = torch.full((B,), label_idx, dtype=torch.long, device=device)
         with EmbeddingCapture(embedding_module) as cap:
             logits = call_model(model, variant, batch)
-            sens_values.append(jacobian_sensitivity(logits, cap.captured, source_idx_t))
+            sens_values.append(jacobian_sensitivity(logits, cap.captured, label_idx_t))
         logits_d = logits.detach()
         total_ce += F.cross_entropy(logits_d, batch["labels"], reduction="sum").item()
         total_correct += (logits_d.argmax(dim=-1) == batch["labels"]).sum().item()
@@ -130,9 +127,6 @@ def train_one_config(topology: str, r: int, variant: str, config: dict) -> dict:
     n_params = sum(p.numel() for p in model.parameters())
 
     return {
-        "topology": topology,
-        "variant": variant,
-        "nominal_r": r,
         "r": realized_r,
         "euclid": realized_euclid,
         "val_error": val_error,
@@ -143,14 +137,35 @@ def train_one_config(topology: str, r: int, variant: str, config: dict) -> dict:
     }
 
 
+def _mean_std(values: list[float]) -> tuple[float, float]:
+    n = len(values)
+    mean = sum(values) / n
+    var = sum((v - mean) ** 2 for v in values) / max(1, n - 1)
+    return mean, math.sqrt(var)
+
+
+def run_config(topology: str, r: int, variant: str, config: dict) -> dict:
+    base_seed = config["seed"]
+    keys = ["r", "euclid", "val_error", "jacobian_sensitivity", "mi_lower_bound", "n_params"]
+    per_realization = {k: [] for k in keys}
+
+    for i in range(config["num_realizations"]):
+        result = train_one_realization(topology, r, variant, config, seed=base_seed + i * 7919)
+        for k in keys:
+            per_realization[k].append(result[k])
+
+    row = {"topology": topology, "variant": variant, "nominal_r": r, "num_realizations": config["num_realizations"]}
+    for k in keys:
+        mean, std = _mean_std(per_realization[k])
+        row[k] = mean
+        row[f"{k}_std"] = std
+    return row
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--topologies", type=str, nargs="+", default=["chain", "clique_chain"],
-    )
-    parser.add_argument(
-        "--r-values", type=int, nargs="+", default=[8, 10, 12, 14, 16, 18, 20, 24],
-    )
+    parser.add_argument("--topologies", type=str, nargs="+", default=["chain", "ring", "lollipop"])
+    parser.add_argument("--r-values", type=int, nargs="+", default=[2, 4, 6, 8, 10, 12, 16, 20])
     parser.add_argument("--variants", type=str, nargs="+", default=["dimenet", "nequip_allegro", "eqfsa_full"])
     parser.add_argument("--classes", type=int, default=5)
     parser.add_argument("--eqfsa-num-layers", type=int, default=4, help="Fixed depth for Eq-FSA, independent of r")
@@ -161,14 +176,17 @@ def main():
     parser.add_argument("--feature-dim", type=int, default=24)
     parser.add_argument("--hidden-dim", type=int, default=32)
     parser.add_argument("--cutoff", type=float, default=5.0)
-    parser.add_argument("--bond-length", type=float, default=2.0)
-    parser.add_argument("--confinement-radius", type=float, default=25.0)
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--samples-per-config", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--num-realizations", type=int, default=3,
+        help="Independent geometry realizations per (topology, r, variant), averaged with std -- "
+             "multiplies total sweep time by this factor",
+    )
     parser.add_argument("--outdir", type=str, default="stage_1/experiments/neurreps/results")
     parser.add_argument("--csv-path", type=str, default=None)
     parser.add_argument(
@@ -177,7 +195,7 @@ def main():
     )
     parser.add_argument(
         "--smoke-test", action="store_true",
-        help="Tiny r-values/epochs/samples sanity run before committing to the full sweep",
+        help="Tiny r-values/epochs/samples/realizations sanity run before committing to the full sweep",
     )
     args = parser.parse_args()
     config = vars(args)
@@ -189,6 +207,7 @@ def main():
         config["epochs"] = 3
         config["samples_per_config"] = 40
         config["topologies"] = config["topologies"][:1]
+        config["num_realizations"] = 2
 
     os.makedirs(config["outdir"], exist_ok=True)
     csv_path = config["csv_path"] or os.path.join(config["outdir"], "results.csv")
@@ -197,14 +216,17 @@ def main():
     for topology in config["topologies"]:
         for r in config["r_values"]:
             for variant in config["variants"]:
-                print(f"=== {topology} r={r} variant={variant} ===", flush=True)
+                print(f"=== {topology} r={r} variant={variant} ({config['num_realizations']} realizations) ===", flush=True)
                 t0 = time.time()
-                result = train_one_config(topology, r, variant, config)
+                result = run_config(topology, r, variant, config)
                 result["train_time_s"] = time.time() - t0
                 print(
-                    f"  realized_r={result['r']} euclid={result['euclid']:.2f} "
-                    f"error={result['val_error']:.3f} jacobian={result['jacobian_sensitivity']:.4g} "
-                    f"mi={result['mi_lower_bound']:.4f} ({result['train_time_s']:.1f}s)",
+                    f"  realized_r={result['r']:.1f}+/-{result['r_std']:.1f} "
+                    f"euclid={result['euclid']:.2f}+/-{result['euclid_std']:.2f} "
+                    f"error={result['val_error']:.3f}+/-{result['val_error_std']:.3f} "
+                    f"jacobian={result['jacobian_sensitivity']:.4g}+/-{result['jacobian_sensitivity_std']:.4g} "
+                    f"mi={result['mi_lower_bound']:.4f}+/-{result['mi_lower_bound_std']:.4f} "
+                    f"({result['train_time_s']:.1f}s)",
                     flush=True,
                 )
                 rows.append(result)

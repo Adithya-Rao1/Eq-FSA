@@ -5,75 +5,67 @@ import torch
 from stage_1.experiments.neurreps.synthetic_geometry import (
     DEFAULT_CUTOFF,
     build_topology_geometry,
-    realized_graph_and_r,
 )
 
-R_VALUES = [2, 4, 6, 8, 10, 12]
-
-def test_chain_realized_r_matches_nominal():
-    for r in R_VALUES:
-        rng = torch.Generator().manual_seed(1000 + r)
-        inst = build_topology_geometry("chain", r, rng=rng)
-        assert inst["realized_r"] == r, f"chain r={r}: realized {inst['realized_r']}"
-
-def test_chain_euclid_distance_bounded():
-    confinement_radius = 25.0
-    euclids = []
-    for r in R_VALUES:
-        rng = torch.Generator().manual_seed(2000 + r)
-        inst = build_topology_geometry("chain", r, confinement_radius=confinement_radius, rng=rng)
-        euclids.append(inst["realized_euclid"])
-        assert inst["realized_euclid"] <= 2 * confinement_radius + 1e-6
-    first_half_growth = euclids[len(euclids) // 2] - euclids[0]
-    second_half_growth = euclids[-1] - euclids[len(euclids) // 2]
-    assert second_half_growth < first_half_growth
-
-PLATEAU_R_VALUES = [8, 10, 12, 14, 16, 18, 20, 24]
-
-def test_chain_euclid_is_flat_over_the_sweeps_default_r_range():
-    euclids = []
-    for r in PLATEAU_R_VALUES:
-        rng = torch.Generator().manual_seed(6000 + r)
-        inst = build_topology_geometry("chain", r, rng=rng)
-        euclids.append(inst["realized_euclid"])
-    mean = sum(euclids) / len(euclids)
-    for r, e in zip(PLATEAU_R_VALUES, euclids):
-        assert abs(e - mean) / mean < 0.3, (
-            f"euclid at r={r} ({e:.2f}) deviates >30% from the plateau mean ({mean:.2f}) -- "
-            f"the 'roughly constant Euclidean distance' property no longer holds over "
-            f"train_graph_transfer.py's default r-values: {list(zip(PLATEAU_R_VALUES, euclids))}"
-        )
+R_VALUES = [2, 4, 6, 8, 10, 12, 16, 20]
 
 
-def test_clique_chain_clique_is_fully_connected():
+def test_readout_is_always_node_zero():
+    for topology in ["chain", "ring", "lollipop"]:
+        rng = torch.Generator().manual_seed(1000)
+        inst = build_topology_geometry(topology, 8, rng=rng)
+        assert inst["readout_idx"] == 0, topology
+        assert inst["label_idx"] != inst["readout_idx"], topology
+
+
+def test_realized_r_close_to_nominal():
+    for topology in ["chain", "ring", "lollipop"]:
+        for r in R_VALUES:
+            rng = torch.Generator().manual_seed(2000 + r)
+            inst = build_topology_geometry(topology, r, rng=rng)
+            realized = inst["realized_r"]
+            assert realized > 0
+            assert abs(realized - r) <= max(2, r // 4), (
+                f"{topology} r={r}: realized_r={realized} is too far off nominal"
+            )
+
+
+def test_lollipop_clique_is_fully_connected():
     rng = torch.Generator().manual_seed(3000)
-    r = 8
-    inst = build_topology_geometry("clique_chain", r, rng=rng)
-    clique_size = max(3, r // 4 + 3)
+    r = 10
+    inst = build_topology_geometry("lollipop", r, rng=rng)
     positions = inst["positions"]
+    clique_size = max(3, r // 4 + 3)
     clique_pos = positions[:clique_size]
     dmat = torch.cdist(clique_pos, clique_pos)
     assert dmat.max() < DEFAULT_CUTOFF, "not every clique pair is within cutoff of each other"
 
 
-def test_folded_chain_shorter_than_plain_chain_at_matched_atom_count():
-    rng_plain = torch.Generator().manual_seed(4000)
-    rng_folded = torch.Generator().manual_seed(4000)
-    r = 6
-    plain = build_topology_geometry("chain", 2 * r, rng=rng_plain)
-    folded = build_topology_geometry("folded_chain", r, rng=rng_folded)
+def test_graph_is_undirected_no_self_loops():
+    rng = torch.Generator().manual_seed(4000)
+    for topology in ["chain", "ring", "lollipop"]:
+        inst = build_topology_geometry(topology, 8, rng=rng)
+        G = inst["graph"]
+        for u, v in G.edges():
+            assert G.has_edge(v, u)
+            assert u != v
 
-    n = min(plain["positions"].shape[0], folded["positions"].shape[0])
-    _, r_plain_matched, _ = realized_graph_and_r(plain["positions"][:n], DEFAULT_CUTOFF, 0, n - 1)
-    assert folded["realized_r"] <= r_plain_matched, (
-        f"folded_chain's shortcut should shorten realized r vs a plain chain of the same length "
-        f"(folded={folded['realized_r']}, plain={r_plain_matched})"
-    )
 
-def test_realized_graph_and_r_edge_symmetry():
-    rng = torch.Generator().manual_seed(5000)
-    inst = build_topology_geometry("chain", 6, rng=rng)
-    G = inst["graph"]
-    for u, v in G.edges():
-        assert G.has_edge(v, u)
-        assert u != v
+def test_ring_realizations_are_stochastic():
+    r = 12
+    outcomes = set()
+    for seed in range(5):
+        rng = torch.Generator().manual_seed(5000 + seed)
+        inst = build_topology_geometry("ring", r, rng=rng)
+        outcomes.add((inst["positions"].shape[0], inst["realized_r"]))
+    assert len(outcomes) > 1, f"ring geometry looks deterministic across seeds: {outcomes}"
+
+
+def test_chain_realizations_are_stochastic():
+    r = 12
+    outcomes = set()
+    for seed in range(5):
+        rng = torch.Generator().manual_seed(6000 + seed)
+        inst = build_topology_geometry("chain", r, rng=rng)
+        outcomes.add(inst["positions"].shape[0])
+    assert len(outcomes) > 1, f"chain geometry looks deterministic across seeds: {outcomes}"

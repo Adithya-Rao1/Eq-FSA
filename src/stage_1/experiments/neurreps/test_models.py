@@ -21,6 +21,10 @@ def random_rotation_matrix(dtype=DTYPE, generator=None) -> torch.Tensor:
     return Q.to(dtype)
 
 
+def rotate_V(V: torch.Tensor, R: torch.Tensor) -> torch.Tensor:
+    return torch.einsum("ij,bjk->bik", R, V)
+
+
 def make_batch(B, N, generator, dtype=DTYPE):
     x = torch.randn(B, N, 3, generator=generator, dtype=dtype) * 3.0
     types = torch.randint(0, NUM_ATOM_TYPES, (B, N), generator=generator)
@@ -118,28 +122,45 @@ def _make_eqfsa_batch(B, N, generator, dtype=DTYPE):
     return x, types, masses, mask, V, mol_props, edge_feats, target_idx
 
 
+import contextlib
+
+
+@contextlib.contextmanager
+def _default_dtype(dtype):
+    prev = torch.get_default_dtype()
+    torch.set_default_dtype(dtype)
+    try:
+        yield
+    finally:
+        torch.set_default_dtype(prev)
+
+
 def _build_eqfsa(dtype=DTYPE):
-    model = EqFSAClassifier(
-        radial_net=RadialNetwork, num_atom_types=NUM_ATOM_TYPES, max_degree=2, num_layers=2,
-        feature_dim=8, hidden_dim=16, edge_cutoff=100.0, n_max=1, classes=CLASSES, edge_feat_dim=1,
-    )
-    return model.to(dtype) if dtype == torch.double else model
+    torch.manual_seed(123)
+    with _default_dtype(dtype):
+        return EqFSAClassifier(
+            radial_net=RadialNetwork, num_atom_types=NUM_ATOM_TYPES, max_degree=2, num_layers=2,
+            feature_dim=8, hidden_dim=16, edge_cutoff=100.0, n_max=1, classes=CLASSES, edge_feat_dim=1,
+        )
 
 
 def test_eqfsa_classifier_rotation_translation_invariant():
     g = torch.Generator().manual_seed(4)
     B, N = 2, 6
     x, types, masses, mask, V, mol_props, edge_feats, target_idx = _make_eqfsa_batch(B, N, g)
-    model = _build_eqfsa()
-    model.eval()
 
-    R = random_rotation_matrix()
-    t = torch.randn(3, dtype=DTYPE, generator=g)
-    x_tf = x @ R.T + t
+    with _default_dtype(DTYPE):
+        model = _build_eqfsa()
+        model.eval()
 
-    with torch.no_grad():
-        logits = model(x, types, masses, mask, V, mol_props, edge_feats, target_idx)
-        logits_tf = model(x_tf, types, masses, mask, V, mol_props, edge_feats, target_idx)
+        R = random_rotation_matrix()
+        t = torch.randn(3, dtype=DTYPE, generator=g)
+        x_tf = x @ R.T + t
+        V_tf = rotate_V(V, R)
+
+        with torch.no_grad():
+            logits = model(x, types, masses, mask, V, mol_props, edge_feats, target_idx)
+            logits_tf = model(x_tf, types, masses, mask, V_tf, mol_props, edge_feats, target_idx)
 
     torch.testing.assert_close(logits_tf, logits, atol=ATOL, rtol=RTOL)
 
