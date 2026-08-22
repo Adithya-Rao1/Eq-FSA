@@ -102,6 +102,7 @@ def train_one_realization(topology: str, r: int, variant: str, config: dict, see
 
     device = config["_device"]
     avg_num_neighbors = _avg_num_neighbors(dataset.positions, config["cutoff"])
+    torch.manual_seed(seed)
     model = build_model_for_variant(
         variant, realized_r, classes, num_atom_types, config, avg_num_neighbors=avg_num_neighbors,
     ).to(device)

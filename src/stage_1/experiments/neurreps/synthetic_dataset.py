@@ -5,7 +5,7 @@ from typing import Dict, List
 import torch
 from torch.utils.data import Dataset
 
-from utils.calc_props import _MOL_FEAT_DIM
+from utils.calc_props import _MOL_FEAT_DIM, _MOL_FEAT_NAMES
 
 from stage_1.experiments.neurreps.synthetic_geometry import (
     DEFAULT_CUTOFF,
@@ -17,6 +17,24 @@ from stage_1.experiments.neurreps.synthetic_geometry import (
 
 GRAPH_BOX_HALFWIDTH = 1000.0
 GRAPH_EDGE_FEAT_DIM = 1
+
+_COUNT_LIKE_MOL_FEAT_NAMES = {
+    "HBA", "HBD", "HeavyAtomCount", "NHOHCount", "NOCount",
+    "NumAliphaticCarbocycles", "NumAliphaticHeterocycles", "NumAliphaticRings",
+    "NumAromaticCarbocycles", "NumAromaticHeterocycles", "NumAromaticRings",
+    "NumHeteroatoms", "NumRadicalElectrons", "NumRotatableBonds",
+    "NumSaturatedRings", "NumValenceElectrons",
+}
+_COUNT_LIKE_MOL_FEAT_MASK = torch.tensor(
+    [name in _COUNT_LIKE_MOL_FEAT_NAMES for name in _MOL_FEAT_NAMES]
+)
+
+
+def _random_mol_props(seed: int) -> torch.Tensor:
+    g = torch.Generator().manual_seed(seed)
+    continuous = torch.randn(_MOL_FEAT_DIM, generator=g)
+    counts = torch.randint(0, 6, (_MOL_FEAT_DIM,), generator=g).float()
+    return torch.where(_COUNT_LIKE_MOL_FEAT_MASK, counts, continuous)
 
 
 class GraphTransferDataset(Dataset):
@@ -39,6 +57,8 @@ class GraphTransferDataset(Dataset):
         base_types[self.readout_idx] = READOUT_TYPE_IDX
         self._base_types = base_types
 
+        self.mol_props = _random_mol_props(seed)
+
         samples_per_class = max(1, samples // classes)
         self._labels: List[int] = [min(i // samples_per_class, classes - 1) for i in range(samples)]
 
@@ -56,6 +76,7 @@ class GraphTransferDataset(Dataset):
             "target_idx": self.readout_idx,
             "label": label,
             "r": self.realized_r,
+            "mol_props": self.mol_props,
         }
 
 
@@ -80,7 +101,7 @@ def graph_transfer_collate_fn(batch: List[Dict[str, object]]) -> Dict[str, objec
     all_masses = all_mask.float()
 
     V = torch.eye(3).unsqueeze(0).expand(B, 3, 3).contiguous() * GRAPH_BOX_HALFWIDTH
-    mol_props = torch.zeros(B, _MOL_FEAT_DIM)
+    mol_props = torch.stack([item["mol_props"] for item in batch], dim=0)
     edge_feats = torch.zeros(B, N_max, N_max, GRAPH_EDGE_FEAT_DIM)
 
     target_idx = torch.tensor([item["target_idx"] for item in batch], dtype=torch.long)
