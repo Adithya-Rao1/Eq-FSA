@@ -31,8 +31,13 @@ def jacobian_sensitivity(
 ) -> float:
     signal = logits.pow(2).sum()
     (grad,) = torch.autograd.grad(signal, embedding_output, retain_graph=True)
-    B = grad.shape[0]
-    source_grad = grad[torch.arange(B, device=grad.device), source_idx]
+    B = logits.shape[0]
+    if grad.shape[0] == B:
+        source_grad = grad[torch.arange(B, device=grad.device), source_idx.to(grad.device)]
+    else:
+        N = grad.shape[0] // B
+        flat_idx = torch.arange(B, device=grad.device) * N + source_idx.to(grad.device)
+        source_grad = grad[flat_idx]
     return float(source_grad.norm(dim=-1).mean().item())
 
 
