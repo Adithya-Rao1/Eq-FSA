@@ -42,7 +42,18 @@ def call_model(model, variant: str, batch: dict) -> torch.Tensor:
     )
 
 
-def build_model_for_variant(variant: str, realized_r: int, classes: int, num_atom_types: int, config: dict):
+def _avg_num_neighbors(positions: torch.Tensor, cutoff: float) -> float:
+    
+    dist = torch.cdist(positions, positions)
+    n = positions.shape[0]
+    within_cutoff = (dist <= cutoff) & ~torch.eye(n, dtype=torch.bool, device=positions.device)
+    return max(1.0, float(within_cutoff.sum(dim=-1).float().mean().item()))
+
+
+def build_model_for_variant(
+    variant: str, realized_r: int, classes: int, num_atom_types: int, config: dict,
+    avg_num_neighbors: float = 1.0,
+):
     if variant == "dimenet":
         from stage_1.experiments.neurreps.dimenet_baseline import DimeNetPlusPlusClassifier
         num_layers = max(1, realized_r + config["baseline_layer_margin"])
@@ -55,7 +66,7 @@ def build_model_for_variant(variant: str, realized_r: int, classes: int, num_ato
         num_layers = max(1, realized_r + config["baseline_layer_margin"])
         return NequIPAllegroClassifier(
             num_node_types=num_atom_types, classes=classes, num_layers=num_layers,
-            cutoff=config["cutoff"],
+            cutoff=config["cutoff"], avg_num_neighbors=avg_num_neighbors,
         )
     if variant == "eqfsa_full":
         return EqFSAClassifier(
@@ -90,7 +101,10 @@ def train_one_realization(topology: str, r: int, variant: str, config: dict, see
     )
 
     device = config["_device"]
-    model = build_model_for_variant(variant, realized_r, classes, num_atom_types, config).to(device)
+    avg_num_neighbors = _avg_num_neighbors(dataset.positions, config["cutoff"])
+    model = build_model_for_variant(
+        variant, realized_r, classes, num_atom_types, config, avg_num_neighbors=avg_num_neighbors,
+    ).to(device)
     embedding_module = model.input_embedding_module
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=1e-4)
 

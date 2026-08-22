@@ -22,6 +22,7 @@ class NequIPAllegroClassifier(nn.Module):
         parity: bool = True,
         model_dtype: str = "float32",
         max_num_neighbors: int = 64,
+        avg_num_neighbors: float = 1.0,
     ):
         super().__init__()
         self.cutoff = cutoff
@@ -42,6 +43,7 @@ class NequIPAllegroClassifier(nn.Module):
                 num_features=num_features,
                 radial_mlp_depth=1,
                 radial_mlp_width=num_features,
+                avg_num_neighbors=avg_num_neighbors,
                 do_derivatives=False,
             )
         finally:
