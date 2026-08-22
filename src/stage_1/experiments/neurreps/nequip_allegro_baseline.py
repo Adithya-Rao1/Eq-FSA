@@ -44,6 +44,8 @@ class NequIPAllegroClassifier(nn.Module):
                 radial_mlp_depth=1,
                 radial_mlp_width=num_features,
                 avg_num_neighbors=avg_num_neighbors,
+                per_type_energy_scales=1.0,
+                per_type_energy_shifts=0.0,
                 do_derivatives=False,
             )
         finally:
