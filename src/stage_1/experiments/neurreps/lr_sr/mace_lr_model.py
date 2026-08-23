@@ -45,6 +45,8 @@ def configuration_to_atomic_data(positions: torch.Tensor, types: torch.Tensor, b
     config = Configuration(
         atomic_numbers=atomic_numbers,
         positions=positions.detach().cpu().numpy().astype(np.float64),
+        properties={},
+        property_weights={},
         cell=np.eye(3) * box,
         pbc=(True, True, True),
     )
