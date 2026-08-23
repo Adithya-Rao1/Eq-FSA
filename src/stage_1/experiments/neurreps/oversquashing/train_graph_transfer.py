@@ -140,21 +140,24 @@ def train_one_realization(topology: str, r: int, variant: str, config: dict, see
     log_every = config.get("log_every", 0)
     for epoch in range(config["epochs"]):
         model.train()
-        epoch_loss_sum, epoch_batches = 0.0, 0
+        epoch_loss_sum, epoch_grad_norm_sum, epoch_batches = 0.0, 0.0, 0
         for batch in train_loader:
             batch = _to_device(batch, device)
             optimizer.zero_grad()
             logits = call_model(model, variant, batch)
             loss = F.cross_entropy(logits, batch["labels"])
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             epoch_loss_sum += loss.item()
+            epoch_grad_norm_sum += float(grad_norm)
             epoch_batches += 1
         if log_every and (epoch % log_every == 0 or epoch == config["epochs"] - 1):
             avg_loss = epoch_loss_sum / max(1, epoch_batches)
+            avg_grad_norm = epoch_grad_norm_sum / max(1, epoch_batches)
             print(
-                f"    [{variant} {topology} r={r} seed={seed}] epoch={epoch} loss={avg_loss:.4f}",
+                f"    [{variant} {topology} r={r} seed={seed}] epoch={epoch} loss={avg_loss:.4f} "
+                f"grad_norm={avg_grad_norm:.6f}",
                 flush=True,
             )
 
