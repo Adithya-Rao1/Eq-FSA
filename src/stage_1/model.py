@@ -220,12 +220,6 @@ class EnergyLayer(nn.Module):
         for l in range(self.max_degree + 1):
             f[l] = self.layer_norm_out[str(l)](f[l] + f_out[l])
 
-        # Global master-node recurrence. ablate_lr=True zeros the master_attn contribution --
-        # g_a then evolves purely through its own self-recurrence (W_master_self), never picking up
-        # any information from the atoms, so the later master_fusion readback carries no genuine
-        # cross-atom long-range information either. This is the SR-only ablation for the lr_sr
-        # benchmark (see stage_1/experiments/neurreps/lr_sr/), analogous to ablate_max_degree above
-        # but disabling the long-range channel specifically rather than higher SO(3) degrees.
         master_attn_out = self.master_attn(g_a_in, f_in[0], x_wrapped, x_com, node_mask, V)
         if self.ablate_lr:
             master_attn_out = torch.zeros_like(master_attn_out)
@@ -333,6 +327,7 @@ class EnergyModel(nn.Module):
         self,
         x, node_types, atomic_masses, node_mask,
         V, mol_props, edge_feats,
+        return_layer_states: bool = False,
     ) -> torch.Tensor:
         node_mask = node_mask.bool()
         atomic_masses = atomic_masses * node_mask.to(atomic_masses.dtype)
@@ -367,6 +362,7 @@ class EnergyModel(nn.Module):
         g_a = self.master_expand(pooled).view(B, self.n_master_nodes, -1).unsqueeze(-1)
         g_a = self.master_expand_norm(g_a)
 
+        layer_states = [] if return_layer_states else None
         for layer in self.layers:
             if self.grad_checkpoint and self.training:
                 f, g_a = checkpoint(
@@ -378,6 +374,8 @@ class EnergyModel(nn.Module):
                     f_in=f, f0=f0, g_a_in=g_a, x=x, x_com=x_com,
                     edge_feats=edge_feats, node_mask=node_mask, V=V,
                 )
+            if return_layer_states:
+                layer_states.append(f)
 
         fusion_out = self.master_fusion(f_atoms=f, g_a=g_a, x=minimum_image(x, V), x_com=x_com)
         if self.ablate_max_degree is not None:
@@ -386,14 +384,13 @@ class EnergyModel(nn.Module):
                 for l, v in fusion_out.items()
             }
         if self.ablate_lr:
-            # g_a is already content-free from the per-layer ablation above, but also zero this
-            # final atom<-master readback directly so the SR ablation carries no master-node
-            # pathway contribution at all, not even an input-independent constant one.
             fusion_out = {l: torch.zeros_like(v) for l, v in fusion_out.items()}
         f = {l: self.layer_norm_fusion[str(l)](f[l] + fusion_out[l]) for l in f}
 
         f = self.readout(f)
 
+        if return_layer_states:
+            return f, layer_states
         return f
 
 class SolventModel(nn.Module):

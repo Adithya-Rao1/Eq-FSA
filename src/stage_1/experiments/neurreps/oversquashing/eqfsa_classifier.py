@@ -25,8 +25,10 @@ class EqFSAClassifier(nn.Module):
         edge_feat_dim: int = 1,
         ablate_max_degree: int | None = None,
         grad_checkpoint: bool = False,
+        multi_layer_readout: bool = True,
     ):
         super().__init__()
+        self.multi_layer_readout = multi_layer_readout
         self.energy_model = EnergyModel(
             radial_net=radial_net,
             num_atom_types=num_atom_types,
@@ -63,6 +65,14 @@ class EqFSAClassifier(nn.Module):
     def input_embedding_module(self) -> nn.Embedding:
         return self.energy_model.input_embedding
 
+    def _readout_logits(self, f: dict, batch_ar: torch.Tensor, target_idx: torch.Tensor) -> torch.Tensor:
+        f_target = {l: f[l][batch_ar, target_idx] for l in f}
+        u_vec = self.norm_readout1(f_target[1])
+        u_ten = self.norm_readout2(f_target[2])
+        full_vec = f_target[0].squeeze(-1) + u_vec.unsqueeze(-1) + u_ten.unsqueeze(-1)
+        logits = self.classifier_head(full_vec.unsqueeze(-1))
+        return logits.squeeze(-1)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -74,14 +84,17 @@ class EqFSAClassifier(nn.Module):
         edge_feats: torch.Tensor,
         target_idx: torch.Tensor,
     ) -> torch.Tensor:
-        f = self.energy_model(x, types, masses, mask, V, mol_props, edge_feats)
-
         B = x.shape[0]
         batch_ar = torch.arange(B, device=x.device)
-        f_target = {l: f[l][batch_ar, target_idx] for l in f}
 
-        u_vec = self.norm_readout1(f_target[1])
-        u_ten = self.norm_readout2(f_target[2])
-        full_vec = f_target[0].squeeze(-1) + u_vec.unsqueeze(-1) + u_ten.unsqueeze(-1)
-        logits = self.classifier_head(full_vec.unsqueeze(-1))
-        return logits.squeeze(-1)
+        if self.multi_layer_readout:
+            f, layer_states = self.energy_model(
+                x, types, masses, mask, V, mol_props, edge_feats, return_layer_states=True,
+            )
+            logits = self._readout_logits(f, batch_ar, target_idx)
+            for layer_f in layer_states:
+                logits = logits + self._readout_logits(layer_f, batch_ar, target_idx)
+            return logits
+
+        f = self.energy_model(x, types, masses, mask, V, mol_props, edge_feats)
+        return self._readout_logits(f, batch_ar, target_idx)

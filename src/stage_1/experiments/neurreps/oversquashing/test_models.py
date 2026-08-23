@@ -10,7 +10,6 @@ ATOL, RTOL = 1e-9, 1e-9
 NUM_ATOM_TYPES = 6
 CLASSES = 5
 
-
 def random_rotation_matrix(dtype=DTYPE, generator=None) -> torch.Tensor:
     A = torch.randn(3, 3, dtype=torch.double, generator=generator)
     Q, R = torch.linalg.qr(A)
