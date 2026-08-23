@@ -14,6 +14,7 @@ from utils.se3_utils import RadialNetwork
 
 from stage_1.experiments.neurreps.oversquashing.synthetic_dataset import (
     GRAPH_EDGE_FEAT_DIM,
+    GeometricGraphTransferDataset,
     GraphTransferDataset,
     graph_transfer_collate_fn,
 )
@@ -88,7 +89,13 @@ def train_one_realization(topology: str, r: int, variant: str, config: dict, see
     classes = config["classes"]
     samples = config["samples_per_config"]
 
-    dataset = GraphTransferDataset(topology, r, classes, samples, seed=seed, cutoff=config["cutoff"])
+    if config["task"] == "geometric":
+        dataset = GeometricGraphTransferDataset(
+            topology, r, classes, samples, seed=seed, cutoff=config["cutoff"],
+            class_spacing=config["geometric_class_spacing"],
+        )
+    else:
+        dataset = GraphTransferDataset(topology, r, classes, samples, seed=seed, cutoff=config["cutoff"])
     realized_r = dataset.realized_r
     realized_euclid = dataset.realized_euclid
     label_idx = dataset.label_idx
@@ -201,6 +208,19 @@ def main():
     parser.add_argument("--topologies", type=str, nargs="+", default=["chain", "ring", "lollipop"])
     parser.add_argument("--r-values", type=int, nargs="+", default=[2, 4, 6, 8, 10, 12, 16, 20])
     parser.add_argument("--variants", type=str, nargs="+", default=["dimenet", "nequip_allegro", "eqfsa_full"])
+    parser.add_argument(
+        "--task", type=str, choices=["type", "geometric"], default="type",
+        help="'type': class is the label atom's discrete type (original benchmark). "
+             "'geometric': class is the label atom's real distance from the readout atom along a "
+             "fixed axis, with its type held constant -- mean_pool/attn_pool are structurally "
+             "capped at chance since they never see positions.",
+    )
+    parser.add_argument(
+        "--geometric-class-spacing", type=float, default=None,
+        help="--task geometric only: distance (in the same units as --cutoff) between adjacent "
+             "classes' target distances. Auto-computed from the realized geometry's safe margin "
+             "if omitted.",
+    )
     parser.add_argument("--classes", type=int, default=5)
     parser.add_argument("--eqfsa-num-layers", type=int, default=4, help="Fixed depth for Eq-FSA, independent of r")
     parser.add_argument(
