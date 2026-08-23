@@ -7,11 +7,11 @@ import time
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset, random_split
 
 from utils.se3_utils import RadialNetwork
 
-from stage_1.experiments.neurreps.lr_sr.dataset import LRSRDataset, NUM_ATOM_TYPES, LR_SR_EDGE_FEAT_DIM, lr_sr_collate_fn
+from stage_1.experiments.neurreps.lr_sr.dataset import LRSRDataset, N_ATOMS, NUM_ATOM_TYPES, LR_SR_EDGE_FEAT_DIM, lr_sr_collate_fn
 from stage_1.experiments.neurreps.lr_sr.lr_sr_model import LRSREnergyForceModel, compute_energy_and_forces
 
 
@@ -31,6 +31,17 @@ def energy_force_loss(U, U_hat, F_, F_hat, lambda1: float, lambda2: float):
     energy_term = lambda1 * (U - U_hat) ** 2
     force_term = lambda2 * ((F_ - F_hat) ** 2).mean(dim=(-2, -1))
     return (energy_term + force_term).mean(), energy_term.mean(), force_term.mean()
+
+
+def energy_force_stats(dataset: LRSRDataset, train_subset: Subset) -> tuple[float, float, float]:
+    energies = torch.tensor([dataset.configs[i]["energy"].item() for i in train_subset.indices])
+    force_sumsq = torch.tensor(
+        [dataset.configs[i]["forces"].pow(2).sum().item() for i in train_subset.indices]
+    )
+    energy_mean = energies.mean().item()
+    energy_std = energies.std().item()
+    force_rms = (force_sumsq / (N_ATOMS * 3)).mean().sqrt().item()
+    return energy_mean, energy_std, force_rms
 
 
 def build_model(variant: str, config: dict) -> LRSREnergyForceModel:
@@ -58,6 +69,8 @@ def train_one(variant: str, config: dict, seed: int) -> dict:
         val_ds, batch_size=config["batch_size"], shuffle=False, collate_fn=lr_sr_collate_fn,
     )
 
+    energy_mean, energy_std, force_rms = energy_force_stats(dataset, train_ds)
+
     device = config["_device"]
     torch.manual_seed(seed)
     model = build_model(variant, config).to(device)
@@ -72,8 +85,12 @@ def train_one(variant: str, config: dict, seed: int) -> dict:
                 model, batch["x"], batch["types"], batch["masses"], batch["mask"], batch["V"],
                 batch["mol_props"], batch["edge_feats"],
             )
+            U_n = (U - energy_mean) / energy_std
+            U_target_n = (batch["energy"] - energy_mean) / energy_std
+            F_n = F_pred / force_rms
+            F_target_n = batch["forces"] / force_rms
             loss, _, _ = energy_force_loss(
-                U, batch["energy"], F_pred, batch["forces"],
+                U_n, U_target_n, F_n, F_target_n,
                 config["lambda_energy"], config["lambda_force"],
             )
             loss.backward()
@@ -94,11 +111,14 @@ def train_one(variant: str, config: dict, seed: int) -> dict:
         total_n_configs += U.shape[0]
         total_n_force_components += F_pred.numel()
 
-    energy_mae = total_energy_ae / max(1, total_n_configs)
-    force_mae = total_force_ae / max(1, total_n_force_components)
+    energy_mae_mev_per_atom = (total_energy_ae / max(1, total_n_configs) / N_ATOMS) * 1000.0
+    force_mae_mev = (total_force_ae / max(1, total_n_force_components)) * 1000.0
     n_params = sum(p.numel() for p in model.parameters())
 
-    return {"variant": variant, "energy_mae": energy_mae, "force_mae": force_mae, "n_params": n_params}
+    return {
+        "variant": variant, "energy_mae_mev_per_atom": energy_mae_mev_per_atom,
+        "force_mae_mev": force_mae_mev, "n_params": n_params,
+    }
 
 
 def _mean_std(values: list[float]) -> tuple[float, float]:
@@ -110,7 +130,7 @@ def _mean_std(values: list[float]) -> tuple[float, float]:
 
 def run_variant(variant: str, config: dict) -> dict:
     base_seed = config["seed"]
-    keys = ["energy_mae", "force_mae", "n_params"]
+    keys = ["energy_mae_mev_per_atom", "force_mae_mev", "n_params"]
     per_realization = {k: [] for k in keys}
     for i in range(config["num_realizations"]):
         result = train_one(variant, config, seed=base_seed + i * 7919)
@@ -138,7 +158,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--lambda-energy", type=float, default=1.0)
-    parser.add_argument("--lambda-force", type=float, default=1.0)
+    parser.add_argument("--lambda-force", type=float, default=0.5, help="Matches train_spice.py's default")
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--num-realizations", type=int, default=3)
@@ -167,8 +187,8 @@ def main():
             result = run_variant(variant, config)
             result["train_time_s"] = time.time() - t0
             print(
-                f"  energy_mae={result['energy_mae']:.4f}+/-{result['energy_mae_std']:.4f} eV  "
-                f"force_mae={result['force_mae']:.4f}+/-{result['force_mae_std']:.4f} eV/A  "
+                f"  energy_mae={result['energy_mae_mev_per_atom']:.4f}+/-{result['energy_mae_mev_per_atom_std']:.4f} meV/atom  "
+                f"force_mae={result['force_mae_mev']:.4f}+/-{result['force_mae_mev_std']:.4f} meV/A  "
                 f"({result['train_time_s']:.1f}s)",
                 flush=True,
             )
