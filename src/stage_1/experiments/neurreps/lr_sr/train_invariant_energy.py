@@ -1,0 +1,155 @@
+from __future__ import annotations
+
+import argparse
+import csv
+import os
+import time
+
+import torch
+import torch.nn.functional as F
+
+from stage_1.experiments.neurreps.lr_sr.invariant_energy_data import generate_batch, make_wavevector_grid
+from stage_1.experiments.neurreps.lr_sr.invariant_energy_model import EqFSAEncoder, RSAEncoder
+
+
+def detect_device(requested: str | None) -> torch.device:
+    if requested:
+        return torch.device(requested)
+    if torch.cuda.is_available():
+        return torch.device("cuda:0")
+    return torch.device("cpu")
+
+
+def build_model(encoder: str, num_outputs: int, config: dict) -> torch.nn.Module:
+    if encoder == "eqfsa":
+        return EqFSAEncoder(
+            num_master_nodes=config["num_master_nodes"], feature_dim=config["feature_dim"],
+            hidden_dim=config["hidden_dim"], n_max=config["n_max"], num_outputs=num_outputs,
+        )
+    if encoder == "rsa":
+        return RSAEncoder(
+            feature_dim=config["feature_dim"], hidden_dim=config["hidden_dim"],
+            n_max=config["n_max"], sigma=config["rsa_sigma"], num_outputs=num_outputs,
+        )
+    raise ValueError(f"Unknown encoder {encoder!r}")
+
+
+def train_one(encoder: str, n_atoms: int, config: dict, seed: int) -> dict:
+    device = config["_device"]
+    generator = torch.Generator().manual_seed(seed)
+    kvecs = make_wavevector_grid(config["n_max"], box=config["box"]).to(device)
+    sigmas = torch.tensor(config["sigmas"], device=device)
+    num_outputs = sigmas.shape[0]
+
+    torch.manual_seed(seed)
+    model = build_model(encoder, num_outputs, config).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=0.0)
+
+    with torch.no_grad():
+        _, _, _, _, E_probe = generate_batch(
+            config["eval_batches"] * config["batch_size"], n_atoms, kvecs.cpu(), sigmas.cpu(),
+            box=config["box"], generator=torch.Generator().manual_seed(seed + 999),
+        )
+        target_var = E_probe.var(dim=0).to(device) 
+
+    model.train()
+    for _ in range(config["train_steps"]):
+        charges, positions, V, mask, E_LR = generate_batch(
+            config["batch_size"], n_atoms, kvecs.cpu(), sigmas.cpu(), box=config["box"], generator=generator,
+        )
+        charges, positions, mask, V, E_LR = (
+            charges.to(device), positions.to(device), mask.to(device), V.to(device), E_LR.to(device),
+        )
+        optimizer.zero_grad()
+        pred = model(charges, positions, mask, V)
+        loss = F.mse_loss(pred, E_LR)
+        loss.backward()
+        optimizer.step()
+
+    model.eval()
+    total_sq_err = torch.zeros(num_outputs, device=device)
+    total_n = 0
+    eval_generator = torch.Generator().manual_seed(seed + 12345)
+    with torch.no_grad():
+        for _ in range(config["eval_batches"]):
+            charges, positions, V, mask, E_LR = generate_batch(
+                config["batch_size"], n_atoms, kvecs.cpu(), sigmas.cpu(), box=config["box"], generator=eval_generator,
+            )
+            charges, positions, mask, V, E_LR = (
+                charges.to(device), positions.to(device), mask.to(device), V.to(device), E_LR.to(device),
+            )
+            pred = model(charges, positions, mask, V)
+            total_sq_err += ((pred - E_LR) ** 2).sum(dim=0)
+            total_n += E_LR.shape[0]
+
+    nmse_per_sigma = (total_sq_err / max(1, total_n)) / target_var.clamp(min=1e-12)
+    nmse = nmse_per_sigma.mean().item()
+    n_params = sum(p.numel() for p in model.parameters())
+    return {"encoder": encoder, "n_atoms": n_atoms, "nmse": nmse, "n_params": n_params}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--n-values", type=int, nargs="+", default=[32, 64, 128, 256, 512])
+    parser.add_argument("--encoders", type=str, nargs="+", default=["eqfsa", "rsa"])
+    parser.add_argument("--num-master-nodes", type=int, default=4)
+    parser.add_argument("--rsa-sigma", type=float, default=5.0)
+    parser.add_argument("--n-max", type=int, default=2)
+    parser.add_argument("--sigmas", type=float, nargs="+", default=[1.0, 2.0, 4.0, 8.0, 16.0])
+    parser.add_argument("--box", type=float, default=20.0)
+    parser.add_argument("--feature-dim", type=int, default=32)
+    parser.add_argument("--hidden-dim", type=int, default=64)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--train-steps", type=int, default=2000)
+    parser.add_argument("--eval-batches", type=int, default=10)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--num-realizations", type=int, default=3)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--outdir", type=str, default="stage_1/experiments/neurreps/lr_sr/results_invariant_energy")
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--smoke-test", action="store_true")
+    args = parser.parse_args()
+    config = vars(args)
+    config["_device"] = detect_device(config["device"])
+    print(f"Using device: {config['_device']}", flush=True)
+
+    if config["smoke_test"]:
+        config["n_values"] = [32, 64]
+        config["train_steps"] = 50
+        config["eval_batches"] = 2
+        config["num_realizations"] = 1
+
+    os.makedirs(config["outdir"], exist_ok=True)
+    csv_path = os.path.join(config["outdir"], "results.csv")
+
+    rows = []
+    writer = None
+    with open(csv_path, "w", newline="") as csv_file:
+        for n_atoms in config["n_values"]:
+            for encoder in config["encoders"]:
+                print(f"=== encoder={encoder} N={n_atoms} ===", flush=True)
+                t0 = time.time()
+                nmses, n_params = [], None
+                for i in range(config["num_realizations"]):
+                    result = train_one(encoder, n_atoms, config, seed=config["seed"] + i * 7919)
+                    nmses.append(result["nmse"])
+                    n_params = result["n_params"]
+                mean_nmse = sum(nmses) / len(nmses)
+                std_nmse = (sum((v - mean_nmse) ** 2 for v in nmses) / max(1, len(nmses) - 1)) ** 0.5
+                row = {
+                    "encoder": encoder, "n_atoms": n_atoms, "nmse": mean_nmse, "nmse_std": std_nmse,
+                    "n_params": n_params, "train_time_s": time.time() - t0,
+                }
+                print(f"  nmse={mean_nmse:.4f}+/-{std_nmse:.4f}  n_params={n_params}  ({row['train_time_s']:.1f}s)", flush=True)
+                rows.append(row)
+                if writer is None:
+                    writer = csv.DictWriter(csv_file, fieldnames=list(row.keys()))
+                    writer.writeheader()
+                writer.writerow(row)
+                csv_file.flush()
+                os.fsync(csv_file.fileno())
+    print(f"Wrote {len(rows)} rows to {csv_path}")
+
+
+if __name__ == "__main__":
+    main()
