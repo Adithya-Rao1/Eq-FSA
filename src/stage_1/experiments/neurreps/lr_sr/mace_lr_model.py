@@ -15,7 +15,7 @@ def load_frozen_mace_off(model_size: str = MACE_OFF_MODEL_SIZE, device: str = "c
     from mace.calculators.foundations_models import mace_off
 
     mace_model = mace_off(model=model_size, device=device, default_dtype=default_dtype, return_raw_model=True)
-    mace_model.to(device)
+    mace_model.to(device=device, dtype=getattr(torch, default_dtype))
     for p in mace_model.parameters():
         p.requires_grad_(False)
     return mace_model
@@ -123,6 +123,12 @@ class MaceLRModel(nn.Module):
         data_dict = mace_batch.to_dict()  # VERIFY ON REMOTE: confirm Batch exposes .to_dict()
         out = self.mace_model(data_dict, training=self.training, compute_force=False)
         node_energy = out["node_energy"].reshape(positions_batch.shape[0], N)  # VERIFY ON REMOTE: confirm this key name
+        node_energy = node_energy.to(positions_batch.dtype)
+
+        node_e0 = self.mace_model.atomic_energies_fn(data_dict["node_attrs"]).squeeze(-1)
+        node_e0 = node_e0.reshape(positions_batch.shape[0], N).to(positions_batch.dtype)
+        node_energy = node_energy - node_e0
+
         total_sr_energy = node_energy.sum(dim=1)
 
         if self.variant == "none":
