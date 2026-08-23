@@ -90,10 +90,25 @@ def train_one_realization(topology: str, r: int, variant: str, config: dict, see
     samples = config["samples_per_config"]
 
     if config["task"] == "geometric":
-        dataset = GeometricGraphTransferDataset(
-            topology, r, classes, samples, seed=seed, cutoff=config["cutoff"],
-            class_spacing=config["geometric_class_spacing"],
-        )
+        dataset = None
+        last_err = None
+        for attempt in range(config["geometric_seed_retries"]):
+            trial_seed = seed + attempt * 1000003
+            try:
+                dataset = GeometricGraphTransferDataset(
+                    topology, r, classes, samples, seed=trial_seed, cutoff=config["cutoff"],
+                    class_spacing=config["geometric_class_spacing"],
+                )
+                seed = trial_seed
+                break
+            except RuntimeError as e:
+                last_err = e
+        if dataset is None:
+            raise RuntimeError(
+                f"GeometricGraphTransferDataset: no safe geometry found for topology={topology!r} r={r} "
+                f"after {config['geometric_seed_retries']} seed attempts starting from {seed}. "
+                f"Last error: {last_err}"
+            )
     else:
         dataset = GraphTransferDataset(topology, r, classes, samples, seed=seed, cutoff=config["cutoff"])
     realized_r = dataset.realized_r
@@ -122,8 +137,10 @@ def train_one_realization(topology: str, r: int, variant: str, config: dict, see
     embedding_module = model.input_embedding_module
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=1e-4)
 
-    for _ in range(config["epochs"]):
+    log_every = config.get("log_every", 0)
+    for epoch in range(config["epochs"]):
         model.train()
+        epoch_loss_sum, epoch_batches = 0.0, 0
         for batch in train_loader:
             batch = _to_device(batch, device)
             optimizer.zero_grad()
@@ -132,6 +149,14 @@ def train_one_realization(topology: str, r: int, variant: str, config: dict, see
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            epoch_loss_sum += loss.item()
+            epoch_batches += 1
+        if log_every and (epoch % log_every == 0 or epoch == config["epochs"] - 1):
+            avg_loss = epoch_loss_sum / max(1, epoch_batches)
+            print(
+                f"    [{variant} {topology} r={r} seed={seed}] epoch={epoch} loss={avg_loss:.4f}",
+                flush=True,
+            )
 
     model.eval()
     total_ce, total_correct, total_n = 0.0, 0, 0
@@ -177,11 +202,15 @@ def run_config(
     raw_writer: "csv.DictWriter | None" = None, raw_file=None,
 ) -> dict:
     base_seed = config["seed"]
+    explicit_seeds = config.get("seeds")
+    if explicit_seeds:
+        seeds = list(explicit_seeds)
+    else:
+        seeds = [base_seed + i * 7919 for i in range(config["num_realizations"])]
     keys = ["r", "euclid", "val_error", "jacobian_sensitivity", "mi_lower_bound", "n_params"]
     per_realization = {k: [] for k in keys}
 
-    for i in range(config["num_realizations"]):
-        seed = base_seed + i * 7919
+    for i, seed in enumerate(seeds):
         result = train_one_realization(topology, r, variant, config, seed=seed)
         for k in keys:
             per_realization[k].append(result[k])
@@ -195,7 +224,7 @@ def run_config(
             raw_file.flush()
             os.fsync(raw_file.fileno())
 
-    row = {"topology": topology, "variant": variant, "nominal_r": r, "num_realizations": config["num_realizations"]}
+    row = {"topology": topology, "variant": variant, "nominal_r": r, "num_realizations": len(seeds)}
     for k in keys:
         mean, std = _mean_std(per_realization[k])
         row[k] = mean
@@ -221,6 +250,12 @@ def main():
              "classes' target distances. Auto-computed from the realized geometry's safe margin "
              "if omitted.",
     )
+    parser.add_argument(
+        "--geometric-seed-retries", type=int, default=20,
+        help="--task geometric only: number of alternate seeds to try if a realization's random-walk "
+             "geometry doesn't leave a safe perturbation margin (e.g. an atom ends up very close to "
+             "the cutoff boundary by chance) before giving up on that (topology, r, realization).",
+    )
     parser.add_argument("--classes", type=int, default=5)
     parser.add_argument("--eqfsa-num-layers", type=int, default=4, help="Fixed depth for Eq-FSA, independent of r")
     parser.add_argument(
@@ -241,6 +276,19 @@ def main():
         help="Independent geometry realizations per (topology, r, variant), averaged with std -- "
              "multiplies total sweep time by this factor",
     )
+    parser.add_argument(
+        "--seeds", type=int, nargs="+", default=None,
+        help="Explicit list of seeds to run instead of the automatic base_seed + i*7919 scheme -- "
+             "overrides --num-realizations. Intended for re-running specific realizations found "
+             "interesting/anomalous in a prior sweep's results_raw.csv (e.g. seeds where a variant "
+             "collapsed to chance), typically combined with a larger --epochs to check whether "
+             "extended training lets those specific seeds escape.",
+    )
+    parser.add_argument(
+        "--log-every", type=int, default=0,
+        help="Print average training loss every N epochs (0=silent). Useful with --seeds to watch "
+             "whether a specific seed's loss is stuck on a plateau or still descending.",
+    )
     parser.add_argument("--outdir", type=str, default="stage_1/experiments/neurreps/results")
     parser.add_argument("--csv-path", type=str, default=None)
     parser.add_argument(
@@ -257,7 +305,7 @@ def main():
     print(f"Using device: {config['_device']}", flush=True)
 
     if config["smoke_test"]:
-        config["r_values"] = [2, 4]
+        config["r_values"] = [6, 8] if config["task"] == "geometric" else [2, 4]
         config["epochs"] = 3
         config["samples_per_config"] = 40
         config["topologies"] = config["topologies"][:1]
@@ -277,7 +325,8 @@ def main():
         for topology in config["topologies"]:
             for r in config["r_values"]:
                 for variant in config["variants"]:
-                    print(f"=== {topology} r={r} variant={variant} ({config['num_realizations']} realizations) ===", flush=True)
+                    n_realizations_display = len(config["seeds"]) if config.get("seeds") else config["num_realizations"]
+                    print(f"=== {topology} r={r} variant={variant} ({n_realizations_display} realizations) ===", flush=True)
                     t0 = time.time()
                     result = run_config(topology, r, variant, config, raw_writer=raw_writer, raw_file=raw_file)
                     result["train_time_s"] = time.time() - t0

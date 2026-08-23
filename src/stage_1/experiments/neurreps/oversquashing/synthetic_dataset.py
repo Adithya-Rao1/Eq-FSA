@@ -113,15 +113,25 @@ class GeometricGraphTransferDataset(Dataset):
         axis = self.positions[self.label_idx] - self.positions[self.readout_idx]
         axis_norm = float(axis.norm())
         self.axis = axis / axis_norm
-        
-        max_spread = min(2.0 * MIN_BOND_LENGTH, 0.5 * (axis_norm - cutoff))
+
+        dists_from_label = (self.positions - self.positions[self.label_idx]).norm(dim=-1)
+        other_mask = torch.arange(self.n_atoms) != self.label_idx
+        margins = (dists_from_label[other_mask] - cutoff).abs()
+        max_spread = min(2.0 * MIN_BOND_LENGTH, 0.5 * float(margins.min()))
+        min_safe_spacing = 0.05
         if max_spread <= 0:
             raise RuntimeError(
                 f"GeometricGraphTransferDataset: no safe perturbation margin for topology={topology!r} "
-                f"r={r} (realized_euclid={axis_norm:.2f} too close to cutoff={cutoff}); "
-                f"use a larger r for this task."
+                f"r={r} seed={seed} (closest atom-to-label margin against cutoff={cutoff} is "
+                f"{float(margins.min()):.4f}); use a different r/seed for this task."
             )
         spacing = min(class_spacing, max_spread) if class_spacing is not None else max_spread / max(1, classes - 1)
+        if spacing < min_safe_spacing:
+            raise RuntimeError(
+                f"GeometricGraphTransferDataset: safe spacing {spacing:.4f} is below the minimum "
+                f"{min_safe_spacing} for topology={topology!r} r={r} seed={seed} -- task would be "
+                f"unlearnably tight; use a different r/seed or fewer classes."
+            )
         offsets = (torch.arange(classes, dtype=torch.float32) - (classes - 1) / 2.0) * spacing
         self.target_dists = axis_norm + offsets 
 
