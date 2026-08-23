@@ -52,9 +52,10 @@ def train_one(encoder: str, n_atoms: int, config: dict, seed: int) -> dict:
         )
         target_var = E_probe.var(dim=0).to(device)
         target_std = target_var.sqrt().clamp(min=1e-12)
+        target_mean = E_probe.mean(dim=0).to(device) 
         
     model.train()
-    for _ in range(config["train_steps"]):
+    for step in range(config["train_steps"]):
         charges, positions, V, mask, E_LR = generate_batch(
             config["batch_size"], n_atoms, kvecs.cpu(), sigmas.cpu(), box=config["box"], generator=generator,
         )
@@ -63,9 +64,11 @@ def train_one(encoder: str, n_atoms: int, config: dict, seed: int) -> dict:
         )
         optimizer.zero_grad()
         pred = model(charges, positions, mask, V)
-        loss = F.mse_loss(pred / target_std, E_LR / target_std)
+        loss = F.mse_loss((pred - target_mean) / target_std, (E_LR - target_mean) / target_std)
         loss.backward()
         optimizer.step()
+        if config.get("log_every", 0) and (step % config["log_every"] == 0 or step == config["train_steps"] - 1):
+            print(f"    [{encoder} N={n_atoms} seed={seed}] step={step} loss={loss.item():.4f}", flush=True)
 
     model.eval()
     total_sq_err = torch.zeros(num_outputs, device=device)
@@ -105,6 +108,7 @@ def main():
     parser.add_argument("--eval-batches", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--num-realizations", type=int, default=3)
+    parser.add_argument("--log-every", type=int, default=0, help="Print training loss every N steps (0=silent)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--outdir", type=str, default="stage_1/experiments/neurreps/lr_sr/results_invariant_energy")
     parser.add_argument("--device", type=str, default=None)
