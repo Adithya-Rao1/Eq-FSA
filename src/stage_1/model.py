@@ -111,6 +111,7 @@ class EnergyLayer(nn.Module):
         self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int = 128,
         edge_cutoff: float = 5.0, n_max: int = 2, pw_e_cutoff: Optional[float] = None,
         k_max: int = 0, edge_feat_dim: int = 8, ablate_max_degree: Optional[int] = None,
+        ablate_lr: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -119,6 +120,7 @@ class EnergyLayer(nn.Module):
         self.edge_cutoff = edge_cutoff
         self.k_max = k_max
         self.ablate_max_degree = ablate_max_degree
+        self.ablate_lr = ablate_lr
         self.sr_attn = SRAttention(
             radial_net, max_degree, feature_dim, hidden_dim, k_max=k_max, edge_feat_dim=edge_feat_dim,
         )
@@ -218,12 +220,16 @@ class EnergyLayer(nn.Module):
         for l in range(self.max_degree + 1):
             f[l] = self.layer_norm_out[str(l)](f[l] + f_out[l])
 
-        # Global master-node recurrence
-        g_a_out = self.master_ln(
-            self.W_master_self(g_a_in) + self.master_attn(
-                g_a_in, f_in[0], x_wrapped, x_com, node_mask, V,
-            )
-        )
+        # Global master-node recurrence. ablate_lr=True zeros the master_attn contribution --
+        # g_a then evolves purely through its own self-recurrence (W_master_self), never picking up
+        # any information from the atoms, so the later master_fusion readback carries no genuine
+        # cross-atom long-range information either. This is the SR-only ablation for the lr_sr
+        # benchmark (see stage_1/experiments/neurreps/lr_sr/), analogous to ablate_max_degree above
+        # but disabling the long-range channel specifically rather than higher SO(3) degrees.
+        master_attn_out = self.master_attn(g_a_in, f_in[0], x_wrapped, x_com, node_mask, V)
+        if self.ablate_lr:
+            master_attn_out = torch.zeros_like(master_attn_out)
+        g_a_out = self.master_ln(self.W_master_self(g_a_in) + master_attn_out)
         if self.diag_enabled:
             self._diag_g_a_norm = float(g_a_out.detach().norm())
 
@@ -255,6 +261,7 @@ class EnergyModel(nn.Module):
         num_fusion_heads: int = 4,
         edge_feat_dim:    int = 8,
         ablate_max_degree: Optional[int] = None,
+        ablate_lr: bool = False,
         grad_checkpoint: bool = False,
     ):
         super().__init__()
@@ -265,6 +272,7 @@ class EnergyModel(nn.Module):
         self.task       = task
         self.n_master_nodes = n_master_nodes
         self.ablate_max_degree = ablate_max_degree
+        self.ablate_lr = ablate_lr
         self.grad_checkpoint = grad_checkpoint
 
         self.input_embedding = nn.Embedding(num_atom_types, feature_dim)
@@ -303,7 +311,7 @@ class EnergyModel(nn.Module):
             EnergyLayer(
                 radial_net, max_degree, feature_dim, hidden_dim, edge_cutoff, n_max, pw_e_cutoff,
                 k_max=_compute_k_max(m, max_degree), edge_feat_dim=edge_feat_dim,
-                ablate_max_degree=ablate_max_degree,
+                ablate_max_degree=ablate_max_degree, ablate_lr=ablate_lr,
             )
             for m in range(num_layers)
         ])
@@ -377,6 +385,11 @@ class EnergyModel(nn.Module):
                 l: (v if l <= self.ablate_max_degree else torch.zeros_like(v))
                 for l, v in fusion_out.items()
             }
+        if self.ablate_lr:
+            # g_a is already content-free from the per-layer ablation above, but also zero this
+            # final atom<-master readback directly so the SR ablation carries no master-node
+            # pathway contribution at all, not even an input-independent constant one.
+            fusion_out = {l: torch.zeros_like(v) for l, v in fusion_out.items()}
         f = {l: self.layer_norm_fusion[str(l)](f[l] + fusion_out[l]) for l in f}
 
         f = self.readout(f)
