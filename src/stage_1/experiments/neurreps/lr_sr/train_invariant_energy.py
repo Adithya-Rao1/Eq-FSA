@@ -50,8 +50,9 @@ def train_one(encoder: str, n_atoms: int, config: dict, seed: int) -> dict:
             config["eval_batches"] * config["batch_size"], n_atoms, kvecs.cpu(), sigmas.cpu(),
             box=config["box"], generator=torch.Generator().manual_seed(seed + 999),
         )
-        target_var = E_probe.var(dim=0).to(device) 
-
+        target_var = E_probe.var(dim=0).to(device)
+        target_std = target_var.sqrt().clamp(min=1e-12)
+        
     model.train()
     for _ in range(config["train_steps"]):
         charges, positions, V, mask, E_LR = generate_batch(
@@ -62,7 +63,7 @@ def train_one(encoder: str, n_atoms: int, config: dict, seed: int) -> dict:
         )
         optimizer.zero_grad()
         pred = model(charges, positions, mask, V)
-        loss = F.mse_loss(pred, E_LR)
+        loss = F.mse_loss(pred / target_std, E_LR / target_std)
         loss.backward()
         optimizer.step()
 
