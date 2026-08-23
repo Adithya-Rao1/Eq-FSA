@@ -52,8 +52,10 @@ def train_one(encoder: str, n_atoms: int, config: dict, seed: int) -> dict:
         )
         target_var = E_probe.var(dim=0).to(device)
         target_std = target_var.sqrt().clamp(min=1e-12)
-        target_mean = E_probe.mean(dim=0).to(device) 
-        
+        target_mean = E_probe.mean(dim=0).to(device)
+        model.decoder.net[-1].weight.zero_()
+        model.decoder.net[-1].bias.copy_(target_mean)
+
     model.train()
     for step in range(config["train_steps"]):
         charges, positions, V, mask, E_LR = generate_batch(
