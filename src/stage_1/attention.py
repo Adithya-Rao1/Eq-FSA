@@ -169,6 +169,7 @@ class MasterNodeAttention(nn.Module):
         self.diag_enabled = False
         self._diag_damping_sum_min: Optional[float] = None
         self._diag_Z_min: Optional[float] = None
+        self._diag_ipr: Optional[torch.Tensor] = None
 
     def forward(
         self,
@@ -191,6 +192,10 @@ class MasterNodeAttention(nn.Module):
         Z = Z_raw.clamp(min=1e-8)
         if self.diag_enabled:
             self._diag_Z_min = float(Z.detach().min())
+            with torch.no_grad():
+                w = torch.einsum("bac,bgc->bag", phi_Q, phi_K)
+                w_norm = w / w.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+                self._diag_ipr = 1.0 / w_norm.pow(2).sum(dim=-1).clamp(min=1e-12)
 
         kvecs, _, mode_mask = make_wavevectors(V, self.n_max, self.pw_e_cutoff)
         mode_mask_f = mode_mask.to(x.dtype)
