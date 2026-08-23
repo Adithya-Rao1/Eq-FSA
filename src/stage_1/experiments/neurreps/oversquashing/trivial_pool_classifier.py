@@ -3,7 +3,6 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-
 class TrivialPoolClassifier(nn.Module):
     def __init__(self, num_atom_types: int, classes: int, embed_dim: int, hidden_dim: int, pool: str):
         super().__init__()
