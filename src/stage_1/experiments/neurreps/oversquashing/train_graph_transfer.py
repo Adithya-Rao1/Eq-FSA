@@ -12,13 +12,13 @@ from torch.utils.data import DataLoader, random_split
 
 from utils.se3_utils import RadialNetwork
 
-from stage_1.experiments.neurreps.synthetic_dataset import (
+from stage_1.experiments.neurreps.oversquashing.synthetic_dataset import (
     GRAPH_EDGE_FEAT_DIM,
     GraphTransferDataset,
     graph_transfer_collate_fn,
 )
-from stage_1.experiments.neurreps.eqfsa_classifier import EqFSAClassifier
-from stage_1.experiments.neurreps.metrics import EmbeddingCapture, jacobian_sensitivity, mi_lower_bound
+from stage_1.experiments.neurreps.oversquashing.eqfsa_classifier import EqFSAClassifier
+from stage_1.experiments.neurreps.oversquashing.metrics import EmbeddingCapture, jacobian_sensitivity, mi_lower_bound
 
 
 def detect_device(requested: str | None) -> torch.device:
@@ -55,14 +55,14 @@ def build_model_for_variant(
     avg_num_neighbors: float = 1.0,
 ):
     if variant == "dimenet":
-        from stage_1.experiments.neurreps.dimenet_baseline import DimeNetPlusPlusClassifier
+        from stage_1.experiments.neurreps.oversquashing.dimenet_baseline import DimeNetPlusPlusClassifier
         num_layers = max(1, realized_r + config["baseline_layer_margin"])
         return DimeNetPlusPlusClassifier(
             num_node_types=num_atom_types, classes=classes, num_layers=num_layers,
             cutoff=config["cutoff"],
         )
     if variant == "nequip_allegro":
-        from stage_1.experiments.neurreps.nequip_allegro_baseline import NequIPAllegroClassifier
+        from stage_1.experiments.neurreps.oversquashing.nequip_allegro_baseline import NequIPAllegroClassifier
         num_layers = max(1, realized_r + config["baseline_layer_margin"])
         return NequIPAllegroClassifier(
             num_node_types=num_atom_types, classes=classes, num_layers=num_layers,
@@ -74,6 +74,12 @@ def build_model_for_variant(
             num_layers=config["eqfsa_num_layers"], feature_dim=config["feature_dim"],
             hidden_dim=config["hidden_dim"], edge_cutoff=config["cutoff"], n_max=1,
             classes=classes, edge_feat_dim=GRAPH_EDGE_FEAT_DIM,
+        )
+    if variant in ("mean_pool", "attn_pool"):
+        from stage_1.experiments.neurreps.oversquashing.trivial_pool_classifier import TrivialPoolClassifier
+        return TrivialPoolClassifier(
+            num_atom_types=num_atom_types, classes=classes, embed_dim=config["feature_dim"],
+            hidden_dim=config["hidden_dim"], pool="mean" if variant == "mean_pool" else "attn",
         )
     raise ValueError(f"Unknown variant {variant!r}")
 
@@ -274,7 +280,7 @@ def main():
     print(f"Wrote {len(rows)} rows to {csv_path}")
     print(f"Wrote raw per-realization rows to {raw_csv_path}")
 
-    from stage_1.experiments.neurreps.plot_oversquashing_metrics import plot_oversquashing_metrics
+    from stage_1.experiments.neurreps.oversquashing.plot_oversquashing_metrics import plot_oversquashing_metrics
     plot_oversquashing_metrics(csv_path, config["outdir"])
 
 

@@ -7,7 +7,7 @@ from torch.utils.data import Dataset
 
 from utils.calc_props import _MOL_FEAT_DIM, _MOL_FEAT_NAMES
 
-from stage_1.experiments.neurreps.synthetic_geometry import (
+from stage_1.experiments.neurreps.oversquashing.synthetic_geometry import (
     DEFAULT_CUTOFF,
     FILLER_TYPE_IDX,
     LABEL_TYPE_BASE_IDX,

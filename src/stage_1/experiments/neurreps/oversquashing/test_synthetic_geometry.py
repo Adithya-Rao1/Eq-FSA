@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from stage_1.experiments.neurreps.synthetic_geometry import (
+from stage_1.experiments.neurreps.oversquashing.synthetic_geometry import (
     DEFAULT_CUTOFF,
     build_topology_geometry,
 )

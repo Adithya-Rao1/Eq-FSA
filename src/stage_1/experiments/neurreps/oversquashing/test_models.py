@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from stage_1.experiments.neurreps.eqfsa_classifier import EqFSAClassifier
+from stage_1.experiments.neurreps.oversquashing.eqfsa_classifier import EqFSAClassifier
 from utils.se3_utils import RadialNetwork
 
 DTYPE = torch.double
@@ -34,7 +34,7 @@ def make_batch(B, N, generator, dtype=DTYPE):
 
 def test_dimenet_logits_rotation_translation_invariant():
     try:
-        from stage_1.experiments.neurreps.dimenet_baseline import DimeNetPlusPlusClassifier
+        from stage_1.experiments.neurreps.oversquashing.dimenet_baseline import DimeNetPlusPlusClassifier
     except ImportError:
         print("SKIP: torch_geometric not installed"); return
 
@@ -56,7 +56,7 @@ def test_dimenet_logits_rotation_translation_invariant():
 
 def test_dimenet_forward_backward_finite():
     try:
-        from stage_1.experiments.neurreps.dimenet_baseline import DimeNetPlusPlusClassifier
+        from stage_1.experiments.neurreps.oversquashing.dimenet_baseline import DimeNetPlusPlusClassifier
     except ImportError:
         print("SKIP: torch_geometric not installed"); return
 
@@ -74,7 +74,7 @@ def test_dimenet_forward_backward_finite():
 
 def test_nequip_logits_rotation_translation_invariant():
     try:
-        from stage_1.experiments.neurreps.nequip_allegro_baseline import NequIPAllegroClassifier
+        from stage_1.experiments.neurreps.oversquashing.nequip_allegro_baseline import NequIPAllegroClassifier
     except ImportError:
         print("SKIP: nequip not installed"); return
 
@@ -96,7 +96,7 @@ def test_nequip_logits_rotation_translation_invariant():
 
 def test_nequip_forward_backward_finite():
     try:
-        from stage_1.experiments.neurreps.nequip_allegro_baseline import NequIPAllegroClassifier
+        from stage_1.experiments.neurreps.oversquashing.nequip_allegro_baseline import NequIPAllegroClassifier
     except ImportError:
         print("SKIP: nequip not installed"); return
 
