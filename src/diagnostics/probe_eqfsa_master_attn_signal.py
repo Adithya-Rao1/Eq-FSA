@@ -301,6 +301,12 @@ def print_direction_check(diag: dict) -> None:
               f"raw_S_ri={raw_cos:.4f}  S_ri (post s_ri_norm)={post_cos:.4f}")
         print("      (near 1.0 = examples point in nearly the same direction -- barely "
               "distinguishable even in 'direction', not just magnitude)  [decisive test of #2]")
+    if "decoder_in" in diag:
+        decoder_in_cos = mean_pairwise_cosine_similarity(diag["decoder_in"])
+        print(f"    mean pairwise cosine similarity across examples: decoder_in={decoder_in_cos:.4f}")
+        print("      (relative_cv only measures norm -- master_attn_norm now correctly strips "
+              "magnitude variation by design, per RMSNorm's definition, so this direction check is "
+              "the real signal-preservation test for decoder_in, not relative_cv alone)")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
