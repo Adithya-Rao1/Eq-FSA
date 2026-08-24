@@ -215,11 +215,10 @@ class MasterNodeAttention(nn.Module):
 
         V_proj0 = self.W_V0(f_in0.squeeze(-1)).unsqueeze(-1)
 
-        N_real = m.sum(dim=1).clamp(min=1).view(B, 1, 1, 1, 1)
         raw_S_re0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, cos_g)
         raw_S_im0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, sin_g)
         raw_S_ri = torch.cat([raw_S_re0, raw_S_im0], dim=-2)
-        S_ri = (1.0 / N_real) * self.s_ri_norm(raw_S_ri.transpose(-1, -2)).transpose(-1, -2)
+        S_ri = self.s_ri_norm(raw_S_ri.transpose(-1, -2)).transpose(-1, -2)
         S_re0, S_im0 = S_ri.split(self.feature_dim, dim=-2)
 
         phase_com = torch.einsum("bi,bmi->bm", x_com, kvecs)
