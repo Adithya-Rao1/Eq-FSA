@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 
 from stage_1.attention import MasterNodeAttention
 from stage_1.experiments.neurreps.lr_sr.rsa_attention import RSAAttention
 from stage_1.model import masked_weighted_com
+
+
+class _LearnableRescale(nn.Module):
+    def __init__(self, num_channels: int, init_scale: float = 10.0):
+        super().__init__()
+        self.log_scale = nn.Parameter(torch.full((num_channels,), math.log(init_scale)))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * self.log_scale.exp()
 
 
 class _ChargeEmbedding(nn.Module):
@@ -40,7 +51,7 @@ class EqFSAEncoder(nn.Module):
         self.embed = _ChargeEmbedding(feature_dim, hidden_dim)
         self.g_a_init = nn.Parameter(torch.randn(num_master_nodes, feature_dim) * 0.1)
         self.master_attn = MasterNodeAttention(feature_dim, n_max, hidden_dim=hidden_dim)
-        self.master_attn_norm = nn.RMSNorm(feature_dim, eps=1e-20)
+        self.master_attn_norm = _LearnableRescale(feature_dim)
         self.decoder = _Decoder(feature_dim, hidden_dim, num_outputs)
 
     def forward(self, charges, positions, mask, V):
