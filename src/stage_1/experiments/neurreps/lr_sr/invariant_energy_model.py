@@ -40,7 +40,7 @@ class EqFSAEncoder(nn.Module):
         self.embed = _ChargeEmbedding(feature_dim, hidden_dim)
         self.g_a_init = nn.Parameter(torch.randn(num_master_nodes, feature_dim) * 0.1)
         self.master_attn = MasterNodeAttention(feature_dim, n_max, hidden_dim=hidden_dim)
-        self.master_attn_norm = nn.RMSNorm(feature_dim, eps=0)
+        self.master_attn_norm = nn.RMSNorm(feature_dim, eps=1e-20)
         self.decoder = _Decoder(feature_dim, hidden_dim, num_outputs)
 
     def forward(self, charges, positions, mask, V):
