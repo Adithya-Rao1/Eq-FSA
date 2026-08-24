@@ -11,7 +11,7 @@ from stage_1.model import masked_weighted_com
 
 
 class _LearnableRescale(nn.Module):
-    def __init__(self, num_channels: int, init_scale: float = 10.0):
+    def __init__(self, num_channels: int, init_scale: float = 500.0):
         super().__init__()
         self.log_scale = nn.Parameter(torch.full((num_channels,), math.log(init_scale)))
 
