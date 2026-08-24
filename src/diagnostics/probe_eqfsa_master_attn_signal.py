@@ -80,14 +80,12 @@ def instrumented_master_node_attn_forward(
 
     V_proj0 = module.W_V0(f_in0.squeeze(-1)).unsqueeze(-1)
 
-    N_real = m.sum(dim=1).clamp(min=1).view(B, 1, 1, 1, 1)
     raw_S_re0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, cos_g)
     raw_S_im0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, sin_g)
     raw_S_ri = torch.cat([raw_S_re0, raw_S_im0], dim=-2)
     diag["raw_S_ri"] = raw_S_ri.detach()
 
-    S_ri_post_norm = module.s_ri_norm(raw_S_ri.transpose(-1, -2)).transpose(-1, -2)
-    S_ri = (1.0 / N_real) * S_ri_post_norm
+    S_ri = module.s_ri_norm(raw_S_ri.transpose(-1, -2)).transpose(-1, -2)
     diag["S_ri"] = S_ri.detach()
     S_re0, S_im0 = S_ri.split(module.feature_dim, dim=-2)
 
@@ -245,7 +243,7 @@ EQFSA_STAGES = [
     ("0c master_attn_out (post master_attn_norm)", "master_out_normed"),
     ("2  lr_master_pre_div (before /Z,/damping_sum)", "lr_master_pre_div"),
     ("3  QS_re0 (post phi_Q contraction, pre COM-phase)", "QS_re0"),
-    ("4  S_ri (post s_ri_norm, post /N_real)  [tests #2]", "S_ri"),
+    ("4  S_ri (post s_ri_norm)  [tests #2]", "S_ri"),
     ("5  raw_S_ri (pre s_ri_norm -- untouched baseline)", "raw_S_ri"),
     ("6  Q_pre_norm (pre EquivariantRMSNorm)  [tests #3]", "Q_pre_norm"),
     ("6  Q_post_norm (post EquivariantRMSNorm)", "Q_post_norm"),
