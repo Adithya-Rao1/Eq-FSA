@@ -37,6 +37,12 @@ def _to_device(batch: dict, device: torch.device) -> dict:
 def call_model(model, variant: str, batch: dict) -> torch.Tensor:
     if variant in ("dimenet", "nequip_allegro"):
         return model(batch["x"], batch["types"], batch["mask"], batch["target_idx"], edge_feats=batch["edge_feats"])
+    if variant == "eqfsa_full":
+        return model(
+            batch["x"], batch["types"], batch["masses"], batch["mask"], batch["V"],
+            batch["mol_props"], batch["edge_feats"], batch["target_idx"],
+            seed_masses=batch.get("seed_masses"),
+        )
     return model(
         batch["x"], batch["types"], batch["masses"], batch["mask"], batch["V"],
         batch["mol_props"], batch["edge_feats"], batch["target_idx"],
@@ -85,7 +91,9 @@ def build_model_for_variant(
     raise ValueError(f"Unknown variant {variant!r}")
 
 
-def train_one_realization(topology: str, r: int, variant: str, config: dict, seed: int) -> dict:
+def train_one_realization(
+    topology: str, r: int, variant: str, config: dict, seed: int, weight_seed: int | None = None,
+) -> dict:
     classes = config["classes"]
     samples = config["samples_per_config"]
 
@@ -130,7 +138,7 @@ def train_one_realization(topology: str, r: int, variant: str, config: dict, see
 
     device = config["_device"]
     avg_num_neighbors = _avg_num_neighbors(dataset.positions, config["cutoff"])
-    torch.manual_seed(seed)
+    torch.manual_seed(seed if weight_seed is None else weight_seed)
     model = build_model_for_variant(
         variant, realized_r, classes, num_atom_types, config, avg_num_neighbors=avg_num_neighbors,
     ).to(device)
@@ -210,17 +218,27 @@ def run_config(
         seeds = list(explicit_seeds)
     else:
         seeds = [base_seed + i * 7919 for i in range(config["num_realizations"])]
+    explicit_weight_seeds = config.get("weight_seeds")
+    if explicit_weight_seeds:
+        assert len(explicit_weight_seeds) == len(seeds), (
+            f"--weight-seeds ({len(explicit_weight_seeds)}) must match the number of data seeds "
+            f"({len(seeds)}) -- one weight-init seed per realization."
+        )
+        weight_seeds = list(explicit_weight_seeds)
+    else:
+        weight_seeds = [None] * len(seeds)
     keys = ["r", "euclid", "val_error", "jacobian_sensitivity", "mi_lower_bound", "n_params"]
     per_realization = {k: [] for k in keys}
 
-    for i, seed in enumerate(seeds):
-        result = train_one_realization(topology, r, variant, config, seed=seed)
+    for i, (seed, weight_seed) in enumerate(zip(seeds, weight_seeds)):
+        result = train_one_realization(topology, r, variant, config, seed=seed, weight_seed=weight_seed)
         for k in keys:
             per_realization[k].append(result[k])
         if raw_writer is not None:
             raw_row = {
                 "topology": topology, "variant": variant, "nominal_r": r,
                 "realization_idx": i, "seed": seed,
+                "weight_seed": seed if weight_seed is None else weight_seed,
                 **{k: result[k] for k in keys},
             }
             raw_writer.writerow(raw_row)
@@ -288,6 +306,14 @@ def main():
              "extended training lets those specific seeds escape.",
     )
     parser.add_argument(
+        "--weight-seeds", type=int, nargs="+", default=None,
+        help="Explicit per-realization weight-init seed (torch.manual_seed at model construction), "
+             "decoupled from the data/geometry seed in --seeds -- must be the same length as --seeds. "
+             "Use this to hold one fixed geometry constant and sweep only the random weight "
+             "initialization, to tell apart a data-dependent bug from a weight-init-sensitive "
+             "optimization/local-minimum issue.",
+    )
+    parser.add_argument(
         "--log-every", type=int, default=0,
         help="Print average training loss every N epochs (0=silent). Useful with --seeds to watch "
              "whether a specific seed's loss is stuck on a plateau or still descending.",
@@ -318,7 +344,7 @@ def main():
     csv_path = config["csv_path"] or os.path.join(config["outdir"], "results.csv")
     raw_csv_path = os.path.join(config["outdir"], "results_raw.csv")
     raw_keys = ["r", "euclid", "val_error", "jacobian_sensitivity", "mi_lower_bound", "n_params"]
-    raw_fieldnames = ["topology", "variant", "nominal_r", "realization_idx", "seed"] + raw_keys
+    raw_fieldnames = ["topology", "variant", "nominal_r", "realization_idx", "seed", "weight_seed"] + raw_keys
 
     rows = []
     writer = None

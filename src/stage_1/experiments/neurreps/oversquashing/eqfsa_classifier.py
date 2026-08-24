@@ -83,6 +83,7 @@ class EqFSAClassifier(nn.Module):
         mol_props: torch.Tensor,
         edge_feats: torch.Tensor,
         target_idx: torch.Tensor,
+        seed_masses: torch.Tensor | None = None,
     ) -> torch.Tensor:
         B = x.shape[0]
         batch_ar = torch.arange(B, device=x.device)
@@ -90,11 +91,12 @@ class EqFSAClassifier(nn.Module):
         if self.multi_layer_readout:
             f, layer_states = self.energy_model(
                 x, types, masses, mask, V, mol_props, edge_feats, return_layer_states=True,
+                seed_masses=seed_masses,
             )
             logits = self._readout_logits(f, batch_ar, target_idx)
             for layer_f in layer_states:
                 logits = logits + self._readout_logits(layer_f, batch_ar, target_idx)
             return logits
 
-        f = self.energy_model(x, types, masses, mask, V, mol_props, edge_feats)
+        f = self.energy_model(x, types, masses, mask, V, mol_props, edge_feats, seed_masses=seed_masses)
         return self._readout_logits(f, batch_ar, target_idx)

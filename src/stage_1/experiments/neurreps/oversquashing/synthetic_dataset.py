@@ -133,7 +133,9 @@ class GeometricGraphTransferDataset(Dataset):
                 f"unlearnably tight; use a different r/seed or fewer classes."
             )
         offsets = (torch.arange(classes, dtype=torch.float32) - (classes - 1) / 2.0) * spacing
-        self.target_dists = axis_norm + offsets 
+        self.target_dists = axis_norm + offsets
+        self.seed_masses_template = torch.ones(self.n_atoms)
+        self.seed_masses_template[self.label_idx] = 0.0
 
         for c in range(classes):
             perturbed = self.positions.clone()
@@ -159,6 +161,7 @@ class GeometricGraphTransferDataset(Dataset):
             "x": positions,
             "types": self._base_types.clone(),
             "mask": torch.ones(self.n_atoms, dtype=torch.bool),
+            "seed_masses": self.seed_masses_template.clone(),
             "target_idx": self.readout_idx,
             "label": label,
             "r": self.realized_r,
@@ -185,6 +188,9 @@ def graph_transfer_collate_fn(batch: List[Dict[str, object]]) -> Dict[str, objec
         [_pad1(item["mask"].float(), N_max) for item in batch], dim=0
     ).bool()
     all_masses = all_mask.float()
+    seed_masses = None
+    if "seed_masses" in batch[0]:
+        seed_masses = torch.stack([_pad1(item["seed_masses"], N_max) for item in batch], dim=0) * all_mask.float()
 
     V = torch.eye(3).unsqueeze(0).expand(B, 3, 3).contiguous() * GRAPH_BOX_HALFWIDTH
     mol_props = torch.stack([item["mol_props"] for item in batch], dim=0)
@@ -198,6 +204,7 @@ def graph_transfer_collate_fn(batch: List[Dict[str, object]]) -> Dict[str, objec
         "x": all_x,
         "types": all_types,
         "masses": all_masses,
+        "seed_masses": seed_masses,
         "mask": all_mask,
         "V": V,
         "mol_props": mol_props,

@@ -328,9 +328,11 @@ class EnergyModel(nn.Module):
         x, node_types, atomic_masses, node_mask,
         V, mol_props, edge_feats,
         return_layer_states: bool = False,
+        seed_masses=None,
     ) -> torch.Tensor:
         node_mask = node_mask.bool()
         atomic_masses = atomic_masses * node_mask.to(atomic_masses.dtype)
+        seed_masses = atomic_masses if seed_masses is None else seed_masses * node_mask.to(seed_masses.dtype)
         B, N = node_types.shape
 
         f0_raw = self.input_embedding(node_types)
@@ -343,7 +345,7 @@ class EnergyModel(nn.Module):
         combined_scalar = self.seed_proj_norm(self.seed_proj_out(combined_scalar))
 
         seeded = seed_equivariant_features(
-            combined_scalar, self.seed_radial_net, x, atomic_masses, node_mask, V,
+            combined_scalar, self.seed_radial_net, x, seed_masses, node_mask, V,
             diag_sink=(self._diag_stats if self.diag_enabled else None),
         )
         if self.ablate_max_degree is not None:

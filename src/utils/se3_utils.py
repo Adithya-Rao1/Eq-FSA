@@ -128,16 +128,14 @@ class RadialNetwork(nn.Module):
             torch.tensor(-1.0 / (2.0 * width ** 2)),
         )
         self.net = nn.Sequential(
-            nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=False),
+            nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=True),
             nn.RMSNorm(hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim, bias=False),
             nn.RMSNorm(hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, num_heads, bias=False),
-            nn.RMSNorm(num_heads), # used for downstream tasks thus normalizing output head
         )
-        init_sequential_(self.net, "silu")
 
     def _basis(self, r: torch.Tensor) -> torch.Tensor:
         diff    = r - self.centres.unsqueeze(0)
