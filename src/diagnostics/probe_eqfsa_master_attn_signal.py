@@ -10,8 +10,8 @@ from stage_1.attention import MasterNodeAttention
 from stage_1.experiments.neurreps.lr_sr.invariant_energy_data import generate_batch, make_wavevector_grid
 from stage_1.experiments.neurreps.lr_sr.invariant_energy_model import EqFSAEncoder, RSAEncoder
 from stage_1.experiments.neurreps.lr_sr.rsa_attention import RSAAttention
-from stage_1.experiments.neurreps.lr_sr.train_invariant_energy import build_model, detect_device
-from stage_1.model import masked_weighted_com
+from stage_1.experiments.neurreps.lr_sr.train_invariant_energy import build_model, build_optimizer, detect_device
+from stage_1.model import masked_mean, masked_weighted_com
 from utils.pw_bases import make_wavevectors
 
 def cross_example_variation(t: torch.Tensor) -> dict:
@@ -51,6 +51,14 @@ def instrumented_master_node_attn_forward(
     K = K_post_norm.squeeze(-1)
     diag["K_pre_norm"], diag["K_post_norm"] = K_pre_norm.detach(), K_post_norm.detach()
 
+    diag["w_vq_norm_gamma"] = module.w_vq_norm.gamma.detach().clone()
+    diag["w_vk_norm_gamma"] = module.w_vk_norm.gamma.detach().clone()
+
+    with torch.no_grad():
+        w_dbg = torch.einsum("bac,bgc->bag", F.elu(Q) + 1, (F.elu(K) + 1) * m.unsqueeze(-1))
+        w_dbg_norm = w_dbg / w_dbg.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        diag["ipr"] = 1.0 / w_dbg_norm.pow(2).sum(dim=-1).clamp(min=1e-12)
+
     phi_Q = F.elu(Q) + 1
     phi_K = (F.elu(K) + 1) * m.unsqueeze(-1)
     phi_K_sum = phi_K.sum(dim=1)
@@ -84,28 +92,46 @@ def instrumented_master_node_attn_forward(
     raw_S_im0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, sin_g)
     raw_S_ri = torch.cat([raw_S_re0, raw_S_im0], dim=-2)
     diag["raw_S_ri"] = raw_S_ri.detach()
+    raw_S_ri_mag = raw_S_ri.norm(dim=-2)
 
     S_ri = module.s_ri_norm(raw_S_ri.transpose(-1, -2)).transpose(-1, -2)
     diag["S_ri"] = S_ri.detach()
     S_re0, S_im0 = S_ri.split(module.feature_dim, dim=-2)
 
-    phase_com = torch.einsum("bi,bmi->bm", x_com, kvecs)
-    cos_com = torch.cos(phase_com) * damping
-    sin_com = torch.sin(phase_com) * damping
+    dist_to_com = (x - x_com.unsqueeze(1)).norm(dim=-1, keepdim=True)
+    dist_feat = module.spatial_radial(dist_to_com)
+    spatial_q = module.spatial_query_proj(g_a.squeeze(-1))
+    spatial_logit = torch.einsum("bah,bgh->bag", spatial_q, dist_feat) / (dist_feat.shape[-1] ** 0.5)
+    spatial_logit = spatial_logit.masked_fill(~m.bool().unsqueeze(1), -1e9)
+    spatial_w = torch.softmax(spatial_logit, dim=-1)
+    x_com_use = torch.einsum("bag,bgi->bai", spatial_w, x)
+    diag["x_com_per_node"] = x_com_use.detach()
+    diag["spatial_w_entropy"] = (-(spatial_w.clamp(min=1e-12) * spatial_w.clamp(min=1e-12).log()).sum(dim=-1))
+
+    phase_com = torch.einsum("bai,bmi->bam", x_com_use, kvecs)
+    cos_com = torch.cos(phase_com) * damping.unsqueeze(1)
+    sin_com = torch.sin(phase_com) * damping.unsqueeze(1)
     diag["x_com"] = x_com.detach()
 
     QS_re0 = torch.einsum("bac,bmcnd->bamnd", phi_Q, S_re0)
     QS_im0 = torch.einsum("bac,bmcnd->bamnd", phi_Q, S_im0)
     diag["QS_re0"] = QS_re0.detach()
 
-    cos_b = cos_com.view(B, 1, -1, 1, 1)
-    sin_b = sin_com.view(B, 1, -1, 1, 1)
+    cos_b = cos_com.unsqueeze(-1).unsqueeze(-1)
+    sin_b = sin_com.unsqueeze(-1).unsqueeze(-1)
     lr_master_pre_div = (QS_re0 * cos_b - QS_im0 * sin_b).sum(dim=2)
     diag["lr_master_pre_div"] = lr_master_pre_div.detach()
 
     lr_master = lr_master_pre_div / Z.view(B, N_a, 1, 1)
     lr_master = lr_master / damping_sum.view(B, 1, 1, 1)
     diag["lr_master"] = lr_master.detach()
+
+    Q_mag = torch.einsum("bac,bmcd->bamd", phi_Q, raw_S_ri_mag)
+    mag_pooled = torch.einsum("bamd,bm->bad", Q_mag, damping)
+    mag_pooled = mag_pooled / Z.view(B, N_a, 1)
+    mag_pooled = mag_pooled / damping_sum.view(B, 1, 1)
+    scale_feat = torch.log1p(mag_pooled.squeeze(-1))
+    diag["scale_feat"] = scale_feat.detach()
 
     return lr_master, diag
 
@@ -159,9 +185,16 @@ def instrumented_rsa_forward(
 def probe_eqfsa(model: EqFSAEncoder, charges, positions, mask, V) -> tuple[torch.Tensor, dict]:
     B = charges.shape[0]
     f_in0 = model.embed(charges)
-    g_a = model.g_a_init.unsqueeze(0).expand(B, -1, -1).unsqueeze(-1).contiguous()
     masses = mask.float()
     x_com, _ = masked_weighted_com(positions, masses, mask)
+    if model.use_input_dependent_g_a:
+        dist_to_com = (positions - x_com.unsqueeze(1)).norm(dim=-1, keepdim=True)
+        pool_in_feat = f_in0.squeeze(-1) + model.dist_to_com_embed(dist_to_com)
+        pooled_in = model.master_pool_ffn(masked_mean(pool_in_feat, mask))
+        g_a = model.master_expand(pooled_in).view(B, model.num_master_nodes, -1).unsqueeze(-1)
+        g_a = model.master_expand_norm(g_a)
+    else:
+        g_a = model.g_a_init.unsqueeze(0).expand(B, -1, -1).unsqueeze(-1).contiguous()
 
     lr_master, diag = instrumented_master_node_attn_forward(
         model.master_attn, g_a, f_in0, positions, x_com, mask, V,
@@ -169,13 +202,14 @@ def probe_eqfsa(model: EqFSAEncoder, charges, positions, mask, V) -> tuple[torch
     master_out = model.master_attn_norm(lr_master.squeeze(-1))
     g_a_const = g_a.squeeze(-1)
     g_a_out = g_a_const + master_out
-    decoder_in = g_a_out.mean(dim=1)
+    decoder_in = torch.cat([g_a_out.mean(dim=1), diag["scale_feat"].mean(dim=1, keepdim=True)], dim=-1)
 
     diag["decoder_in"] = decoder_in.detach()
     diag["master_out_normed"] = master_out.detach()
     master_norm = master_out.reshape(B, -1).norm(dim=1)
     g_a_norm = g_a_const.reshape(B, -1).norm(dim=1)
     diag["master_vs_ga_ratio"] = (master_norm / g_a_norm.clamp(min=1e-12)).detach()
+    diag["rescale_log_scale"] = model.master_attn_norm.log_scale.detach().clone()
 
     pred = model.decoder(decoder_in)
     return pred, diag
@@ -199,7 +233,7 @@ def train_short(encoder: str, n_atoms: int, config: dict, seed: int, train_steps
 
     torch.manual_seed(seed)
     model = build_model(encoder, num_outputs, config).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=0.0)
+    optimizer = build_optimizer(model, config["lr"], config.get("qk_gamma_wd", 0.0))
 
     with torch.no_grad():
         _, _, _, _, E_probe = generate_batch(
@@ -239,6 +273,7 @@ def build_probe_batch(n_atoms: int, config: dict, seed: int):
 
 EQFSA_STAGES = [
     ("0  decoder_in  [PRIMARY go/no-go]", "decoder_in"),
+    ("0a scale_feat (parallel channel -- tests #2 fix)", "scale_feat"),
     ("0b master_attn_out (raw, pre-norm)", "lr_master"),
     ("0c master_attn_out (post master_attn_norm)", "master_out_normed"),
     ("2  lr_master_pre_div (before /Z,/damping_sum)", "lr_master_pre_div"),
@@ -250,6 +285,7 @@ EQFSA_STAGES = [
     ("6  K_pre_norm (pre EquivariantRMSNorm)", "K_pre_norm"),
     ("6  K_post_norm (post EquivariantRMSNorm)", "K_post_norm"),
     ("   x_com  [tests #6]", "x_com"),
+    ("   x_com_per_node (per-master-node weighted COM)  [tests architecture fix]", "x_com_per_node"),
 ]
 
 RSA_STAGES = [
@@ -291,6 +327,27 @@ def print_scalar_diagnostics(diag: dict) -> None:
         r = diag["master_vs_ga_ratio"]
         print(f"    ||master_attn_out|| / ||g_a_init|| per example: "
               f"mean={r.mean().item():.4f} std={r.std().item():.4f}  [tests #1 -- residual dominance]")
+    if "rescale_log_scale" in diag:
+        ls = diag["rescale_log_scale"]
+        print(f"    master_attn_norm (_LearnableRescale) exp(log_scale): "
+              f"mean={ls.exp().mean().item():.4f} min={ls.exp().min().item():.4f} "
+              f"max={ls.exp().max().item():.4f}  [init=500 -- shrinking this dilutes the g_a_init "
+              f"residual's relative weight in g_a_out, damping decoder_in's cv growth]")
+    if "w_vq_norm_gamma" in diag:
+        print(f"    ||w_vq_norm.gamma||={diag['w_vq_norm_gamma'].norm().item():.4f}  "
+              f"||w_vk_norm.gamma||={diag['w_vk_norm_gamma'].norm().item():.4f}  "
+              f"[root-cause metric -- unconstrained gain, no weight decay unless --qk-gamma-wd>0]")
+    if "ipr" in diag:
+        ipr = diag["ipr"]
+        print(f"    master-node attention IPR (of N real atoms): mean={ipr.mean().item():.2f} "
+              f"std={ipr.std().item():.2f}  [lower = more concentrated attention -- "
+              f"the mechanism linking gamma growth to decoder_in cv shrinkage]")
+    if "spatial_w_entropy" in diag:
+        se = diag["spatial_w_entropy"]
+        print(f"    per_node_com spatial_w entropy (per master node): mean={se.mean().item():.3f} "
+              f"std={se.std().item():.3f}  [lower = more spatially concentrated per node -- "
+              f"tests whether the new position-aware weighting actually differentiates atoms, "
+              f"unlike phi_K's charge-only IPR above]")
 
 
 def print_direction_check(diag: dict) -> None:
@@ -325,6 +382,7 @@ def main() -> None:
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--eval-batches", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--qk-gamma-wd", type=float, default=0.0)
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
     config = vars(args)
