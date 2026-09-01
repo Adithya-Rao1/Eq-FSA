@@ -95,7 +95,9 @@ class LRSRDataset(Dataset):
         return len(self.configs)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        return self.configs[idx]
+        item = dict(self.configs[idx])
+        item["idx"] = idx
+        return item
 
 
 def lr_sr_collate_fn(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
@@ -110,4 +112,5 @@ def lr_sr_collate_fn(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Te
         "edge_feats": torch.zeros(B, N, N, LR_SR_EDGE_FEAT_DIM),
         "mask": torch.ones(B, N, dtype=torch.bool),
         "masses": torch.ones(B, N),
+        "idx": torch.tensor([b["idx"] for b in batch], dtype=torch.long),
     }
