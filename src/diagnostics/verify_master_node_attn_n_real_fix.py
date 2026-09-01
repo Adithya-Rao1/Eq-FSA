@@ -26,10 +26,19 @@ def build_scenario(
     return {"g_a": g_a, "f_in0": f_in0, "x": x, "x_com": x_com, "mask": mask, "V": V}
 
 
-def run_scenario(module: MasterNodeAttention, inputs: dict) -> float:
+def run_scenario(module: MasterNodeAttention, inputs: dict, return_scale_feat: bool = False,
+                  per_node_com: bool = False, node_conditioned_k: bool = False) -> float:
     module.zero_grad(set_to_none=True)
-    out = module(inputs["g_a"], inputs["f_in0"], inputs["x"], inputs["x_com"], inputs["mask"], inputs["V"])
-    loss = (out ** 2).sum()
+    out = module(
+        inputs["g_a"], inputs["f_in0"], inputs["x"], inputs["x_com"], inputs["mask"], inputs["V"],
+        return_scale_feat=return_scale_feat, per_node_com=per_node_com,
+        node_conditioned_k=node_conditioned_k,
+    )
+    if return_scale_feat:
+        out, scale_feat = out
+        loss = (out ** 2).sum() + (scale_feat ** 2).sum()
+    else:
+        loss = (out ** 2).sum()
     if not torch.isfinite(loss):
         return float("inf")
     loss.backward()
@@ -61,14 +70,17 @@ def main() -> None:
 
     results = []
 
-    def record(name: str, N: int, n_real: int | None, drift_fn=None, drift_desc: str = "none"):
+    def record(name: str, N: int, n_real: int | None, drift_fn=None, drift_desc: str = "none",
+               return_scale_feat: bool = False, per_node_com: bool = False,
+               node_conditioned_k: bool = False):
         torch.manual_seed(args.seed)
         module = MasterNodeAttention(F, args.n_max, hidden_dim=H).to(device=device, dtype=dtype)
         if drift_fn is not None:
             with torch.no_grad():
                 drift_fn(module)
         inputs = build_scenario(B, N, N_a, F, args.box, device, dtype, seed=args.seed, n_real=n_real)
-        grad_norm = run_scenario(module, inputs)
+        grad_norm = run_scenario(module, inputs, return_scale_feat=return_scale_feat,
+                                  per_node_com=per_node_com, node_conditioned_k=node_conditioned_k)
         bucket = "EXPLOSION" if grad_norm > args.explosion_threshold else "normal"
         print(f"  [{bucket:9s}] {name:40s} N={N:4d} n_real={str(n_real):>5s} drift={drift_desc:20s} "
               f"overall_grad_norm={grad_norm:.6g}", flush=True)
@@ -107,6 +119,33 @@ def main() -> None:
         module.alpha.fill_(-1e6)
     record("combined: gamma x5000 + w_vk_norm gamma x500 + alpha->floor, N=3 (real floor)",
            N=3, n_real=None, drift_fn=combined_drift, drift_desc="combined worst-case")
+
+    eqfsa_flags = dict(return_scale_feat=True, per_node_com=True, node_conditioned_k=True)
+    record("eqfsa flags: normal multi-molecule baseline", N=30, n_real=None, **eqfsa_flags)
+    record("eqfsa flags: large-N (Round 5's original blowup case)", N=150, n_real=None, **eqfsa_flags)
+    record("eqfsa flags: minimum dataset N (real floor)", N=3, n_real=None, **eqfsa_flags)
+    record("eqfsa flags: N_real=0 edge case (all-masked)", N=8, n_real=0, **eqfsa_flags)
+    for scale in (50.0, 500.0, 5000.0):
+        def drift(module, scale=scale):
+            module.s_ri_norm.weight.mul_(scale)
+        record(f"eqfsa flags: s_ri_norm.gamma x{scale:g}, large-N", N=150, n_real=None,
+               drift_fn=drift, drift_desc=f"gamma x{scale:g}", **eqfsa_flags)
+    for scale in (50.0, 500.0):
+        def drift(module, scale=scale):
+            module.w_vk_norm.gamma.mul_(scale)
+        record(f"eqfsa flags: w_vk_norm.gamma x{scale:g}, large-N", N=150, n_real=None,
+               drift_fn=drift, drift_desc=f"gamma x{scale:g}", **eqfsa_flags)
+    record("eqfsa flags: alpha pinned at floor, large-N", N=150, n_real=None,
+           drift_fn=alpha_floor, drift_desc="alpha->floor", **eqfsa_flags)
+    record("eqfsa flags: combined worst-case, N=3 (real floor)", N=3, n_real=None,
+           drift_fn=combined_drift, drift_desc="combined worst-case", **eqfsa_flags)
+    for scale in (50.0, 500.0):
+        def drift(module, scale=scale):
+            module.node_k_gate.weight.mul_(scale)
+            module.node_k_gate.bias.mul_(scale)
+        record(f"eqfsa flags: node_k_gate x{scale:g}, large-N [NEW param, no prior round tested "
+               f"this]", N=150, n_real=None, drift_fn=drift, drift_desc=f"node_k_gate x{scale:g}",
+               **eqfsa_flags)
 
     n_explosions = sum(1 for r in results if r[-1] == "EXPLOSION")
     print(f"\n=== SUMMARY: {n_explosions}/{len(results)} scenarios exceeded "
