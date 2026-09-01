@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 
 from utils.se3_utils import *
-from utils.pw_bases import make_wavevectors
+from utils.pw_bases import make_wavevectors 
 
 class QKProjection(nn.Module):
     def __init__(self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int, batch_size=32):
@@ -147,11 +147,15 @@ class SRAttention(nn.Module):
         return alpha_e, Wv_j_sr_flat
 
 class MasterNodeAttention(nn.Module):
-    def __init__(self, feature_dim: int, n_max: int, pw_e_cutoff: Optional[float] = None, hidden_dim: int = 128):
+    def __init__(
+        self, feature_dim: int, n_max: int, pw_e_cutoff: Optional[float] = None, hidden_dim: int = 128,
+        alpha_floor: float = 1e-4,
+    ):
         super().__init__()
         self.feature_dim = feature_dim
         self.n_max = n_max
         self.pw_e_cutoff = pw_e_cutoff
+        self.alpha_floor = alpha_floor
 
         self.W_Q = high_ord_ffn(feature_dim, hidden_dim, 1)
         self.w_vq_norm = EquivariantRMSNorm(feature_dim, 1)
@@ -164,6 +168,18 @@ class MasterNodeAttention(nn.Module):
             nn.RMSNorm(feature_dim),
         )       
         self.s_ri_norm = nn.RMSNorm(2 * feature_dim)
+
+        self.spatial_radial = nn.Sequential(
+            nn.Linear(1, hidden_dim), nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim), nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+        init_sequential_(self.spatial_radial, "silu")
+        self.spatial_query_proj = nn.Linear(feature_dim, hidden_dim, bias=False)
+        init_linear_(self.spatial_query_proj, "linear")
+
+        self.node_k_gate = nn.Linear(feature_dim, feature_dim)
+        init_linear_(self.node_k_gate, "linear")
 
         self.alpha = nn.Parameter(torch.tensor(1.0))
         self.diag_enabled = False
@@ -179,7 +195,10 @@ class MasterNodeAttention(nn.Module):
         x_com:     torch.Tensor,
         node_mask: torch.Tensor,
         V:         torch.Tensor,
-    ) -> torch.Tensor:
+        return_scale_feat: bool = False,
+        per_node_com: bool = False,
+        node_conditioned_k: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         B, N_a, C, _ = g_a.shape
         m = node_mask.to(x.dtype)
 
@@ -187,22 +206,44 @@ class MasterNodeAttention(nn.Module):
         K = self.w_vk_norm(self.W_K(f_in0)).squeeze(-1)
         phi_Q = F.elu(Q) + 1
         phi_K = (F.elu(K) + 1) * m.unsqueeze(-1)
-        phi_K_sum = phi_K.sum(dim=1)
-        Z_raw = torch.einsum("bac,bc->ba", phi_Q, phi_K_sum)
+
+        if node_conditioned_k:
+            node_gate = torch.sigmoid(self.node_k_gate(g_a.squeeze(-1)))
+            phi_K_use = phi_K.unsqueeze(1) * node_gate.unsqueeze(2)
+            phi_K_sum = phi_K_use.sum(dim=2)
+            Z_raw = torch.einsum("bac,bac->ba", phi_Q, phi_K_sum)
+        else:
+            phi_K_use = phi_K
+            phi_K_sum = phi_K.sum(dim=1)
+            Z_raw = torch.einsum("bac,bc->ba", phi_Q, phi_K_sum)
         Z = Z_raw.clamp(min=1e-8)
         if self.diag_enabled:
             self._diag_Z_min = float(Z.detach().min())
             with torch.no_grad():
-                w = torch.einsum("bac,bgc->bag", phi_Q, phi_K)
-                w_norm = w / w.sum(dim=-1, keepdim=True).clamp(min=1e-8)
-                self._diag_ipr = 1.0 / w_norm.pow(2).sum(dim=-1).clamp(min=1e-12)
+                if node_conditioned_k:
+                    w_diag = torch.einsum("bac,bagc->bag", phi_Q, phi_K_use)
+                else:
+                    w_diag = torch.einsum("bac,bgc->bag", phi_Q, phi_K_use)
+                w_diag_norm = w_diag / w_diag.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+                self._diag_ipr = 1.0 / w_diag_norm.pow(2).sum(dim=-1).clamp(min=1e-12)
+
+        if per_node_com:
+            dist_to_com = (x - x_com.unsqueeze(1)).norm(dim=-1, keepdim=True)
+            dist_feat = self.spatial_radial(dist_to_com)
+            spatial_q = self.spatial_query_proj(g_a.squeeze(-1))
+            spatial_logit = torch.einsum("bah,bgh->bag", spatial_q, dist_feat) / (dist_feat.shape[-1] ** 0.5)
+            spatial_logit = spatial_logit.masked_fill(~m.bool().unsqueeze(1), -1e9)
+            spatial_w = torch.softmax(spatial_logit, dim=-1)
+            x_com_use = torch.einsum("bag,bgi->bai", spatial_w, x)
+        else:
+            x_com_use = x_com.unsqueeze(1).expand(B, N_a, -1)
 
         kvecs, _, mode_mask = make_wavevectors(V, self.n_max, self.pw_e_cutoff)
         mode_mask_f = mode_mask.to(x.dtype)
         if mode_mask_f.dim() == 1:
             mode_mask_f = mode_mask_f.unsqueeze(0).expand(B, -1)
 
-        alpha = F.softplus(self.alpha) + 1e-4
+        alpha = F.softplus(self.alpha) + self.alpha_floor
         k2 = (kvecs ** 2).sum(dim=-1)
         damping = torch.exp(-k2 / (4.0 * alpha)) * mode_mask_f
         damping_sum = damping.sum(dim=-1) # min=1.0 for k=0
@@ -215,26 +256,47 @@ class MasterNodeAttention(nn.Module):
 
         V_proj0 = self.W_V0(f_in0.squeeze(-1)).unsqueeze(-1)
 
-        raw_S_re0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, cos_g)
-        raw_S_im0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, sin_g)
+        if node_conditioned_k:
+            raw_S_re0 = torch.einsum("bagc,bgnd,bgm->bamcnd", phi_K_use, V_proj0, cos_g)
+            raw_S_im0 = torch.einsum("bagc,bgnd,bgm->bamcnd", phi_K_use, V_proj0, sin_g)
+        else:
+            raw_S_re0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K_use, V_proj0, cos_g)
+            raw_S_im0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K_use, V_proj0, sin_g)
         raw_S_ri = torch.cat([raw_S_re0, raw_S_im0], dim=-2)
+        if return_scale_feat:
+            raw_S_ri_mag = raw_S_ri.norm(dim=-2)
         S_ri = self.s_ri_norm(raw_S_ri.transpose(-1, -2)).transpose(-1, -2)
         S_re0, S_im0 = S_ri.split(self.feature_dim, dim=-2)
 
-        phase_com = torch.einsum("bi,bmi->bm", x_com, kvecs)
-        cos_com = torch.cos(phase_com) * damping
-        sin_com = torch.sin(phase_com) * damping
+        phase_com = torch.einsum("bai,bmi->bam", x_com_use, kvecs)
+        cos_com = torch.cos(phase_com) * damping.unsqueeze(1)
+        sin_com = torch.sin(phase_com) * damping.unsqueeze(1)
 
-        QS_re0 = torch.einsum("bac,bmcnd->bamnd", phi_Q, S_re0)
-        QS_im0 = torch.einsum("bac,bmcnd->bamnd", phi_Q, S_im0)
+        if node_conditioned_k:
+            QS_re0 = torch.einsum("bac,bamcnd->bamnd", phi_Q, S_re0)
+            QS_im0 = torch.einsum("bac,bamcnd->bamnd", phi_Q, S_im0)
+        else:
+            QS_re0 = torch.einsum("bac,bmcnd->bamnd", phi_Q, S_re0)
+            QS_im0 = torch.einsum("bac,bmcnd->bamnd", phi_Q, S_im0)
 
-        cos_b = cos_com.view(B, 1, -1, 1, 1)
-        sin_b = sin_com.view(B, 1, -1, 1, 1)
+        cos_b = cos_com.unsqueeze(-1).unsqueeze(-1)
+        sin_b = sin_com.unsqueeze(-1).unsqueeze(-1)
         lr_master = (QS_re0 * cos_b - QS_im0 * sin_b).sum(dim=2)
         lr_master = lr_master / Z.view(B, N_a, 1, 1)
         lr_master = lr_master / damping_sum.view(B, 1, 1, 1)
 
-        return lr_master
+        if not return_scale_feat:
+            return lr_master
+
+        if node_conditioned_k:
+            Q_mag = torch.einsum("bac,bamcd->bamd", phi_Q, raw_S_ri_mag)
+        else:
+            Q_mag = torch.einsum("bac,bmcd->bamd", phi_Q, raw_S_ri_mag)
+        mag_pooled = torch.einsum("bamd,bm->bad", Q_mag, damping)
+        mag_pooled = mag_pooled / Z.view(B, N_a, 1)
+        mag_pooled = mag_pooled / damping_sum.view(B, 1, 1)
+        scale_feat = torch.log1p(mag_pooled.squeeze(-1))
+        return lr_master, scale_feat
 
 class EquivariantLinearRMSNorm(nn.Module):
     def __init__(self, feature_dim: int):
