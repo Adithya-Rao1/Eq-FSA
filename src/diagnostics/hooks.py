@@ -99,7 +99,21 @@ def _instrumented_submodules(model: SPICEEnergyForceModel):
     em = model.energy_model
     yield em.seed_radial_net, "seed_radial_net"
     yield em.master_pool_agg, "master_pool_agg"
+    yield em.master_pool_ffn, "master_pool_ffn"
+    yield em.master_expand, "master_expand"
+    yield em.master_expand_norm, "master_expand_norm"
     yield em.master_fusion, "master_fusion"
+    yield em.mol_prop_emb, "mol_prop_emb"
+    yield em.f0_ffn, "f0_ffn"
+    yield em.mol_ffn, "mol_ffn"
+    yield em.seed_proj, "seed_proj"
+    yield em.seed_proj_out, "seed_proj_out"
+    yield em.seed_proj_norm, "seed_proj_norm"
+    yield em.input_embedding, "input_embedding"
+    
+    yield em.readout.ffn0, "energy_model.readout.ffn0"
+    yield em.readout.ffn1, "energy_model.readout.ffn1"
+    yield em.readout.ffn2, "energy_model.readout.ffn2"
 
     for i, layer in enumerate(em.layers):
         yield layer.sr_attn, f"layer{i}.sr_attn"
@@ -110,10 +124,18 @@ def _instrumented_submodules(model: SPICEEnergyForceModel):
             for j_key, rnet in j_nets.items():
                 yield rnet, f"layer{i}.sr_attn.radial_V_sr[{lk_key}][{j_key}]"
         yield layer.master_attn, f"layer{i}.master_attn"
+        yield layer.master_ln, f"layer{i}.master_ln"
         yield layer.W_V_self["1"], f"layer{i}.W_V_self[1]"
         yield layer.sigma_gate["1"], f"layer{i}.sigma_gate[1]"
         for l, ln_mod in layer.layer_norm_in.items():
             yield ln_mod, f"layer{i}.layer_norm_in[{l}]"
+        yield layer.readout.ffn0, f"layer{i}.readout.ffn0"
+        yield layer.readout.ffn1, f"layer{i}.readout.ffn1"
+        yield layer.readout.ffn2, f"layer{i}.readout.ffn2"
+
+    yield model.norm_readout1, "norm_readout1"
+    yield model.norm_readout2, "norm_readout2"
+    yield model.out, "out"
 
 
 def attach_hooks(model: SPICEEnergyForceModel) -> MagnitudeTracker:

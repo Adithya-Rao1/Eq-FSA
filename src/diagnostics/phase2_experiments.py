@@ -4,12 +4,11 @@ _BASE_CLI_KEYS = [
     "hdf5_paths", "subsets", "batch_size", "lr", "warmup_epochs", "min_lr", "weight_decay",
     "lambda1", "lambda2", "feature_dim", "hidden_dim", "max_degree", "num_layers", "edge_cutoff",
     "box_padding", "grad_clip_norm", "n_max", "pw_e_cutoff", "num_atom_types", "n_master_nodes",
-    "num_fusion_heads", "val_fraction", "test_fraction", "num_workers", "prefetch_factor",
+    "num_fusion_heads", "ablate_max_degree", "val_fraction", "test_fraction", "num_workers", "prefetch_factor",
     "log_interval", "save_every", "val_every",
     "device", "diagnostics", "diag_skip_hooks", "diag_skip_buckets", "diag_explode_threshold",
     "diag_ema_decay", "diag_drift_k", "diag_ring_k", "diag_ckpt_every", "diag_ckpt_keep",
 ]
-
 _FULL_EPOCH_NOMINAL_CEILING = 10_000_000
 
 
@@ -95,10 +94,26 @@ def build_2_7(base: dict) -> list[dict]:
     }]
 
 
+def build_2_8(base: dict) -> list[dict]:
+    common = base_overrides(base)
+    grid = [
+        ("full", None),
+        ("l0_only", 0),
+        ("l0_l1", 1),
+    ]
+    variants = []
+    for vid, ablate_max_degree in grid:
+        ov = dict(common)
+        ov["ablate_max_degree"] = ablate_max_degree
+        variants.append({"id": vid, "cli_overrides": ov, "max_steps": 10000, "epoch_cap": False})
+    return variants
+
+
 PHASE2_ITEMS = [
     ("2.1_diagnostics_overhead", build_2_1, "diagnostics-off vs. on (+2 partial configs) at realistic scale"),
     ("2.3_batch_size_lr", build_2_3, "batch-size sweep paired with an LR-scaling check"),
     ("2.5_lambda_rebalance", build_2_5, "lambda1/lambda2 rebalancing, up to a full epoch each"),
     ("2.6_warmup_schedule", build_2_6, "warmup/min_lr/weight_decay tuning for the epoch-0 spike"),
     ("2.7_progressive_instability_watch", build_2_7, "watch Z_min/g_a_norm_max/weight-norm buckets develop a trend across several real epochs"),
+    ("2.8_equivariant_degree_ablation", build_2_8, "equivariant (l<=2) vs. invariant-only (l<=0/l<=1) feature-degree ablation, same architecture and parameter count"),
 ]

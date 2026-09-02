@@ -93,7 +93,7 @@ def run_phase2_battery(
 
     _run_item("2.1_diagnostics_overhead", *items_by_id["2.1_diagnostics_overhead"])
     _run_dataloader_sweep()
-    for item_id in ("2.3_batch_size_lr", "2.5_lambda_rebalance", "2.6_warmup_schedule", "2.7_progressive_instability_watch"):
+    for item_id in ("2.3_batch_size_lr", "2.5_lambda_rebalance", "2.6_warmup_schedule", "2.7_progressive_instability_watch", "2.8_equivariant_degree_ablation"):
         _run_item(item_id, *items_by_id[item_id])
 
     summary_path = os.path.join(results_root, "phase2_battery_summary.json")

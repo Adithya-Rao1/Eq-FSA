@@ -12,3 +12,6 @@ CLAUDE.md
 *.tex
 *.egg-info/
 .DS_Store
+*.bib
+*.csv
+*.png

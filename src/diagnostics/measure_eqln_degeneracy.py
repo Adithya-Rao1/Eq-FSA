@@ -8,7 +8,7 @@ import sys
 import torch
 
 from diagnostics.checkpoint_utils import load_model_and_val_loader
-from utils.se3_utils import EquivariantLayerNorm
+from utils.se3_utils import EquivariantRMSNorm
 
 
 class SiteAccumulator:
@@ -62,7 +62,7 @@ def attach_degeneracy_hooks(model, floor: float) -> tuple[dict[str, SiteAccumula
         return hook
 
     for name, module in model.named_modules():
-        if isinstance(module, EquivariantLayerNorm) and module.degree > 0:
+        if isinstance(module, EquivariantRMSNorm) and module.degree > 0:
             handles.append(module.register_forward_hook(make_hook(name)))
 
     return accumulators, handles, current_mask_box
@@ -77,7 +77,7 @@ def main():
     p.add_argument("--batch-size", type=int, default=None)
     p.add_argument("--num-workers", type=int, default=0)
     p.add_argument("--num-batches", type=int, default=-1, help="Cap on validation batches to run (-1 = all)")
-    p.add_argument("--floor", type=float, default=0.5, help="Must match EquivariantLayerNorm's own floor (se3_utils.py default: 0.5)")
+    p.add_argument("--floor", type=float, default=0.5, help="Must match EquivariantRMSNorm's own floor (se3_utils.py default: 0.5)")
     p.add_argument("--json-out", type=str, default=None, help="Session report generator JSON for phase 0, 1, 2, 3 experiments")
     args = p.parse_args()
 
@@ -95,7 +95,7 @@ def main():
     )
 
     accumulators, handles, current_mask_box = attach_degeneracy_hooks(model, args.floor)
-    print(f"Hooked {len(handles)} degree>0 EquivariantLayerNorm instances.\n")
+    print(f"Hooked {len(handles)} degree>0 EquivariantRMSNorm instances.\n")
 
     model.eval()
     n_run = 0
@@ -118,7 +118,7 @@ def main():
     print(f"Ran {n_run} real validation batch(es) through the model with hooks attached.\n")
 
     if not accumulators:
-        print("No degree>0 EquivariantLayerNorm instances were hit -- check that the model has "
+        print("No degree>0 EquivariantRMSNorm instances were hit -- check that the model has "
               "max_degree >= 1 and that the hooked forward actually ran.")
         return
 

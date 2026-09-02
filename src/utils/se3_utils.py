@@ -14,7 +14,59 @@ from diagnostics import counters
 from e3nn import o3
 
 _CG_CACHE: Dict[Tuple[int, int], Dict[int, torch.Tensor]] = {}
-_SH_BASIS_CHANGE_CACHE: Dict[int, torch.Tensor] = {}
+_HE_NONLINEARITIES = {"relu", "leaky_relu", "silu", "gelu", "selu", "elu"}
+
+def init_linear_(linear: nn.Linear, nonlinearity: str = "linear") -> None:
+    if nonlinearity in _HE_NONLINEARITIES:
+        kaiming_kind = "relu" if nonlinearity == "relu" else "leaky_relu"
+        a = 0.01 if nonlinearity == "leaky_relu" else 0.0
+        nn.init.kaiming_normal_(linear.weight, a=a, nonlinearity=kaiming_kind)
+    else:
+        nn.init.xavier_normal_(linear.weight)
+    if linear.bias is not None:
+        nn.init.zeros_(linear.bias)
+
+def init_sequential_(seq: nn.Sequential, nonlinearity: str, final_nonlinearity: str = "linear") -> None:
+    linears = [m for m in seq if isinstance(m, nn.Linear)]
+    for lin in linears[:-1]:
+        init_linear_(lin, nonlinearity)
+    if linears:
+        init_linear_(linears[-1], final_nonlinearity)
+
+
+def scalar_ffn(feature_dim: int, hidden_dim: int) -> nn.Sequential:
+    seq = nn.Sequential(
+        nn.RMSNorm(feature_dim),
+        nn.Linear(feature_dim, hidden_dim),
+        nn.RMSNorm(hidden_dim),
+        nn.LeakyReLU(),
+        nn.Linear(hidden_dim, hidden_dim),
+        nn.RMSNorm(hidden_dim),
+        nn.LeakyReLU(),
+        nn.Linear(hidden_dim, hidden_dim),
+        nn.RMSNorm(hidden_dim),
+        nn.LeakyReLU(),
+        nn.Linear(hidden_dim, feature_dim),
+    )
+    init_sequential_(seq, "leaky_relu")
+    return seq
+
+def high_ord_ffn(feature_dim, hidden_dim, degree) -> nn.Sequential:
+    seq = nn.Sequential(
+            EquivariantRMSNorm(feature_dim, degree),
+            EquivariantLinear(feature_dim, hidden_dim),
+            EquivariantRMSNorm(hidden_dim, degree),
+            GatedNonlinearity(hidden_dim),
+            EquivariantLinear(hidden_dim, hidden_dim),
+            EquivariantRMSNorm(hidden_dim, degree),
+            GatedNonlinearity(hidden_dim),
+            EquivariantLinear(hidden_dim, hidden_dim),
+            EquivariantRMSNorm(hidden_dim, degree),
+            GatedNonlinearity(hidden_dim),
+            EquivariantLinear(hidden_dim, feature_dim),
+        )
+    
+    return seq
 
 def cartesian_dipole(n: torch.Tensor) -> torch.Tensor:
     return n
@@ -28,47 +80,26 @@ def cartesian_quadrupole(n: torch.Tensor) -> torch.Tensor:
     Qyz = Y * Z
     return torch.stack([Qxx, Qxy, Qxz, Qyy, Qyz], dim=-1)
 
-def fit_sh_basis_change(l: int, n_samples: int = 20000, tol: float = 1e-3) -> torch.Tensor:
-    if l in _SH_BASIS_CHANGE_CACHE:
-        return _SH_BASIS_CHANGE_CACHE[l]
-
-    n = torch.randn(n_samples, 3, dtype=torch.float64)
-    n_hat = safe_divide(n, safe_norm(n, keepdim=True))
-
-    cos_theta, cos_phi, sin_phi = x_to_trig(n_hat)
-
-    Y_custom = get_spherical_harmonics(l, cos_theta, cos_phi, sin_phi).to(torch.float64)
-    Y_e3nn   = o3.spherical_harmonics(l, n, normalize=True, normalization='component').to(torch.float64)  
-
-    U, *_ = torch.linalg.lstsq(Y_e3nn, Y_custom) 
-    resid = (Y_e3nn @ U - Y_custom).abs().max().item()
-    assert resid < tol, f"SH basis-change fit residual too high for l={l}: {resid:.2e}"
-
-    Uo, _, Vt = torch.linalg.svd(U)
-    U = (Uo @ Vt).to(torch.float32)
-
-    _SH_BASIS_CHANGE_CACHE[l] = U
-    return U
-
-def clebsch_gordan_matrix(l: int, k: int) -> Dict[int, torch.Tensor]:
-    if (l, k) in _CG_CACHE:
-        return _CG_CACHE[(l, k)]
-
-    U_l = fit_sh_basis_change(l).to(torch.float64)
-    U_k = fit_sh_basis_change(k).to(torch.float64)
+def clebsch_gordan_matrix(l: int, k: int, dtype: torch.dtype = None) -> Dict[int, torch.Tensor]:
+    # Cache key MUST include dtype: o3.wigner_3j computes natively at whatever dtype is
+    # requested (verified: float64 differs from float32-then-upcast by ~1.5e-8, real precision,
+    # not relabeling), so a dtype-less cache key means whichever precision happens to touch a
+    # given (l,k) FIRST in the process permanently seeds it there -- silently truncating every
+    # later caller that wanted higher precision, with no error, just excess floating-point error
+    # that looks like a "known ceiling" (this caused base_tests.py's 3 previously-misdiagnosed
+    # failures; see stage_1/CLAUDE.md's 2026-08-21 correction).
+    if dtype is None:
+        dtype = torch.get_default_dtype()
+    key = (l, k, dtype)
+    if key in _CG_CACHE:
+        return _CG_CACHE[key]
 
     result: Dict[int, torch.Tensor] = {}
     for J in range(abs(l - k), l + k + 1):
-        U_J = fit_sh_basis_change(J).to(torch.float64)
+        w3j = o3.wigner_3j(l, k, J, dtype=dtype) * math.sqrt(2 * J + 1)
+        result[J] = w3j.reshape((2 * l + 1) * (2 * k + 1), 2 * J + 1)
 
-        w3j     = o3.wigner_3j(l, k, J).to(torch.float64)                  
-        Q_e3nn  = w3j.reshape((2 * l + 1) * (2 * k + 1), 2 * J + 1)        
-        K = torch.kron(U_l, U_k)                                          
-        Q_custom_J = K.T @ Q_e3nn @ U_J
-
-        result[J] = Q_custom_J.to(torch.float32)
-
-    _CG_CACHE[(l, k)] = result
+    _CG_CACHE[key] = result
     return result
 
 class RadialNetwork(nn.Module):
@@ -79,12 +110,14 @@ class RadialNetwork(nn.Module):
         cutoff_radius: float = 5.0,
         num_heads:     int = 1,
         edge_feature_dim: int = 0,
+        envelope_floor: float = 0.02,
     ):
         super().__init__()
         self.num_basis     = num_basis
         self.cutoff_radius = cutoff_radius
         self.num_heads     = num_heads
         self.edge_feature_dim = edge_feature_dim
+        self.envelope_floor = envelope_floor
 
         centres = torch.linspace(0.0, cutoff_radius, num_basis)
         self.register_buffer("centres", centres)
@@ -94,23 +127,24 @@ class RadialNetwork(nn.Module):
             "inv_width_sq",
             torch.tensor(-1.0 / (2.0 * width ** 2)),
         )
-        # f(r) = 0.5*(cos(pi*r/cutoff)+1) for r < cutoff, else 0
         self.net = nn.Sequential(
-            nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=False),
+            nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=True),
+            nn.RMSNorm(hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim, bias=False),
+            nn.RMSNorm(hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, num_heads, bias=False),
         )
 
     def _basis(self, r: torch.Tensor) -> torch.Tensor:
-        diff    = r - self.centres.unsqueeze(0)          
-        rbf     = torch.exp(self.inv_width_sq * diff * diff) 
+        diff    = r - self.centres.unsqueeze(0)
+        rbf     = torch.exp(self.inv_width_sq * diff * diff)
 
-        r_scaled = (r / self.cutoff_radius).clamp(max=1.0)         
-        envelope = 0.5 * (torch.cos(math.pi * r_scaled) + 1.0)
+        r_scaled = (r / self.cutoff_radius).clamp(max=1.0)
+        envelope = (1.0 - self.envelope_floor) * 0.5 * (torch.cos(math.pi * r_scaled) + 1.0) + self.envelope_floor
 
-        return rbf * envelope   
+        return rbf * envelope
 
     def forward(self, r: torch.Tensor, edge_feat: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
         basis = self._basis(r)
@@ -132,11 +166,8 @@ def equivariant_weight_matrix(
     if N == 0:
         return W
 
-    r      = safe_norm(x, dim=-1, keepdim=True)
-    x_hat  = safe_divide(x, r)
-    cos_theta, cos_alpha, sin_alpha = x_to_trig(x_hat)
-
-    cg = clebsch_gordan_matrix(l, k)
+    r  = x.norm(dim=-1, keepdim=True)
+    cg = clebsch_gordan_matrix(l, k, dtype=dtype)
 
     for J in range(abs(l - k), l + k + 1):
         if J not in cg:
@@ -153,7 +184,7 @@ def equivariant_weight_matrix(
 
         Q_J = cg[J].to(device=device, dtype=dtype)
 
-        Y_J = get_spherical_harmonics(J, cos_theta, cos_alpha, sin_alpha)
+        Y_J = get_spherical_harmonics(J, x)
 
         QTY = torch.einsum("ji,ni->nj", Q_J, Y_J)
         had = phi * QTY
@@ -268,9 +299,7 @@ def fit_sh_to_cartesian(l: int, target_fn, n_samples: int = 20000, tol: float = 
     n = torch.randn(n_samples, 3, dtype=torch.float64)
     n = n / n.norm(dim=-1, keepdim=True)
 
-    cos_theta, cos_phi, sin_phi = x_to_trig(n)
-
-    Y_l = get_spherical_harmonics(l, cos_theta, cos_phi, sin_phi)
+    Y_l = get_spherical_harmonics(l, n)
     T   = target_fn(n)
 
     M, *_ = torch.linalg.lstsq(Y_l, T)
@@ -283,6 +312,7 @@ class AggregateFeatures(nn.Module):
     def __init__(self, out_feat_dim, inp_feat_dim, hidden_dim=128):
         super().__init__()
         self.f0_norm = nn.Linear(inp_feat_dim, 1)
+        init_linear_(self.f0_norm, "linear")
         self.f1_norm = EquivariantNormReadout(inp_feat_dim)
         self.f2_norm = EquivariantNormReadout(inp_feat_dim)
 
@@ -292,16 +322,17 @@ class AggregateFeatures(nn.Module):
 
         self.out = nn.Sequential(
             nn.Linear(3*out_feat_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+            nn.RMSNorm(hidden_dim),
             nn.SELU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+            nn.RMSNorm(hidden_dim),
             nn.SELU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+            nn.RMSNorm(hidden_dim),
             nn.SELU(),
             nn.Linear(hidden_dim, out_feat_dim)
         )
+        init_sequential_(self.out, "selu")
 
     def forward(self, f0, f1, f2):
         f0_inv = self.f0_norm(f0.squeeze(-1)).unsqueeze(-1)
@@ -317,9 +348,10 @@ class AggregateFeatures(nn.Module):
         return f_out
 
 class IrrepLinear(nn.Module):
-    def __init__(self, channels):
+    def __init__(self, channels, nonlinearity: str = "linear"):
         super().__init__()
         self.weight = nn.Linear(channels, channels, bias=False)
+        init_linear_(self.weight, nonlinearity)
 
     def forward(self, x):
         x = x.transpose(-1,-2)
@@ -330,9 +362,10 @@ class EquivariantReadout(nn.Module):
     def __init__(self, C: int, hidden: int = 64):
         super().__init__()
         self.proj = nn.Linear(C, 1, bias=False)
+        init_linear_(self.proj, "linear")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.transpose(-1, -2)     
+        x = x.transpose(-1, -2)
         x = self.proj(x)             
         return x.squeeze(-1)        
 
@@ -356,11 +389,10 @@ class GatedNonlinearity(nn.Module):
         super().__init__()
         self.floor = floor
         self.gate_lin = nn.Linear(num_channels, num_channels)
-        self.leaky_relu = nn.LeakyReLU()
-
+        init_linear_(self.gate_lin, "tanh")
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         norm = straight_through_norm(x, dim=-1, floor=self.floor)
-        gate = self.leaky_relu(self.gate_lin(norm))
+        gate = torch.tanh(self.gate_lin(norm))
         return x * gate.unsqueeze(-1)
 
 class EquivariantNormReadout(nn.Module):
@@ -368,11 +400,13 @@ class EquivariantNormReadout(nn.Module):
         super().__init__()
         self.floor = floor
         self.equiv_proj = nn.Linear(C, hidden, bias=False)
+        init_linear_(self.equiv_proj, "linear")
         self.mlp = nn.Sequential(
             nn.Linear(hidden, hidden, bias=False),
             nn.SiLU(),
             nn.Linear(hidden, 1, bias=False),
         )
+        init_sequential_(self.mlp, "silu")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         v = self.equiv_proj(x.transpose(-1, -2))
@@ -381,44 +415,42 @@ class EquivariantNormReadout(nn.Module):
         return self.mlp(norms).squeeze(-1)
 
 class EquivariantLinear(nn.Module):
-    def __init__(self, cin, cout):
+    def __init__(self, cin, cout, nonlinearity: str = "linear"):
         super().__init__()
         self.weight = nn.Linear(cin, cout, bias=False)
+        init_linear_(self.weight, nonlinearity)
 
     def forward(self, x):
         return self.weight(x.transpose(-1, -2)).transpose(-1, -2)
 
-class EquivariantLayerNorm(nn.Module):
-    def __init__(self, num_channels: int, degree: int, eps: float = 1e-5, floor: float = 0.5):
+class EquivariantRMSNorm(nn.Module):
+    def __init__(
+        self,
+        num_channels: int,
+        degree: int,
+        eps: float = 1e-8,
+        floor: float = 0.5,
+    ):
         super().__init__()
         self.degree = degree
         self.eps = eps
         self.floor = floor
         self.gamma = nn.Parameter(torch.ones(num_channels))
-        self.beta  = nn.Parameter(torch.zeros(num_channels))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.degree == 0:
             v = x.squeeze(-1)
-            mean = v.mean(dim=-1, keepdim=True)
-            centered = v - mean
-            var = centered.detach().pow(2).mean(dim=-1, keepdim=True)
-            if counters.DIAG_ENABLED and (var < self.eps).any():
-                counters.incr("ln_clamp")
-            scale = var.clamp(min=self.eps).sqrt()
-            v = safe_divide(centered, scale) * self.gamma + self.beta
+            rms = v.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
+            if counters.DIAG_ENABLED and (rms < self.eps).any():
+                counters.incr("rmsnorm_near_zero")
+            v = (v / rms) * self.gamma
             return v.unsqueeze(-1)
         else:
-            if counters.DIAG_ENABLED and ((x.detach() ** 2).sum(dim=-1) < self.floor ** 2).any():
-                counters.incr("eqln_deg_gt0_near_degenerate")
-            norm, x_dir = straight_through_norm_and_direction(x, dim=-1, floor=self.floor)
-            mean = norm.mean(dim=-1, keepdim=True)
-            centered = norm - mean
-            var = centered.detach().pow(2).mean(dim=-1, keepdim=True)
-            if counters.DIAG_ENABLED and (var < self.eps).any():
-                counters.incr("ln_clamp")
-            scale = var.clamp(min=self.eps).sqrt()
-            target = safe_divide(centered, scale) * self.gamma + self.beta
+            if counters.DIAG_ENABLED and ((x ** 2).sum(dim=-1) < self.floor ** 2).any():
+                counters.incr("eqln_deg_gt0_near_degenerate") 
+            norm, x_dir = straight_through_norm_and_direction(x, dim=-1, floor=self.floor,)
+            rms = norm.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
+            target = (norm / rms) * self.gamma
             return x_dir * target.unsqueeze(-1)
 
 def cg_for_J(l: int, k: int, J: int) -> torch.Tensor:
@@ -438,13 +470,10 @@ def equivariant_weight_single_J(
     if x.shape[0] == 0:
         return torch.zeros(0, 2 * l + 1, 2 * k + 1, device=device, dtype=dtype)
 
-    cg    = clebsch_gordan_matrix(l, k)
-    Q_J   = cg[J].to(device=device, dtype=dtype) 
-    
-    r = safe_norm(x, keepdim=True)
-    x_hat = divide_or_zero(x, r)
-    cos_theta, cos_alpha, sin_alpha = x_to_trig(x_hat)
-    Y_J = get_spherical_harmonics(J, cos_theta, cos_alpha, sin_alpha)
+    cg    = clebsch_gordan_matrix(l, k, dtype=dtype)
+    Q_J   = cg[J].to(device=device, dtype=dtype)
+
+    Y_J = get_spherical_harmonics(J, x)
 
     QTY = torch.einsum("ji,ni->nj", Q_J, Y_J)
     had = phi * QTY                               

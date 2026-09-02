@@ -14,7 +14,7 @@ import torch.nn.functional as nnf
 from torch.utils.data import DataLoader, random_split
 
 from stage_1.model import EnergyModel, masked_mean
-from utils.se3_utils import RadialNetwork, EquivariantNormReadout, EquivariantLayerNorm, EquivariantLinear
+from utils.se3_utils import RadialNetwork, EquivariantNormReadout, EquivariantRMSNorm, EquivariantLinear
 from stage_1.spice_dataset import SPICEDataset, spice_collate_fn, _EDGE_FEAT_DIM
 from log_setup.utils import logger
 from diagnostics import counters
@@ -36,6 +36,8 @@ class SPICEEnergyForceModel(nn.Module):
         pw_e_cutoff: float | None = None,
         n_master_nodes: int = 4,
         num_fusion_heads: int = 4,
+        ablate_max_degree: int | None = None,
+        grad_checkpoint: bool = False,
     ):
         super().__init__()
         self.energy_model = EnergyModel(
@@ -51,19 +53,21 @@ class SPICEEnergyForceModel(nn.Module):
             n_master_nodes=n_master_nodes,
             num_fusion_heads=num_fusion_heads,
             edge_feat_dim=_EDGE_FEAT_DIM,
+            ablate_max_degree=ablate_max_degree,
+            grad_checkpoint=grad_checkpoint,
         )
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
         self.out = nn.Sequential(
-            EquivariantLayerNorm(feature_dim, degree=0),
-            EquivariantLinear(feature_dim, hidden_dim),
-            EquivariantLayerNorm(hidden_dim, degree=0),
+            EquivariantRMSNorm(feature_dim, degree=0),
+            EquivariantLinear(feature_dim, hidden_dim, nonlinearity="leaky_relu"),
+            EquivariantRMSNorm(hidden_dim, degree=0),
             nn.LeakyReLU(),
-            EquivariantLinear(hidden_dim, hidden_dim),
-            EquivariantLayerNorm(hidden_dim, degree=0),
+            EquivariantLinear(hidden_dim, hidden_dim, nonlinearity="leaky_relu"),
+            EquivariantRMSNorm(hidden_dim, degree=0),
             nn.LeakyReLU(),
-            EquivariantLinear(hidden_dim, hidden_dim),
-            EquivariantLayerNorm(hidden_dim, degree=0),
+            EquivariantLinear(hidden_dim, hidden_dim, nonlinearity="leaky_relu"),
+            EquivariantRMSNorm(hidden_dim, degree=0),
             nn.LeakyReLU(),
             EquivariantLinear(hidden_dim, 1),
         )
@@ -131,6 +135,7 @@ _CSV_FIELDS = [
     "alpha", "damping_sum_min", "Z_min", "ln_clamp_hits", "safe_inv_retries",
     "max_force_mag", "max_abs_U",
     "min_abs_radial", "eqln_deg_gt0_near_degenerate", "g_a_norm_max",
+    "skipped",
 ]
 _GRAD_BUCKET_NAMES = ["sr", "master", "fusion", "other"]
 
@@ -155,6 +160,7 @@ class SPICETrainer:
         self._setup_csv_logging()
         self._setup_training()
         self._setup_diagnostics()
+        self._setup_explosion_skip()
 
     def _setup_diagnostics(self):
         if not self.diag:
@@ -194,6 +200,9 @@ class SPICETrainer:
             f"Diagnostics enabled. Provenance: {self.provenance.path}, dumps: {self._diag_dump_dir}"
         )
 
+    def _setup_explosion_skip(self):
+        self._n_skipped_nonfinite = 0
+
     def _setup_csv_logging(self):
         csv_path = self.config.get("csv_path") or os.path.join(self.config.get("ckpt_dir", "."), "loss_log.csv")
         os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
@@ -216,7 +225,7 @@ class SPICETrainer:
         ln_clamp_hits: int | None = None, safe_inv_retries: int | None = None,
         max_force_mag: float | None = None, max_abs_U: float | None = None,
         min_abs_radial: float | None = None, eqln_deg_gt0_near_degenerate: int | None = None,
-        g_a_norm_max: float | None = None,
+        g_a_norm_max: float | None = None, skipped: int | None = None,
     ):
         row = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -247,6 +256,7 @@ class SPICETrainer:
             "min_abs_radial": min_abs_radial,
             "eqln_deg_gt0_near_degenerate": eqln_deg_gt0_near_degenerate,
             "g_a_norm_max": g_a_norm_max,
+            "skipped": skipped,
         }
         self._csv_writer.writerow(row)
         self._csv_file.flush()
@@ -448,6 +458,7 @@ class SPICETrainer:
         self.model.train()
         logger.info(f"Epoch {epoch}")
         epoch_loss, epoch_start = 0.0, time.time()
+        epoch_skipped_nonfinite = 0
 
         for batch_idx, batch in enumerate(self.train_loader):
             self.optimizer.zero_grad(set_to_none=True)
@@ -495,6 +506,8 @@ class SPICETrainer:
                 ]
                 logger.warning(f"  [WARN] Non-finite gradients at step {self.global_step}, skipping. Bad params: {bad_params[:10]}")
                 self.optimizer.zero_grad(set_to_none=True)
+                self._n_skipped_nonfinite += 1
+                epoch_skipped_nonfinite += 1
             else:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.get("grad_clip_norm", 1.0))
                 self.optimizer.step()
@@ -507,11 +520,13 @@ class SPICETrainer:
             max_steps = self.config.get("max_steps")
             hit_max_steps = bool(max_steps) and self.global_step >= max_steps
 
-            if should_log:
+            batch_skipped = not is_finite
+            if should_log or batch_skipped:
                 extra = {
                     "energy_term": float(energy_term.item()),
                     "force_term": float(force_term.item()),
                     "lr": self.optimizer.param_groups[0]["lr"],
+                    "skipped": int(batch_skipped),
                 }
                 if diag_record is not None:
                     wb = diag_record["weight_buckets"]
@@ -539,6 +554,11 @@ class SPICETrainer:
                 break
 
         avg_loss = epoch_loss / max(batch_idx + 1, 1)
+        if epoch_skipped_nonfinite:
+            logger.info(
+                f"Epoch {epoch}: skipped {epoch_skipped_nonfinite} non-finite-gradient batches "
+                f"out of {batch_idx + 1} (cumulative: {self._n_skipped_nonfinite})."
+            )
         self._log_csv_row("train_epoch_avg", epoch, loss=avg_loss)
         return avg_loss
 
@@ -551,6 +571,8 @@ class SPICETrainer:
         avg = val_loss / max(len(self.val_loader), 1)
         self._log_csv_row("validation", epoch, loss=avg)
         self.model.train()
+        if self.diag:
+            counters.snapshot_and_reset()
         return avg
 
     def save_checkpoint(self, epoch: int, val_loss: float, is_best: bool = False):
@@ -694,6 +716,8 @@ def run_training(config: dict, device: torch.device | None = None):
         pw_e_cutoff=config.get("pw_e_cutoff"),
         n_master_nodes=config.get("n_master_nodes", 4),
         num_fusion_heads=config.get("num_fusion_heads", 4),
+        ablate_max_degree=config.get("ablate_max_degree"),
+        grad_checkpoint=config.get("grad_checkpoint", False),
     )
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -743,10 +767,12 @@ def main():
     parser.add_argument("--feature-dim", type=int, default=64)
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--max-degree", type=int, default=2)
+    parser.add_argument("--ablate-max-degree", type=int, default=None, choices=[0, 1], help="Feature-degree ablation study: zero out degree>l tensors at every point they're produced (seed features, each layer's SR/self output, master-fusion output), holding architecture and parameter count fixed at --max-degree=2. Omit for the full equivariant model.")
     parser.add_argument("--num-layers", type=int, default=4)
     parser.add_argument("--edge-cutoff", type=float, default=5.0)
     parser.add_argument("--box-padding", type=float, default=12.0, help="Vacuum spacing (Angstrom) around each molecule's auxiliary supercell")
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
+    parser.add_argument("--grad-checkpoint", action="store_true", help="Wrap each EnergyLayer in torch.utils.checkpoint (use_reentrant=False) during training to cut activation memory at the same batch size, at the cost of recomputing each layer's forward during backward (~20-30%% slower per step). No numerical-precision tradeoff, unlike --bf16 (removed -- verified to corrupt forces on this model, see git history).")
     parser.add_argument("--n-max", type=int, default=1)
     parser.add_argument("--pw-e-cutoff", type=float, default=None, help="Long-range k-space energy cutoff (k_max = sqrt(2*e_cutoff)); caps |k| independent of box size. Not a reliable substitute for keeping --n-max small -- filtering high-k modes did not consistently fix instability at n_max=4 in testing")
     parser.add_argument("--num-atom-types", type=int, default=23, help="mappings.py padding + 22 element types (incl. Li)")

@@ -1,4 +1,10 @@
+import math
+import sys
+
 import torch
+from rdkit import Chem
+from rdkit.Chem import Descriptors, rdMolDescriptors
+from rdkit.Chem.QED import qed
 
 _MOL_FEAT_NAMES: list[str] = [
     "LogP", "MolWt", "QED", "HBA", "HBD",

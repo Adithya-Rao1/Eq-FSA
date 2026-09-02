@@ -3,6 +3,7 @@ import math
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 from typing import Dict, Optional, Tuple
 
 from stage_1.attention import SRAttention, MasterNodeAttention, MasterFusionAttention, SRCrossAttention
@@ -46,9 +47,9 @@ def masked_mean(feat: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
 def safe_minimum_image_cutoff(V: torch.Tensor, cutoff: float) -> torch.Tensor:
     a1, a2, a3 = V[..., 0], V[..., 1], V[..., 2]
     volume = torch.linalg.det(V).abs()
-    d1 = volume / torch.cross(a2, a3, dim=-1).norm(dim=-1).clamp(min=1e-12)
-    d2 = volume / torch.cross(a1, a3, dim=-1).norm(dim=-1).clamp(min=1e-12)
-    d3 = volume / torch.cross(a1, a2, dim=-1).norm(dim=-1).clamp(min=1e-12)
+    d1 = volume / torch.cross(a2, a3, dim=-1).norm(dim=-1).clamp(min=1e-8)
+    d2 = volume / torch.cross(a1, a3, dim=-1).norm(dim=-1).clamp(min=1e-8)
+    d3 = volume / torch.cross(a1, a2, dim=-1).norm(dim=-1).clamp(min=1e-8)
     min_width = torch.minimum(torch.minimum(d1, d2), d3)
     return torch.minimum(torch.full_like(min_width, cutoff), 0.5 * min_width)
 
@@ -65,20 +66,18 @@ def seed_equivariant_features(
     center, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask)
 
     x_rel   = x_wrapped - center.unsqueeze(1)
-    r_true  = safe_norm(x_rel, dim=-1)
+    r_true  = x_rel.norm(dim=-1)
     r       = r_true.clamp(min=1e-8)
-    x_hat   = divide_or_zero(x_rel, r_true.unsqueeze(-1))
     has_dir = (r_true > 1e-7).unsqueeze(-1)
 
-    cos_theta, cos_phi, sin_phi = x_to_trig(x_hat)
-
-    Y1 = get_spherical_harmonics_batched(1, cos_theta, cos_phi, sin_phi) * has_dir
-    Y2 = get_spherical_harmonics_batched(2, cos_theta, cos_phi, sin_phi) * has_dir
+    Y1 = get_spherical_harmonics(1, x_rel) * has_dir
+    Y2 = get_spherical_harmonics(2, x_rel) * has_dir
 
     B, N = r.shape
     radial = radial_net(r.reshape(-1, 1)).view(B, N, 1)
     if diag_sink is not None:
-        diag_sink["min_abs_radial"] = float(radial.detach().abs().min())
+        masked_radial = radial.masked_fill(~node_mask.unsqueeze(-1), float("inf"))
+        diag_sink["min_abs_radial"] = float(masked_radial.detach().abs().min())
     scalar = combined_scalar.unsqueeze(-1)
 
     f1 = scalar * (radial.unsqueeze(-1) * Y1.unsqueeze(2))
@@ -86,45 +85,15 @@ def seed_equivariant_features(
 
     return {1: f1, 2: f2}
 
-def _scalar_ffn(feature_dim: int, hidden_dim: int) -> nn.Sequential:
-    return nn.Sequential(
-        nn.LayerNorm(feature_dim),
-        nn.Linear(feature_dim, hidden_dim),
-        nn.LayerNorm(hidden_dim),
-        nn.LeakyReLU(),
-        nn.Linear(hidden_dim, hidden_dim),
-        nn.LayerNorm(hidden_dim),
-        nn.LeakyReLU(),
-        nn.Linear(hidden_dim, hidden_dim),
-        nn.LayerNorm(hidden_dim),
-        nn.LeakyReLU(),
-        nn.Linear(hidden_dim, feature_dim),
-    )
-
-def _high_ord_ffn(feature_dim, hidden_dim, degree) -> nn.Sequential:
-    return nn.Sequential(
-            EquivariantLayerNorm(feature_dim, degree),
-            EquivariantLinear(feature_dim, hidden_dim),
-            EquivariantLayerNorm(hidden_dim, degree),
-            GatedNonlinearity(hidden_dim),
-            EquivariantLinear(hidden_dim, hidden_dim),
-            EquivariantLayerNorm(hidden_dim, degree),
-            GatedNonlinearity(hidden_dim),
-            EquivariantLinear(hidden_dim, hidden_dim),
-            EquivariantLayerNorm(hidden_dim, degree),
-            GatedNonlinearity(hidden_dim),
-            EquivariantLinear(hidden_dim, feature_dim),
-        )
-
 class Readout(nn.Module):
     def __init__(self, feature_dim, hidden_dim=128):
         super().__init__()
         self.feature_dim = feature_dim
         self.hidden_dim = hidden_dim
 
-        self.ffn0 = _scalar_ffn(feature_dim, hidden_dim)
-        self.ffn1 = _high_ord_ffn(feature_dim, hidden_dim, 1)
-        self.ffn2 = _high_ord_ffn(feature_dim, hidden_dim, 2)
+        self.ffn0 = scalar_ffn(feature_dim, hidden_dim)
+        self.ffn1 = high_ord_ffn(feature_dim, hidden_dim, 1)
+        self.ffn2 = high_ord_ffn(feature_dim, hidden_dim, 2)
 
         self.ffn = [self.ffn0, self.ffn1, self.ffn2]
 
@@ -141,7 +110,8 @@ class EnergyLayer(nn.Module):
     def __init__(
         self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int = 128,
         edge_cutoff: float = 5.0, n_max: int = 2, pw_e_cutoff: Optional[float] = None,
-        k_max: int = 0, edge_feat_dim: int = 8,
+        k_max: int = 0, edge_feat_dim: int = 8, ablate_max_degree: Optional[int] = None,
+        ablate_lr: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -149,12 +119,17 @@ class EnergyLayer(nn.Module):
         self.feature_dim = feature_dim
         self.edge_cutoff = edge_cutoff
         self.k_max = k_max
+        self.ablate_max_degree = ablate_max_degree
+        self.ablate_lr = ablate_lr
         self.sr_attn = SRAttention(
             radial_net, max_degree, feature_dim, hidden_dim, k_max=k_max, edge_feat_dim=edge_feat_dim,
         )
 
         self.W_V_self = nn.ModuleDict({
-            str(l): IrrepLinear(feature_dim)
+            str(l): nn.Sequential(
+                EquivariantLinear(feature_dim, feature_dim),
+                EquivariantRMSNorm(feature_dim, 1)
+            )
             for l in range(max_degree + 1)
         })
         self.sigma_gate = nn.ModuleDict({
@@ -163,10 +138,19 @@ class EnergyLayer(nn.Module):
         })
 
         self.W_master_self = IrrepLinear(feature_dim)
-        self.master_attn = MasterNodeAttention(feature_dim, n_max, pw_e_cutoff)
+        self.master_attn = MasterNodeAttention(feature_dim, n_max, pw_e_cutoff, hidden_dim)
+        self.master_ln = EquivariantRMSNorm(feature_dim, degree=0)
 
         self.layer_norm_in = nn.ModuleDict({
-            str(l): EquivariantLayerNorm(feature_dim, degree=l)
+            str(l): EquivariantRMSNorm(feature_dim, degree=l)
+            for l in range(max_degree + 1)
+        })
+        self.layer_norm_mid = nn.ModuleDict({
+            str(l): EquivariantRMSNorm(feature_dim, degree=l)
+            for l in range(max_degree + 1)
+        })
+        self.layer_norm_out = nn.ModuleDict({
+            str(l): EquivariantRMSNorm(feature_dim, degree=l)
             for l in range(max_degree + 1)
         })
 
@@ -228,20 +212,28 @@ class EnergyLayer(nn.Module):
             ).view(B, N, C, 2 * l + 1)
             neighbor_term = self.sigma_gate[str(l)](neighbor_raw)
 
-            f_out[l] = f_in[l] + self_term + neighbor_term
+            f_out[l] = self.layer_norm_mid[str(l)](f_in[l] + self_term + neighbor_term)
+            if self.ablate_max_degree is not None and l > self.ablate_max_degree:
+                f_out[l] = torch.zeros_like(f_out[l])
 
         f = self.readout(f_out)
         for l in range(self.max_degree + 1):
-            f[l] = f[l] + f_out[l]
+            f[l] = self.layer_norm_out[str(l)](f[l] + f_out[l])
 
-        # Global master-node recurrence
-        g_a_out = self.W_master_self(g_a_in) + self.master_attn(
-            g_a_in, f_in[0], x_wrapped, x_com, node_mask, V,
-        )
+        master_attn_out = self.master_attn(g_a_in, f_in[0], x_wrapped, x_com, node_mask, V)
+        if self.ablate_lr:
+            master_attn_out = torch.zeros_like(master_attn_out)
+        g_a_out = self.master_ln(self.W_master_self(g_a_in) + master_attn_out)
         if self.diag_enabled:
             self._diag_g_a_norm = float(g_a_out.detach().norm())
 
         return f, g_a_out
+
+def _run_energy_layer(layer, f_in, f0, g_a_in, x, x_com, edge_feats, node_mask, V):
+    return layer(
+        f_in=f_in, f0=f0, g_a_in=g_a_in, x=x, x_com=x_com,
+        edge_feats=edge_feats, node_mask=node_mask, V=V,
+    )
 
 def _compute_k_max(m: int, max_degree: int) -> int:
     return m if m <= max_degree else m % max_degree
@@ -262,6 +254,9 @@ class EnergyModel(nn.Module):
         n_master_nodes:   int = 4,
         num_fusion_heads: int = 4,
         edge_feat_dim:    int = 8,
+        ablate_max_degree: Optional[int] = None,
+        ablate_lr: bool = False,
+        grad_checkpoint: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -270,31 +265,47 @@ class EnergyModel(nn.Module):
         self.max_degree = max_degree
         self.task       = task
         self.n_master_nodes = n_master_nodes
+        self.ablate_max_degree = ablate_max_degree
+        self.ablate_lr = ablate_lr
+        self.grad_checkpoint = grad_checkpoint
 
         self.input_embedding = nn.Embedding(num_atom_types, feature_dim)
-        self.ln1             = nn.LayerNorm(feature_dim)
+        self.ln1             = nn.RMSNorm(feature_dim)
         self.mol_prop_emb    = nn.Sequential(
-                            _scalar_ffn(_MOL_FEAT_DIM, hidden_dim),
-                            nn.LayerNorm(_MOL_FEAT_DIM),
+                            scalar_ffn(_MOL_FEAT_DIM, hidden_dim),
+                            nn.RMSNorm(_MOL_FEAT_DIM),
                             nn.LeakyReLU(),
                             nn.Linear(_MOL_FEAT_DIM, feature_dim)
                         )
-        self.ln2             = nn.LayerNorm(feature_dim)
-        self.f0_ffn          = _scalar_ffn(feature_dim, hidden_dim)
-        self.mol_ffn         = _scalar_ffn(feature_dim, hidden_dim)
-        self.seed_proj       = nn.Linear(2 * feature_dim, feature_dim)
+        init_sequential_(self.mol_prop_emb, "leaky_relu")
+        self.ln2             = nn.RMSNorm(feature_dim)
+        self.f0_ffn          = scalar_ffn(feature_dim, hidden_dim)
+        self.mol_ffn         = scalar_ffn(feature_dim, hidden_dim)
+        
+        self.seed_proj       = scalar_ffn(2 * feature_dim, hidden_dim)
+        self.seed_proj_out   = nn.Linear(2 * feature_dim, feature_dim)
+        init_linear_(self.seed_proj_out, "linear")
+        self.seed_proj_norm  = nn.RMSNorm(feature_dim)
+       
         self.seed_radial_net = radial_net(num_basis=1, hidden_dim=hidden_dim)
 
         self.master_pool_agg = AggregateFeatures(
             out_feat_dim=feature_dim, inp_feat_dim=feature_dim, hidden_dim=hidden_dim,
         )
-        self.master_pool_ffn = _scalar_ffn(feature_dim, hidden_dim)
-        self.master_expand   = nn.Linear(feature_dim, n_master_nodes * feature_dim)
+        self.master_pool_ffn = scalar_ffn(feature_dim, hidden_dim)
+        self.master_expand   = nn.Sequential(
+            nn.RMSNorm(feature_dim),
+            nn.LeakyReLU(),
+            nn.Linear(feature_dim, n_master_nodes * feature_dim)
+        )
+        init_sequential_(self.master_expand, "leaky_relu")
+        self.master_expand_norm = EquivariantRMSNorm(feature_dim, degree=0)
 
         self.layers = nn.ModuleList([
             EnergyLayer(
                 radial_net, max_degree, feature_dim, hidden_dim, edge_cutoff, n_max, pw_e_cutoff,
                 k_max=_compute_k_max(m, max_degree), edge_feat_dim=edge_feat_dim,
+                ablate_max_degree=ablate_max_degree, ablate_lr=ablate_lr,
             )
             for m in range(num_layers)
         ])
@@ -302,6 +313,10 @@ class EnergyModel(nn.Module):
         self.master_fusion = MasterFusionAttention(
             radial_net, max_degree, feature_dim, hidden_dim, num_heads=num_fusion_heads,
         )
+        self.layer_norm_fusion = nn.ModuleDict({
+            str(l): EquivariantRMSNorm(feature_dim, degree=l)
+            for l in range(max_degree + 1)
+        })
 
         self.readout = Readout(feature_dim, hidden_dim)
 
@@ -312,9 +327,12 @@ class EnergyModel(nn.Module):
         self,
         x, node_types, atomic_masses, node_mask,
         V, mol_props, edge_feats,
+        return_layer_states: bool = False,
+        seed_masses=None,
     ) -> torch.Tensor:
         node_mask = node_mask.bool()
         atomic_masses = atomic_masses * node_mask.to(atomic_masses.dtype)
+        seed_masses = atomic_masses if seed_masses is None else seed_masses * node_mask.to(seed_masses.dtype)
         B, N = node_types.shape
 
         f0_raw = self.input_embedding(node_types)
@@ -323,12 +341,18 @@ class EnergyModel(nn.Module):
         mol_ctx = self.mol_prop_emb(mol_props).unsqueeze(1).expand(-1, N, -1)
         mol_ffn_out = self.mol_ffn(self.ln2(mol_ctx))
 
-        combined_scalar = self.seed_proj(torch.cat([f0_ffn_out, mol_ffn_out], dim=-1))
+        combined_scalar = (self.seed_proj(torch.cat([f0_ffn_out, mol_ffn_out], dim=-1)))
+        combined_scalar = self.seed_proj_norm(self.seed_proj_out(combined_scalar))
 
         seeded = seed_equivariant_features(
-            combined_scalar, self.seed_radial_net, x, atomic_masses, node_mask, V,
+            combined_scalar, self.seed_radial_net, x, seed_masses, node_mask, V,
             diag_sink=(self._diag_stats if self.diag_enabled else None),
         )
+        if self.ablate_max_degree is not None:
+            seeded = {
+                l: (v if l <= self.ablate_max_degree else torch.zeros_like(v))
+                for l, v in seeded.items()
+            }
         f0: Dict[int, torch.Tensor] = {0: f0_raw.unsqueeze(-1), 1: seeded[1], 2: seeded[2]}
         f: Dict[int, torch.Tensor] = dict(f0)
 
@@ -338,18 +362,37 @@ class EnergyModel(nn.Module):
         agg_per_atom = self.master_pool_agg(f0[0], f0[1], f0[2]).squeeze(-1)
         pooled = self.master_pool_ffn(masked_mean(agg_per_atom, node_mask))
         g_a = self.master_expand(pooled).view(B, self.n_master_nodes, -1).unsqueeze(-1)
+        g_a = self.master_expand_norm(g_a)
 
+        layer_states = [] if return_layer_states else None
         for layer in self.layers:
-            f, g_a = layer(
-                f_in=f, f0=f0, g_a_in=g_a, x=x, x_com=x_com,
-                edge_feats=edge_feats, node_mask=node_mask, V=V,
-            )
+            if self.grad_checkpoint and self.training:
+                f, g_a = checkpoint(
+                    _run_energy_layer, layer, f, f0, g_a, x, x_com, edge_feats, node_mask, V,
+                    use_reentrant=False,
+                )
+            else:
+                f, g_a = layer(
+                    f_in=f, f0=f0, g_a_in=g_a, x=x, x_com=x_com,
+                    edge_feats=edge_feats, node_mask=node_mask, V=V,
+                )
+            if return_layer_states:
+                layer_states.append(f)
 
         fusion_out = self.master_fusion(f_atoms=f, g_a=g_a, x=minimum_image(x, V), x_com=x_com)
-        f = {l: f[l] + fusion_out[l] for l in f}
+        if self.ablate_max_degree is not None:
+            fusion_out = {
+                l: (v if l <= self.ablate_max_degree else torch.zeros_like(v))
+                for l, v in fusion_out.items()
+            }
+        if self.ablate_lr:
+            fusion_out = {l: torch.zeros_like(v) for l, v in fusion_out.items()}
+        f = {l: self.layer_norm_fusion[str(l)](f[l] + fusion_out[l]) for l in f}
 
         f = self.readout(f)
 
+        if return_layer_states:
+            return f, layer_states
         return f
 
 class SolventModel(nn.Module):
@@ -444,26 +487,26 @@ class SolventLayer(nn.Module):
         # Implicit interaction modules
         self.cav_rad_i = nn.Sequential(
             nn.Linear(feature_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+            nn.RMSNorm(hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, 2 * hidden_dim),
-            nn.LayerNorm(2 * hidden_dim),
+            nn.RMSNorm(2 * hidden_dim),
             nn.GELU(),
             nn.Linear(2 * hidden_dim, 2 * hidden_dim),
-            nn.LayerNorm(2 * hidden_dim),
+            nn.RMSNorm(2 * hidden_dim),
             nn.GELU(),
             nn.Linear(2 * hidden_dim, 1),
         )
 
         self.cav_rad_j = nn.Sequential(
             nn.Linear(feature_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+            nn.RMSNorm(hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, 2 * hidden_dim),
-            nn.LayerNorm(2 * hidden_dim),
+            nn.RMSNorm(2 * hidden_dim),
             nn.GELU(),
             nn.Linear(2 * hidden_dim, 2 * hidden_dim),
-            nn.LayerNorm(2 * hidden_dim),
+            nn.RMSNorm(2 * hidden_dim),
             nn.GELU(),
             nn.Linear(2 * hidden_dim, 1)
         )
