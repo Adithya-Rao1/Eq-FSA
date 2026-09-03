@@ -36,6 +36,7 @@ def mean_pairwise_cosine_similarity(t: torch.Tensor) -> float:
 def instrumented_master_node_attn_forward(
     module: MasterNodeAttention, g_a: torch.Tensor, f_in0: torch.Tensor, x: torch.Tensor,
     x_com: torch.Tensor, node_mask: torch.Tensor, V: torch.Tensor,
+    normalize_z_by_n_real: bool = False,
 ) -> tuple[torch.Tensor, dict]:
     diag: dict = {}
     B, N_a, C, _ = g_a.shape
@@ -63,6 +64,9 @@ def instrumented_master_node_attn_forward(
     phi_K = (F.elu(K) + 1) * m.unsqueeze(-1)
     phi_K_sum = phi_K.sum(dim=1)
     Z_raw = torch.einsum("bac,bc->ba", phi_Q, phi_K_sum)
+    if normalize_z_by_n_real:
+        n_real = node_mask.sum(dim=1, keepdim=True).clamp(min=1).to(Z_raw.dtype)
+        Z_raw = Z_raw / n_real
     Z = Z_raw.clamp(min=1e-8)
     diag["Z"] = Z.detach()
 
@@ -144,9 +148,9 @@ def instrumented_rsa_forward(
     m = node_mask.to(x.dtype)
     h = f_in0.squeeze(-1)
 
-    Q, K, V_val = module.W_Q(h), module.W_K(h), module.W_V(h)
-    phi_Q = (F.elu(Q) + 1) * m.unsqueeze(-1)
-    phi_K = (F.elu(K) + 1) * m.unsqueeze(-1)
+    q, k, v = module.qkv(h).chunk(3, dim=-1)
+    q = module.act(q) * m.unsqueeze(-1)
+    k = module.act(k) * m.unsqueeze(-1)
 
     kvecs, indices, mode_mask = make_wavevectors(V, module.n_max, e_cutoff=None)
     mode_mask_f = mode_mask.to(x.dtype)
@@ -157,30 +161,26 @@ def instrumented_rsa_forward(
 
     k2 = (kvecs ** 2).sum(dim=-1)
     w_k = torch.exp(-k2 * (module.sigma ** 2) / 2.0) / k2.clamp(min=1e-12) * active
+    w_k = w_k / w_k.sum(dim=-1, keepdim=True).clamp(min=1e-12)
 
-    phase_source = -torch.einsum("bni,bmi->bnm", x, kvecs)
-    cos_n = torch.cos(phase_source) * mode_mask_f.unsqueeze(1)
-    sin_n = torch.sin(phase_source) * mode_mask_f.unsqueeze(1)
-    S_re = torch.einsum("bnc,bnd,bnm->bmcd", phi_K, V_val, cos_n)
-    S_im = torch.einsum("bnc,bnd,bnm->bmcd", phi_K, V_val, sin_n)
-    diag["S_re"], diag["S_im"] = S_re.detach(), S_im.detach()
+    phase = torch.einsum("bni,bmi->bnm", x, kvecs)
+    cos, sin = phase.cos(), phase.sin()
 
-    phase_query = torch.einsum("bni,bmi->bnm", x, kvecs)
-    cos_m = torch.cos(phase_query) * w_k.unsqueeze(1)
-    sin_m = torch.sin(phase_query) * w_k.unsqueeze(1)
+    q_rot = module._rope(q, cos, sin) * module.scale_q
+    k_rot = module._rope(k, cos, sin)
 
-    QS_re = torch.einsum("bnc,bmcd->bnmd", phi_Q, S_re)
-    QS_im = torch.einsum("bnc,bmcd->bnmd", phi_Q, S_im)
+    kv = torch.einsum("bnmc,bnd,bn->bmcd", k_rot, v, m)
+    half = kv.shape[-2] // 2
+    diag["S_re"], diag["S_im"] = kv[..., :half, :].detach(), kv[..., half:, :].detach()
 
-    out_pre_div = (QS_re * cos_m.unsqueeze(-1) - QS_im * sin_m.unsqueeze(-1)).sum(dim=2)
-    diag["out_pre_div"] = out_pre_div.detach()
+    beta = torch.einsum("bnmc,bmcd->bnmd", q_rot, kv)
+    diag["out_pre_div"] = beta.detach()
 
-    Z = torch.einsum("bnc,bc->bn", phi_Q, phi_K.sum(dim=1)).clamp(min=1e-8)
-    w_k_sum = w_k.sum(dim=-1).clamp(min=1e-8)
-    out = out_pre_div / Z.unsqueeze(-1) / w_k_sum.view(B, 1, 1)
-    diag["out"] = out.detach()
+    update = torch.einsum("bnmd,bm->bnd", beta, w_k) * m.unsqueeze(-1)
+    update = module.out_norm(update) * m.unsqueeze(-1)
+    diag["out"] = update.detach()
 
-    return out.unsqueeze(-1), diag
+    return update.unsqueeze(-1), diag
 
 def probe_eqfsa(model: EqFSAEncoder, charges, positions, mask, V) -> tuple[torch.Tensor, dict]:
     B = charges.shape[0]
@@ -198,6 +198,7 @@ def probe_eqfsa(model: EqFSAEncoder, charges, positions, mask, V) -> tuple[torch
 
     lr_master, diag = instrumented_master_node_attn_forward(
         model.master_attn, g_a, f_in0, positions, x_com, mask, V,
+        normalize_z_by_n_real=getattr(model, "use_normalize_z_by_n_real", False),
     )
     master_out = model.master_attn_norm(lr_master.squeeze(-1))
     g_a_const = g_a.squeeze(-1)
