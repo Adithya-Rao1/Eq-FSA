@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 
 from stage_1.experiments.neurreps.oversquashing.eqfsa_classifier import EqFSAClassifier
+from stage_1.experiments.neurreps.oversquashing.rsa_classifier import RSAClassifier
 from utils.se3_utils import RadialNetwork
 
 DTYPE = torch.double
@@ -171,6 +172,52 @@ def test_eqfsa_classifier_forward_backward_finite():
         B, N, g, dtype=torch.float32,
     )
     model = _build_eqfsa(dtype=torch.float32)
+    logits = model(x, types, masses, mask, V, mol_props, edge_feats, target_idx)
+    loss = logits.pow(2).sum()
+    loss.backward()
+    assert torch.isfinite(loss)
+    for p in model.parameters():
+        if p.grad is not None:
+            assert torch.isfinite(p.grad).all()
+
+
+def _build_rsa(dtype=DTYPE):
+    torch.manual_seed(123)
+    with _default_dtype(dtype):
+        return RSAClassifier(
+            num_atom_types=NUM_ATOM_TYPES, classes=CLASSES, feature_dim=8, hidden_dim=16,
+            n_max=1, sigma=5.0,
+        )
+
+
+def test_rsa_classifier_rotation_translation_invariant():
+    g = torch.Generator().manual_seed(4)
+    B, N = 2, 6
+    x, types, masses, mask, V, mol_props, edge_feats, target_idx = _make_eqfsa_batch(B, N, g)
+
+    with _default_dtype(DTYPE):
+        model = _build_rsa()
+        model.eval()
+
+        R = random_rotation_matrix()
+        t = torch.randn(3, dtype=DTYPE, generator=g)
+        x_tf = x @ R.T + t
+        V_tf = rotate_V(V, R)
+
+        with torch.no_grad():
+            logits = model(x, types, masses, mask, V, mol_props, edge_feats, target_idx)
+            logits_tf = model(x_tf, types, masses, mask, V_tf, mol_props, edge_feats, target_idx)
+
+    torch.testing.assert_close(logits_tf, logits, atol=ATOL, rtol=RTOL)
+
+
+def test_rsa_classifier_forward_backward_finite():
+    g = torch.Generator().manual_seed(5)
+    B, N = 2, 6
+    x, types, masses, mask, V, mol_props, edge_feats, target_idx = _make_eqfsa_batch(
+        B, N, g, dtype=torch.float32,
+    )
+    model = _build_rsa(dtype=torch.float32)
     logits = model(x, types, masses, mask, V, mol_props, edge_feats, target_idx)
     loss = logits.pow(2).sum()
     loss.backward()
