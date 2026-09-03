@@ -53,6 +53,7 @@ class EqFSAEncoder(nn.Module):
         use_scale_feat: bool = True, use_per_node_com: bool = True, rescale_init_scale: float = 500.0,
         alpha_floor: float = 1e-4, use_input_dependent_g_a: bool = True,
         use_node_conditioned_k: bool = True, use_linear_decoder: bool = False,
+        use_normalize_z_by_n_real: bool = True,
     ):
         super().__init__()
         self.num_master_nodes = num_master_nodes
@@ -60,6 +61,7 @@ class EqFSAEncoder(nn.Module):
         self.use_per_node_com = use_per_node_com
         self.use_input_dependent_g_a = use_input_dependent_g_a
         self.use_node_conditioned_k = use_node_conditioned_k
+        self.use_normalize_z_by_n_real = use_normalize_z_by_n_real
         self.embed = _ChargeEmbedding(feature_dim, hidden_dim)
         if use_input_dependent_g_a:
             self.dist_to_com_embed = nn.Linear(1, feature_dim)
@@ -96,6 +98,7 @@ class EqFSAEncoder(nn.Module):
             g_a, f_in0, positions, x_com, mask, V,
             return_scale_feat=self.use_scale_feat, per_node_com=self.use_per_node_com,
             node_conditioned_k=self.use_node_conditioned_k,
+            normalize_z_by_n_real=self.use_normalize_z_by_n_real,
         )
         lr_master, scale_feat = out if self.use_scale_feat else (out, None)
         master_out = self.master_attn_norm(lr_master.squeeze(-1))
