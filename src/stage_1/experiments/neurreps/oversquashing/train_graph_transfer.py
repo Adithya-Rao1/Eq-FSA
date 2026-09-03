@@ -88,6 +88,12 @@ def build_model_for_variant(
             num_atom_types=num_atom_types, classes=classes, embed_dim=config["feature_dim"],
             hidden_dim=config["hidden_dim"], pool="mean" if variant == "mean_pool" else "attn",
         )
+    if variant == "rsa":
+        from stage_1.experiments.neurreps.oversquashing.rsa_classifier import RSAClassifier
+        return RSAClassifier(
+            num_atom_types=num_atom_types, classes=classes, feature_dim=config["feature_dim"],
+            hidden_dim=config["hidden_dim"], n_max=config["rsa_n_max"], sigma=config["rsa_sigma"],
+        )
     raise ValueError(f"Unknown variant {variant!r}")
 
 
@@ -265,26 +271,29 @@ def main():
              "fixed axis, with its type held constant -- mean_pool/attn_pool are structurally "
              "capped at chance since they never see positions.",
     )
-    parser.add_argument(
-        "--geometric-class-spacing", type=float, default=None,
-        help="--task geometric only: distance (in the same units as --cutoff) between adjacent "
-             "classes' target distances. Auto-computed from the realized geometry's safe margin "
-             "if omitted.",
+    parser.add_argument("--geometric-class-spacing", type=float, default=None,
+        help="--task geometric only: distance between adjacent classes' target distances",
     )
     parser.add_argument(
         "--geometric-seed-retries", type=int, default=20,
-        help="--task geometric only: number of alternate seeds to try if a realization's random-walk "
-             "geometry doesn't leave a safe perturbation margin (e.g. an atom ends up very close to "
-             "the cutoff boundary by chance) before giving up on that (topology, r, realization).",
+        help="--task geometric only; number of alternate seeds to try for faulty realization's random-walk",
     )
     parser.add_argument("--classes", type=int, default=5)
     parser.add_argument("--eqfsa-num-layers", type=int, default=4, help="Fixed depth for Eq-FSA, independent of r")
     parser.add_argument(
         "--baseline-layer-margin", type=int, default=4,
-        help="DimeNet++/NequIP-Allegro depth = realized_r + this margin, to rule out underreaching",
+        help="DimeNet++/NequIP-Allegro depth = realized_r + this marginp; rules out underreaching",
     )
     parser.add_argument("--feature-dim", type=int, default=24)
     parser.add_argument("--hidden-dim", type=int, default=32)
+    parser.add_argument(
+        "--rsa-sigma", type=float, default=5.0,
+        help="'rsa' variant only; Gaussian mode-weighting bandwidth for RSAAttention (matches lr_sr's default)",
+    )
+    parser.add_argument(
+        "--rsa-n-max", type=int, default=2,
+        help="'rsa' variant only: max Fourier mode index for RSAAttention's wavevector grid",
+    )
     parser.add_argument("--cutoff", type=float, default=5.0)
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--samples-per-config", type=int, default=300)
@@ -292,46 +301,21 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument(
-        "--num-realizations", type=int, default=3,
-        help="Independent geometry realizations per (topology, r, variant), averaged with std -- "
-             "multiplies total sweep time by this factor",
-    )
-    parser.add_argument(
-        "--seeds", type=int, nargs="+", default=None,
-        help="Explicit list of seeds to run instead of the automatic base_seed + i*7919 scheme -- "
-             "overrides --num-realizations. Intended for re-running specific realizations found "
-             "interesting/anomalous in a prior sweep's results_raw.csv (e.g. seeds where a variant "
-             "collapsed to chance), typically combined with a larger --epochs to check whether "
-             "extended training lets those specific seeds escape.",
-    )
-    parser.add_argument(
-        "--weight-seeds", type=int, nargs="+", default=None,
-        help="Explicit per-realization weight-init seed (torch.manual_seed at model construction), "
-             "decoupled from the data/geometry seed in --seeds -- must be the same length as --seeds. "
-             "Use this to hold one fixed geometry constant and sweep only the random weight "
-             "initialization, to tell apart a data-dependent bug from a weight-init-sensitive "
-             "optimization/local-minimum issue.",
-    )
-    parser.add_argument(
-        "--log-every", type=int, default=0,
-        help="Print average training loss every N epochs (0=silent). Useful with --seeds to watch "
-             "whether a specific seed's loss is stuck on a plateau or still descending.",
-    )
+    parser.add_argument("--num-realizations", type=int, default=3,)
+    parser.add_argument("--seeds", type=int, nargs="+", default=None,)
+    parser.add_argument("--weight-seeds", type=int, nargs="+", default=None,)
+    parser.add_argument("--log-every", type=int, default=0,)
     parser.add_argument("--outdir", type=str, default="stage_1/experiments/neurreps/results")
     parser.add_argument("--csv-path", type=str, default=None)
-    parser.add_argument(
-        "--device", type=str, default=None,
-        help="torch device string (e.g. 'cuda:0'); autodetects CUDA if omitted, else CPU",
-    )
-    parser.add_argument(
-        "--smoke-test", action="store_true",
-        help="Tiny r-values/epochs/samples/realizations sanity run before committing to the full sweep",
-    )
+    parser.add_argument("--device", type=str, default=None,)
+    parser.add_argument("--smoke-test", action="store_true",)
     args = parser.parse_args()
     config = vars(args)
     config["_device"] = detect_device(config["device"])
     print(f"Using device: {config['_device']}", flush=True)
+
+    if "rsa" in config["variants"] and config["task"] != "geometric":
+        raise ValueError("'rsa' is scoped to --task geometric only")
 
     if config["smoke_test"]:
         config["r_values"] = [6, 8] if config["task"] == "geometric" else [2, 4]
