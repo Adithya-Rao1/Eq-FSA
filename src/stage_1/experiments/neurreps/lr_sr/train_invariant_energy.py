@@ -55,7 +55,8 @@ def build_optimizer(model: torch.nn.Module, lr: float, qk_gamma_wd: float) -> to
     decay_params, other_params = [], []
     for name, p in model.named_parameters():
         if (name.endswith("w_vq_norm.gamma") or name.endswith("w_vk_norm.gamma")
-                or name.startswith("master_attn.W_Q.") or name.startswith("master_attn.W_K.")):
+                or name.startswith("master_attn.W_Q.") or name.startswith("master_attn.W_K.")
+                or name.endswith("s_ri_norm.weight")):
             decay_params.append(p)
         else:
             other_params.append(p)
@@ -77,6 +78,7 @@ def build_model(encoder: str, num_outputs: int, config: dict) -> torch.nn.Module
             use_input_dependent_g_a=config.get("eqfsa_input_dependent_g_a", True),
             use_node_conditioned_k=config.get("eqfsa_node_conditioned_k", True),
             use_linear_decoder=config.get("eqfsa_linear_decoder", False),
+            use_normalize_z_by_n_real=config.get("eqfsa_normalize_z_by_n_real", True),
         )
     if encoder == "rsa":
         return RSAEncoder(
@@ -251,6 +253,7 @@ def main():
     parser.add_argument("--no-eqfsa-per-node-com", dest="eqfsa_per_node_com", action="store_false")
     parser.add_argument("--no-eqfsa-input-dependent-g-a", dest="eqfsa_input_dependent_g_a", action="store_false")
     parser.add_argument("--no-eqfsa-node-conditioned-k", dest="eqfsa_node_conditioned_k", action="store_false")
+    parser.add_argument("--no-eqfsa-normalize-z-by-n-real", dest="eqfsa_normalize_z_by_n_real", action="store_false",)
     parser.add_argument("--eqfsa-linear-decoder", action="store_true")
     parser.add_argument("--eqfsa-alpha-floor", type=float, default=1e-4)
     parser.add_argument("--eqfsa-rescale-init", type=float, default=500.0)
