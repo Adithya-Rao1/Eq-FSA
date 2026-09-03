@@ -198,6 +198,7 @@ class MasterNodeAttention(nn.Module):
         return_scale_feat: bool = False,
         per_node_com: bool = False,
         node_conditioned_k: bool = False,
+        normalize_z_by_n_real: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         B, N_a, C, _ = g_a.shape
         m = node_mask.to(x.dtype)
@@ -216,6 +217,9 @@ class MasterNodeAttention(nn.Module):
             phi_K_use = phi_K
             phi_K_sum = phi_K.sum(dim=1)
             Z_raw = torch.einsum("bac,bc->ba", phi_Q, phi_K_sum)
+        if normalize_z_by_n_real:
+            n_real = node_mask.sum(dim=1, keepdim=True).clamp(min=1).to(Z_raw.dtype)
+            Z_raw = Z_raw / n_real
         Z = Z_raw.clamp(min=1e-8)
         if self.diag_enabled:
             self._diag_Z_min = float(Z.detach().min())
