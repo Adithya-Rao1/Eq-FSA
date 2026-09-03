@@ -27,12 +27,13 @@ def build_scenario(
 
 
 def run_scenario(module: MasterNodeAttention, inputs: dict, return_scale_feat: bool = False,
-                  per_node_com: bool = False, node_conditioned_k: bool = False) -> float:
+                  per_node_com: bool = False, node_conditioned_k: bool = False,
+                  normalize_z_by_n_real: bool = False) -> float:
     module.zero_grad(set_to_none=True)
     out = module(
         inputs["g_a"], inputs["f_in0"], inputs["x"], inputs["x_com"], inputs["mask"], inputs["V"],
         return_scale_feat=return_scale_feat, per_node_com=per_node_com,
-        node_conditioned_k=node_conditioned_k,
+        node_conditioned_k=node_conditioned_k, normalize_z_by_n_real=normalize_z_by_n_real,
     )
     if return_scale_feat:
         out, scale_feat = out
@@ -72,7 +73,7 @@ def main() -> None:
 
     def record(name: str, N: int, n_real: int | None, drift_fn=None, drift_desc: str = "none",
                return_scale_feat: bool = False, per_node_com: bool = False,
-               node_conditioned_k: bool = False):
+               node_conditioned_k: bool = False, normalize_z_by_n_real: bool = False):
         torch.manual_seed(args.seed)
         module = MasterNodeAttention(F, args.n_max, hidden_dim=H).to(device=device, dtype=dtype)
         if drift_fn is not None:
@@ -80,7 +81,8 @@ def main() -> None:
                 drift_fn(module)
         inputs = build_scenario(B, N, N_a, F, args.box, device, dtype, seed=args.seed, n_real=n_real)
         grad_norm = run_scenario(module, inputs, return_scale_feat=return_scale_feat,
-                                  per_node_com=per_node_com, node_conditioned_k=node_conditioned_k)
+                                  per_node_com=per_node_com, node_conditioned_k=node_conditioned_k,
+                                  normalize_z_by_n_real=normalize_z_by_n_real)
         bucket = "EXPLOSION" if grad_norm > args.explosion_threshold else "normal"
         print(f"  [{bucket:9s}] {name:40s} N={N:4d} n_real={str(n_real):>5s} drift={drift_desc:20s} "
               f"overall_grad_norm={grad_norm:.6g}", flush=True)
@@ -146,6 +148,22 @@ def main() -> None:
         record(f"eqfsa flags: node_k_gate x{scale:g}, large-N [NEW param, no prior round tested "
                f"this]", N=150, n_real=None, drift_fn=drift, drift_desc=f"node_k_gate x{scale:g}",
                **eqfsa_flags)
+
+    print("\n=== eqfsa flags + normalize_z_by_n_real (proposed fix for the N-scaling collapse found "
+          "by probe_eqfsa_master_attn_signal.py -- also re-checks whether it affects the min-N=3 "
+          "undrifted grad-norm finding above) ===")
+    eqfsa_z_flags = dict(eqfsa_flags, normalize_z_by_n_real=True)
+    record("eqfsa+z-norm flags: normal multi-molecule baseline", N=30, n_real=None, **eqfsa_z_flags)
+    record("eqfsa+z-norm flags: large-N (Round 5's original blowup case)", N=150, n_real=None, **eqfsa_z_flags)
+    record("eqfsa+z-norm flags: minimum dataset N (real floor)", N=3, n_real=None, **eqfsa_z_flags)
+    record("eqfsa+z-norm flags: N_real=0 edge case (all-masked)", N=8, n_real=0, **eqfsa_z_flags)
+    for scale in (50.0, 500.0, 5000.0):
+        def drift(module, scale=scale):
+            module.s_ri_norm.weight.mul_(scale)
+        record(f"eqfsa+z-norm flags: s_ri_norm.gamma x{scale:g}, large-N", N=150, n_real=None,
+               drift_fn=drift, drift_desc=f"gamma x{scale:g}", **eqfsa_z_flags)
+    record("eqfsa+z-norm flags: combined worst-case, N=3 (real floor)", N=3, n_real=None,
+           drift_fn=combined_drift, drift_desc="combined worst-case", **eqfsa_z_flags)
 
     n_explosions = sum(1 for r in results if r[-1] == "EXPLOSION")
     print(f"\n=== SUMMARY: {n_explosions}/{len(results)} scenarios exceeded "
