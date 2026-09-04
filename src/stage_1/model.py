@@ -111,7 +111,7 @@ class EnergyLayer(nn.Module):
         self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int = 128,
         edge_cutoff: float = 5.0, n_max: int = 2, pw_e_cutoff: Optional[float] = None,
         k_max: int = 0, edge_feat_dim: int = 8, ablate_max_degree: Optional[int] = None,
-        ablate_lr: bool = False,
+        ablate_lr: bool = False, normalize_z_by_n_real: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -121,6 +121,7 @@ class EnergyLayer(nn.Module):
         self.k_max = k_max
         self.ablate_max_degree = ablate_max_degree
         self.ablate_lr = ablate_lr
+        self.normalize_z_by_n_real = normalize_z_by_n_real
         self.sr_attn = SRAttention(
             radial_net, max_degree, feature_dim, hidden_dim, k_max=k_max, edge_feat_dim=edge_feat_dim,
         )
@@ -220,7 +221,10 @@ class EnergyLayer(nn.Module):
         for l in range(self.max_degree + 1):
             f[l] = self.layer_norm_out[str(l)](f[l] + f_out[l])
 
-        master_attn_out = self.master_attn(g_a_in, f_in[0], x_wrapped, x_com, node_mask, V)
+        master_attn_out = self.master_attn(
+            g_a_in, f_in[0], x_wrapped, x_com, node_mask, V,
+            normalize_z_by_n_real=self.normalize_z_by_n_real,
+        )
         if self.ablate_lr:
             master_attn_out = torch.zeros_like(master_attn_out)
         g_a_out = self.master_ln(self.W_master_self(g_a_in) + master_attn_out)
@@ -257,6 +261,7 @@ class EnergyModel(nn.Module):
         ablate_max_degree: Optional[int] = None,
         ablate_lr: bool = False,
         grad_checkpoint: bool = False,
+        normalize_z_by_n_real: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -268,6 +273,7 @@ class EnergyModel(nn.Module):
         self.ablate_max_degree = ablate_max_degree
         self.ablate_lr = ablate_lr
         self.grad_checkpoint = grad_checkpoint
+        self.normalize_z_by_n_real = normalize_z_by_n_real
 
         self.input_embedding = nn.Embedding(num_atom_types, feature_dim)
         self.ln1             = nn.RMSNorm(feature_dim)
@@ -306,6 +312,7 @@ class EnergyModel(nn.Module):
                 radial_net, max_degree, feature_dim, hidden_dim, edge_cutoff, n_max, pw_e_cutoff,
                 k_max=_compute_k_max(m, max_degree), edge_feat_dim=edge_feat_dim,
                 ablate_max_degree=ablate_max_degree, ablate_lr=ablate_lr,
+                normalize_z_by_n_real=normalize_z_by_n_real,
             )
             for m in range(num_layers)
         ])

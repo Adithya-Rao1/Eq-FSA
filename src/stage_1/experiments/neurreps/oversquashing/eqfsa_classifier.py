@@ -26,6 +26,7 @@ class EqFSAClassifier(nn.Module):
         ablate_max_degree: int | None = None,
         grad_checkpoint: bool = False,
         multi_layer_readout: bool = True,
+        normalize_z_by_n_real: bool = True,
     ):
         super().__init__()
         self.multi_layer_readout = multi_layer_readout
@@ -43,6 +44,7 @@ class EqFSAClassifier(nn.Module):
             num_fusion_heads=num_fusion_heads,
             edge_feat_dim=edge_feat_dim,
             ablate_max_degree=ablate_max_degree,
+            normalize_z_by_n_real=normalize_z_by_n_real,
             grad_checkpoint=grad_checkpoint,
         )
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)

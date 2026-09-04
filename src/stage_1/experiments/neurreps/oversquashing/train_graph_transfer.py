@@ -81,6 +81,7 @@ def build_model_for_variant(
             num_layers=config["eqfsa_num_layers"], feature_dim=config["feature_dim"],
             hidden_dim=config["hidden_dim"], edge_cutoff=config["cutoff"], n_max=1,
             classes=classes, edge_feat_dim=GRAPH_EDGE_FEAT_DIM,
+            normalize_z_by_n_real=config.get("eqfsa_normalize_z_by_n_real", True),
         )
     if variant in ("mean_pool", "attn_pool"):
         from stage_1.experiments.neurreps.oversquashing.trivial_pool_classifier import TrivialPoolClassifier
@@ -95,6 +96,21 @@ def build_model_for_variant(
             hidden_dim=config["hidden_dim"], n_max=config["rsa_n_max"], sigma=config["rsa_sigma"],
         )
     raise ValueError(f"Unknown variant {variant!r}")
+
+
+def build_optimizer(model: torch.nn.Module, lr: float, qk_gamma_wd: float, base_weight_decay: float = 1e-4):
+    decay_params, other_params = [], []
+    for name, p in model.named_parameters():
+        if (name.endswith("w_vq_norm.gamma") or name.endswith("w_vk_norm.gamma")
+                or ".master_attn.W_Q." in name or ".master_attn.W_K." in name
+                or name.endswith("s_ri_norm.weight")):
+            decay_params.append(p)
+        else:
+            other_params.append(p)
+    return torch.optim.AdamW([
+        {"params": other_params, "weight_decay": base_weight_decay},
+        {"params": decay_params, "weight_decay": qk_gamma_wd},
+    ], lr=lr)
 
 
 def train_one_realization(
@@ -149,7 +165,7 @@ def train_one_realization(
         variant, realized_r, classes, num_atom_types, config, avg_num_neighbors=avg_num_neighbors,
     ).to(device)
     embedding_module = model.input_embedding_module
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=1e-4)
+    optimizer = build_optimizer(model, config["lr"], config.get("qk_gamma_wd", 0.0))
 
     log_every = config.get("log_every", 0)
     for epoch in range(config["epochs"]):
@@ -294,6 +310,8 @@ def main():
         "--rsa-n-max", type=int, default=2,
         help="'rsa' variant only: max Fourier mode index for RSAAttention's wavevector grid",
     )
+    parser.add_argument("--no-eqfsa-normalize-z-by-n-real", dest="eqfsa_normalize_z_by_n_real", action="store_false",)
+    parser.add_argument("--qk-gamma-wd", type=float, default=0.0,)
     parser.add_argument("--cutoff", type=float, default=5.0)
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--samples-per-config", type=int, default=300)
