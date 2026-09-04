@@ -3,9 +3,39 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from torch_geometric.nn import radius_graph
 from torch_geometric.nn.models import DimeNetPlusPlus
-from torch_geometric.nn.models.dimenet import triplets
+
+def _radius_graph(
+    pos: torch.Tensor, r: float, batch: torch.Tensor, max_num_neighbors: int = 32,
+) -> torch.Tensor:
+    same_graph = batch.unsqueeze(0) == batch.unsqueeze(1)
+    dist = torch.cdist(pos, pos)
+    N = pos.shape[0]
+    mask = same_graph & (dist <= r) & ~torch.eye(N, dtype=torch.bool, device=pos.device)
+    if max_num_neighbors is not None:
+        num_neighbors = mask.sum(dim=1)
+        if bool((num_neighbors > max_num_neighbors).any()):
+            dist_masked = dist.masked_fill(~mask, float("inf"))
+            k = min(max_num_neighbors, N)
+            topk_idx = dist_masked.topk(k=k, dim=1, largest=False).indices
+            keep = torch.zeros_like(mask)
+            keep.scatter_(1, topk_idx, True)
+            mask = mask & keep
+    row, col = mask.nonzero(as_tuple=True)
+    return torch.stack([row, col], dim=0)
+
+def _triplets(
+    edge_index: torch.Tensor, num_nodes: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    row, col = edge_index 
+    E = row.shape[0]
+    adjacent = col.unsqueeze(0) == row.unsqueeze(1)  
+    idx_e, idx_ep = adjacent.nonzero(as_tuple=True)
+    idx_i, idx_j, idx_k = col[idx_e], row[idx_e], row[idx_ep]
+    keep = idx_i != idx_k  
+    idx_i, idx_j, idx_k = idx_i[keep], idx_j[keep], idx_k[keep]
+    idx_kj, idx_ji = idx_ep[keep], idx_e[keep]
+    return col, row, idx_i, idx_j, idx_k, idx_kj, idx_ji
 
 
 class DimeNetPlusPlusClassifier(nn.Module):
@@ -56,8 +86,8 @@ class DimeNetPlusPlusClassifier(nn.Module):
         pos = x[mask]
         
         d = self.dimenet
-        edge_index = radius_graph(pos, r=d.cutoff, batch=batch_vec, max_num_neighbors=d.max_num_neighbors)
-        i, j, idx_i, idx_j, idx_k, idx_kj, idx_ji = triplets(edge_index, num_nodes=z.size(0))
+        edge_index = _radius_graph(pos, r=d.cutoff, batch=batch_vec, max_num_neighbors=d.max_num_neighbors)
+        i, j, idx_i, idx_j, idx_k, idx_kj, idx_ji = _triplets(edge_index, num_nodes=z.size(0))
 
         dist = (pos[i] - pos[j]).pow(2).sum(dim=-1).sqrt()
         pos_jk, pos_ij = pos[idx_j] - pos[idx_k], pos[idx_i] - pos[idx_j]
