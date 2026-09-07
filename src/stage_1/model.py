@@ -170,6 +170,7 @@ class EnergyLayer(nn.Module):
         edge_feats: torch.Tensor,
         node_mask:  torch.Tensor,
         V:          torch.Tensor,
+        return_scale_feat: bool = False,
     ) -> Tuple[Dict[int, torch.Tensor], torch.Tensor]:
         B, N, _ = x.shape
 
@@ -221,16 +222,24 @@ class EnergyLayer(nn.Module):
         for l in range(self.max_degree + 1):
             f[l] = self.layer_norm_out[str(l)](f[l] + f_out[l])
 
-        master_attn_out = self.master_attn(
+        master_attn_result = self.master_attn(
             g_a_in, f_in[0], x_wrapped, x_com, node_mask, V,
             normalize_z_by_n_real=self.normalize_z_by_n_real,
+            return_scale_feat=return_scale_feat,
         )
+        scale_feat = None
+        if return_scale_feat:
+            master_attn_out, scale_feat = master_attn_result
+        else:
+            master_attn_out = master_attn_result
         if self.ablate_lr:
             master_attn_out = torch.zeros_like(master_attn_out)
         g_a_out = self.master_ln(self.W_master_self(g_a_in) + master_attn_out)
         if self.diag_enabled:
             self._diag_g_a_norm = float(g_a_out.detach().norm())
 
+        if return_scale_feat:
+            return f, g_a_out, scale_feat
         return f, g_a_out
 
 def _run_energy_layer(layer, f_in, f0, g_a_in, x, x_com, edge_feats, node_mask, V):
@@ -336,6 +345,7 @@ class EnergyModel(nn.Module):
         V, mol_props, edge_feats,
         return_layer_states: bool = False,
         seed_masses=None,
+        collect_scale_feats: bool = False,
     ) -> torch.Tensor:
         node_mask = node_mask.bool()
         atomic_masses = atomic_masses * node_mask.to(atomic_masses.dtype)
@@ -372,12 +382,20 @@ class EnergyModel(nn.Module):
         g_a = self.master_expand_norm(g_a)
 
         layer_states = [] if return_layer_states else None
+        scale_feats = [] if collect_scale_feats else None
         for layer in self.layers:
             if self.grad_checkpoint and self.training:
                 f, g_a = checkpoint(
                     _run_energy_layer, layer, f, f0, g_a, x, x_com, edge_feats, node_mask, V,
                     use_reentrant=False,
                 )
+            elif collect_scale_feats:
+                f, g_a, scale_feat = layer(
+                    f_in=f, f0=f0, g_a_in=g_a, x=x, x_com=x_com,
+                    edge_feats=edge_feats, node_mask=node_mask, V=V,
+                    return_scale_feat=True,
+                )
+                scale_feats.append(scale_feat)
             else:
                 f, g_a = layer(
                     f_in=f, f0=f0, g_a_in=g_a, x=x, x_com=x_com,
@@ -398,8 +416,12 @@ class EnergyModel(nn.Module):
 
         f = self.readout(f)
 
+        if return_layer_states and collect_scale_feats:
+            return f, layer_states, scale_feats
         if return_layer_states:
             return f, layer_states
+        if collect_scale_feats:
+            return f, scale_feats
         return f
 
 class SolventModel(nn.Module):

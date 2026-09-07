@@ -51,9 +51,11 @@ def trace_master_fusion(model, dataset, label: str, ablate_g_a_variation: bool =
         report("g_a (post master_expand_norm, pre-loop)", g_a.reshape(B, -1))
 
         for i, layer in enumerate(em.layers):
-            f, g_a = layer(f_in=f, f0=f0, g_a_in=g_a, x=x, x_com=x_com,
-                            edge_feats=edge_feats, node_mask=node_mask, V=V)
+            f, g_a, scale_feat = layer(f_in=f, f0=f0, g_a_in=g_a, x=x, x_com=x_com,
+                                        edge_feats=edge_feats, node_mask=node_mask, V=V,
+                                        return_scale_feat=True)
             report(f"g_a (after layer {i})", g_a.reshape(B, -1))
+            report(f"scale_feat (s_ri_norm side-channel, after layer {i})", scale_feat.reshape(B, -1))
             report(f"f[0] @ readout (after layer {i})", f[0][batch_ar, target_idx].reshape(B, -1))
 
         if ablate_g_a_variation:
