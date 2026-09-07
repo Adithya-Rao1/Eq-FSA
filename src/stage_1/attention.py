@@ -4,7 +4,11 @@ import torch.nn.functional as F
 from typing import Dict, Optional, Tuple, Union
 
 from utils.se3_utils import *
-from utils.pw_bases import make_wavevectors 
+from utils.pw_bases import make_wavevectors
+
+def _rms_scalar_norm(t: torch.Tensor, gamma: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    rms = t.pow(2).mean(dim=-1, keepdim=True).clamp(min=eps).sqrt()
+    return t / rms * gamma
 
 class QKProjection(nn.Module):
     def __init__(self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int, batch_size=32):
@@ -170,6 +174,8 @@ class MasterNodeAttention(nn.Module):
         self.s_ri_norm = nn.RMSNorm(2 * feature_dim)
         self.s_re_norm = nn.RMSNorm(feature_dim)
         self.s_im_norm = nn.RMSNorm(feature_dim)
+        self.cos_com_gamma = nn.Parameter(torch.tensor(1.0))
+        self.sin_com_gamma = nn.Parameter(torch.tensor(1.0))
 
         self.spatial_radial = nn.Sequential(
             nn.Linear(1, hidden_dim), nn.SiLU(),
@@ -282,6 +288,9 @@ class MasterNodeAttention(nn.Module):
         phase_com = torch.einsum("bai,bmi->bam", x_com_use, kvecs)
         cos_com = torch.cos(phase_com) * damping.unsqueeze(1)
         sin_com = torch.sin(phase_com) * damping.unsqueeze(1)
+        if decouple_ri_norm:
+            cos_com = _rms_scalar_norm(cos_com, self.cos_com_gamma)
+            sin_com = _rms_scalar_norm(sin_com, self.sin_com_gamma)
 
         if node_conditioned_k:
             QS_re0 = torch.einsum("bac,bamcnd->bamnd", phi_Q, S_re0)

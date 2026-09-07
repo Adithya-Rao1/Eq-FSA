@@ -24,7 +24,7 @@ from diagnostics.trace_eqfsa_classifier_signal import build_dataset, build_model
 from stage_1.experiments.neurreps.oversquashing.synthetic_dataset import graph_transfer_collate_fn
 
 
-def trace_master_attn_internals(model, dataset, label: str):
+def trace_master_attn_internals(model, dataset, label: str, decouple_ri_norm: bool = False):
     print(f"\n=== master_attn internals trace: {label} ===")
     em = model.energy_model
     batch = graph_transfer_collate_fn(_one_per_class(dataset))
@@ -135,15 +135,23 @@ def trace_master_attn_internals(model, dataset, label: str):
             raw_S_im0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K, V_proj0, sin_g)
             report(f"    raw_S_re0", raw_S_re0.reshape(B, -1))
             report(f"    raw_S_im0", raw_S_im0.reshape(B, -1))
-            raw_S_ri = torch.cat([raw_S_re0, raw_S_im0], dim=-2)
-            S_ri = ma.s_ri_norm(raw_S_ri.transpose(-1, -2)).transpose(-1, -2)
-            S_re0, S_im0 = S_ri.split(ma.feature_dim, dim=-2)
-            report(f"    S_re0 (post s_ri_norm)", S_re0.reshape(B, -1))
-            report(f"    S_im0 (post s_ri_norm)", S_im0.reshape(B, -1))
+            if decouple_ri_norm:
+                S_re0 = ma.s_re_norm(raw_S_re0.transpose(-1, -2)).transpose(-1, -2)
+                S_im0 = ma.s_im_norm(raw_S_im0.transpose(-1, -2)).transpose(-1, -2)
+            else:
+                raw_S_ri = torch.cat([raw_S_re0, raw_S_im0], dim=-2)
+                S_ri = ma.s_ri_norm(raw_S_ri.transpose(-1, -2)).transpose(-1, -2)
+                S_re0, S_im0 = S_ri.split(ma.feature_dim, dim=-2)
+            report(f"    S_re0 (post norm)", S_re0.reshape(B, -1))
+            report(f"    S_im0 (post norm)", S_im0.reshape(B, -1))
 
             phase_com = torch.einsum("bai,bmi->bam", x_com.unsqueeze(1).expand(B, g_a.shape[1], -1), kvecs)
             cos_com = torch.cos(phase_com) * damping.unsqueeze(1)
             sin_com = torch.sin(phase_com) * damping.unsqueeze(1)
+            if decouple_ri_norm:
+                from stage_1.attention import _rms_scalar_norm
+                cos_com = _rms_scalar_norm(cos_com, ma.cos_com_gamma)
+                sin_com = _rms_scalar_norm(sin_com, ma.sin_com_gamma)
             report(f"    cos_com", cos_com.reshape(B, -1))
             report(f"    sin_com", sin_com.reshape(B, -1))
 
@@ -175,7 +183,8 @@ def main():
     print(f"dataset: n_atoms={dataset.n_atoms} realized_r={dataset.realized_r} "
           f"readout_idx={dataset.readout_idx} label_idx={dataset.label_idx} classes={dataset.classes}")
     model = build_model(zero_init_head=True)
-    trace_master_attn_internals(model, dataset, "zero-init classifier head, untrained")
+    trace_master_attn_internals(model, dataset, "BASELINE: joint s_ri_norm", decouple_ri_norm=False)
+    trace_master_attn_internals(model, dataset, "FIX: decoupled s_re_norm/s_im_norm", decouple_ri_norm=True)
 
 
 if __name__ == "__main__":
