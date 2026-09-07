@@ -166,8 +166,10 @@ class MasterNodeAttention(nn.Module):
         self.W_V0 = nn.Sequential(
             scalar_ffn(feature_dim, hidden_dim),
             nn.RMSNorm(feature_dim),
-        )       
+        )
         self.s_ri_norm = nn.RMSNorm(2 * feature_dim)
+        self.s_re_norm = nn.RMSNorm(feature_dim)
+        self.s_im_norm = nn.RMSNorm(feature_dim)
 
         self.spatial_radial = nn.Sequential(
             nn.Linear(1, hidden_dim), nn.SiLU(),
@@ -199,6 +201,7 @@ class MasterNodeAttention(nn.Module):
         per_node_com: bool = False,
         node_conditioned_k: bool = False,
         normalize_z_by_n_real: bool = False,
+        decouple_ri_norm: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         B, N_a, C, _ = g_a.shape
         m = node_mask.to(x.dtype)
@@ -269,8 +272,12 @@ class MasterNodeAttention(nn.Module):
         raw_S_ri = torch.cat([raw_S_re0, raw_S_im0], dim=-2)
         if return_scale_feat:
             raw_S_ri_mag = raw_S_ri.norm(dim=-2)
-        S_ri = self.s_ri_norm(raw_S_ri.transpose(-1, -2)).transpose(-1, -2)
-        S_re0, S_im0 = S_ri.split(self.feature_dim, dim=-2)
+        if decouple_ri_norm:
+            S_re0 = self.s_re_norm(raw_S_re0.transpose(-1, -2)).transpose(-1, -2)
+            S_im0 = self.s_im_norm(raw_S_im0.transpose(-1, -2)).transpose(-1, -2)
+        else:
+            S_ri = self.s_ri_norm(raw_S_ri.transpose(-1, -2)).transpose(-1, -2)
+            S_re0, S_im0 = S_ri.split(self.feature_dim, dim=-2)
 
         phase_com = torch.einsum("bai,bmi->bam", x_com_use, kvecs)
         cos_com = torch.cos(phase_com) * damping.unsqueeze(1)
