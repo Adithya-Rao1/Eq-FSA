@@ -202,12 +202,14 @@ class MasterNodeAttention(nn.Module):
         x:         torch.Tensor,
         x_com:     torch.Tensor,
         node_mask: torch.Tensor,
-        V:         torch.Tensor,
+        V:         Optional[torch.Tensor] = None,
         return_scale_feat: bool = False,
         per_node_com: bool = False,
         node_conditioned_k: bool = False,
         normalize_z_by_n_real: bool = False,
         decouple_ri_norm: bool = False,
+        kvecs: Optional[torch.Tensor] = None,
+        mode_mask: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         B, N_a, C, _ = g_a.shape
         m = node_mask.to(x.dtype)
@@ -251,7 +253,8 @@ class MasterNodeAttention(nn.Module):
         else:
             x_com_use = x_com.unsqueeze(1).expand(B, N_a, -1)
 
-        kvecs, _, mode_mask = make_wavevectors(V, self.n_max, self.pw_e_cutoff)
+        if kvecs is None or mode_mask is None:
+            kvecs, _, mode_mask = make_wavevectors(V, self.n_max, self.pw_e_cutoff)
         mode_mask_f = mode_mask.to(x.dtype)
         if mode_mask_f.dim() == 1:
             mode_mask_f = mode_mask_f.unsqueeze(0).expand(B, -1)

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import torch
 
-from stage_1.model import minimum_image, masked_weighted_com
+from stage_1.model import minimum_image, masked_weighted_com, safe_minimum_image_cutoff
 from stage_1.attention import equivariant_weight_matrix, softmax_over_neighbors
+from utils.pw_bases import make_wavevectors
 from diagnostics.trace_eqfsa_classifier_signal import (
     build_dataset, build_model, _one_per_class, report,
 )
@@ -50,10 +51,25 @@ def trace_master_fusion(model, dataset, label: str, ablate_g_a_variation: bool =
         g_a = em.master_expand_norm(g_a)
         report("g_a (post master_expand_norm, pre-loop)", g_a.reshape(B, -1))
 
+        N = x.shape[1]
+        x_i = x_wrapped.unsqueeze(2).expand(B, N, N, 3)
+        x_j = x_wrapped.unsqueeze(1).expand(B, N, N, 3)
+        dist = (x_j - x_i).norm(dim=-1)
+        self_mask = ~torch.eye(N, dtype=torch.bool, device=x.device).unsqueeze(0)
+        effective_cutoff = safe_minimum_image_cutoff(V, em.edge_cutoff).view(B, 1, 1)
+        pair_mask = node_mask.unsqueeze(2) & node_mask.unsqueeze(1) & (dist <= effective_cutoff) & self_mask
+        edge_b, edge_i, edge_j = pair_mask.nonzero(as_tuple=True)
+        x_rel_e = x_wrapped[edge_b, edge_j] - x_wrapped[edge_b, edge_i]
+        edge_feat_e = edge_feats[edge_b, edge_i, edge_j]
+        kvecs, _, mode_mask = make_wavevectors(V, em.n_max, em.pw_e_cutoff)
+
         for i, layer in enumerate(em.layers):
-            f, g_a, scale_feat = layer(f_in=f, f0=f0, g_a_in=g_a, x=x, x_com=x_com,
-                                        edge_feats=edge_feats, node_mask=node_mask, V=V,
-                                        return_scale_feat=True)
+            f, g_a, scale_feat = layer(
+                f_in=f, f0=f0, g_a_in=g_a, x_wrapped=x_wrapped, x_com=x_com, node_mask=node_mask,
+                edge_b=edge_b, edge_i=edge_i, edge_j=edge_j, x_rel_e=x_rel_e, edge_feat_e=edge_feat_e,
+                kvecs=kvecs, mode_mask=mode_mask,
+                return_scale_feat=True,
+            )
             report(f"g_a (after layer {i})", g_a.reshape(B, -1))
             report(f"scale_feat (s_ri_norm side-channel, after layer {i})", scale_feat.reshape(B, -1))
             report(f"f[0] @ readout (after layer {i})", f[0][batch_ar, target_idx].reshape(B, -1))

@@ -13,11 +13,12 @@ from stage_1.model import (
     seed_equivariant_features,
     masked_weighted_com,
     masked_mean,
+    safe_minimum_image_cutoff,
     SH1_TO_CARTESIAN,
     SH2_TO_CARTESIAN,
 )
 from utils.se3_utils import RadialNetwork, flat_to_traceless_symmetric
-from utils.pw_bases import minimum_image
+from utils.pw_bases import minimum_image, make_wavevectors
 from utils.calc_props import _MOL_FEAT_DIM
 from stage_1.spice_dataset import _EDGE_FEAT_DIM
 
@@ -301,12 +302,25 @@ def run_layer(model, x, types_, masses, mask, V, mol_props, edge_feats):
     x_com, _ = masked_weighted_com(x_wrapped, masses, mask)
     agg = model.master_pool_agg(f_in[0], f_in[1], f_in[2]).squeeze(-1)
     pooled = model.master_pool_ffn(masked_mean(agg, mask))
-    B = x.shape[0]
+    B, N = x.shape[0], x.shape[1]
     g_a = model.master_expand(pooled).view(B, model.n_master_nodes, -1).unsqueeze(-1)
+
+    x_i = x_wrapped.unsqueeze(2).expand(B, N, N, 3)
+    x_j = x_wrapped.unsqueeze(1).expand(B, N, N, 3)
+    dist = (x_j - x_i).norm(dim=-1)
+    self_mask = ~torch.eye(N, dtype=torch.bool, device=x.device).unsqueeze(0)
+    effective_cutoff = safe_minimum_image_cutoff(V, model.edge_cutoff).view(B, 1, 1)
+    pair_mask = mask.unsqueeze(2) & mask.unsqueeze(1) & (dist <= effective_cutoff) & self_mask
+    edge_b, edge_i, edge_j = pair_mask.nonzero(as_tuple=True)
+    x_rel_e = x_wrapped[edge_b, edge_j] - x_wrapped[edge_b, edge_i]
+    edge_feat_e = edge_feats[edge_b, edge_i, edge_j]
+    kvecs, _, mode_mask = make_wavevectors(V, model.n_max, model.pw_e_cutoff)
+
     with torch.no_grad():
         return model.layers[0](
-            f_in=f_in, f0=f_in, g_a_in=g_a, x=x, x_com=x_com,
-            edge_feats=edge_feats, node_mask=mask, V=V,
+            f_in=f_in, f0=f_in, g_a_in=g_a, x_wrapped=x_wrapped, x_com=x_com, node_mask=mask,
+            edge_b=edge_b, edge_i=edge_i, edge_j=edge_j, x_rel_e=x_rel_e, edge_feat_e=edge_feat_e,
+            kvecs=kvecs, mode_mask=mode_mask,
         )
 
 

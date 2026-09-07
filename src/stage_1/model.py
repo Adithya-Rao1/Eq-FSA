@@ -8,7 +8,7 @@ from typing import Dict, Optional, Tuple
 
 from stage_1.attention import SRAttention, MasterNodeAttention, MasterFusionAttention, SRCrossAttention
 from utils.se3_utils import *
-from utils.pw_bases import PWProjection, minimum_image
+from utils.pw_bases import PWProjection, minimum_image, make_wavevectors
 from utils.calc_props import _MOL_FEAT_DIM
 
 if os.path.exists("sh1_cartesian.pt"):
@@ -164,34 +164,29 @@ class EnergyLayer(nn.Module):
 
     def forward(
         self,
-        f_in:       Dict[int, torch.Tensor],
-        f0:         Dict[int, torch.Tensor],
-        g_a_in:     torch.Tensor,
-        x:          torch.Tensor,
-        x_com:      torch.Tensor,
-        edge_feats: torch.Tensor,
-        node_mask:  torch.Tensor,
-        V:          torch.Tensor,
+        f_in:        Dict[int, torch.Tensor],
+        f0:          Dict[int, torch.Tensor],
+        g_a_in:      torch.Tensor,
+        x_wrapped:   torch.Tensor,
+        x_com:       torch.Tensor,
+        node_mask:   torch.Tensor,
+        edge_b:      torch.Tensor,
+        edge_i:      torch.Tensor,
+        edge_j:      torch.Tensor,
+        x_rel_e:     torch.Tensor,
+        edge_feat_e: torch.Tensor,
+        kvecs:       torch.Tensor,
+        mode_mask:   torch.Tensor,
         return_scale_feat: bool = False,
     ) -> Tuple[Dict[int, torch.Tensor], torch.Tensor]:
-        B, N, _ = x.shape
+        B, N, _ = x_wrapped.shape
 
-        x_wrapped = minimum_image(x, V)
-        x_i = x_wrapped.unsqueeze(2).expand(B, N, N, 3)
-        x_j = x_wrapped.unsqueeze(1).expand(B, N, N, 3)
-        x_rel = x_j - x_i
-
-        # Short range interactions
-        dist      = x_rel.norm(dim=-1)
-        self_mask = ~torch.eye(N, dtype=torch.bool, device=x.device).unsqueeze(0)
-        effective_cutoff = safe_minimum_image_cutoff(V, self.edge_cutoff).view(B, 1, 1)
-        pair_mask = node_mask.unsqueeze(2) & node_mask.unsqueeze(1) & (dist <= effective_cutoff) & self_mask
-
-        edge_b, edge_i, edge_j = pair_mask.nonzero(as_tuple=True)
-        x_rel_e = x_wrapped[edge_b, edge_j] - x_wrapped[edge_b, edge_i]
-        edge_feat_e = edge_feats[edge_b, edge_i, edge_j]
-
-        f_in = {l: self.layer_norm_in[str(l)](f_in[l]) for l in f_in} 
+        # x_wrapped, the edge list (edge_b/edge_i/edge_j/x_rel_e/edge_feat_e), and kvecs/mode_mask
+        # are all invariant across every layer within one EnergyModel.forward call (positions and V
+        # never change layer to layer) -- computed once by the caller (EnergyModel.forward) instead
+        # of being rebuilt (including a redundant O(N^2) distance matrix + minimum_image's SVD-based
+        # box inverse) on every single layer call.
+        f_in = {l: self.layer_norm_in[str(l)](f_in[l]) for l in f_in}
 
         f_in_i_e = {k: f_in[k][edge_b, edge_i] for k in range(self.k_max + 1)}
         f0_j_e   = {k: f0[k][edge_b, edge_j]   for k in range(self.k_max + 1)}
@@ -211,7 +206,9 @@ class EnergyLayer(nn.Module):
             self_term = self.W_V_self[str(l)](f_in[l])
 
             contrib_e    = alpha_e.view(-1, 1, 1) * Wv_j_sr_flat[l]
-            neighbor_raw = torch.zeros(B * N, C, 2 * l + 1, device=x.device, dtype=x.dtype).scatter_add(
+            neighbor_raw = torch.zeros(
+                B * N, C, 2 * l + 1, device=x_wrapped.device, dtype=x_wrapped.dtype,
+            ).scatter_add(
                 0, receiver_flat.view(-1, 1, 1).expand(-1, C, 2 * l + 1), contrib_e,
             ).view(B, N, C, 2 * l + 1)
             neighbor_term = self.sigma_gate[str(l)](neighbor_raw)
@@ -225,10 +222,11 @@ class EnergyLayer(nn.Module):
             f[l] = self.layer_norm_out[str(l)](f[l] + f_out[l])
 
         master_attn_result = self.master_attn(
-            g_a_in, f_in[0], x_wrapped, x_com, node_mask, V,
+            g_a_in, f_in[0], x_wrapped, x_com, node_mask,
             normalize_z_by_n_real=self.normalize_z_by_n_real,
             return_scale_feat=return_scale_feat,
             decouple_ri_norm=self.decouple_ri_norm,
+            kvecs=kvecs, mode_mask=mode_mask,
         )
         scale_feat = None
         if return_scale_feat:
@@ -245,10 +243,14 @@ class EnergyLayer(nn.Module):
             return f, g_a_out, scale_feat
         return f, g_a_out
 
-def _run_energy_layer(layer, f_in, f0, g_a_in, x, x_com, edge_feats, node_mask, V):
+def _run_energy_layer(
+    layer, f_in, f0, g_a_in, x_wrapped, x_com, node_mask,
+    edge_b, edge_i, edge_j, x_rel_e, edge_feat_e, kvecs, mode_mask,
+):
     return layer(
-        f_in=f_in, f0=f0, g_a_in=g_a_in, x=x, x_com=x_com,
-        edge_feats=edge_feats, node_mask=node_mask, V=V,
+        f_in=f_in, f0=f0, g_a_in=g_a_in, x_wrapped=x_wrapped, x_com=x_com, node_mask=node_mask,
+        edge_b=edge_b, edge_i=edge_i, edge_j=edge_j, x_rel_e=x_rel_e, edge_feat_e=edge_feat_e,
+        kvecs=kvecs, mode_mask=mode_mask,
     )
 
 def _compute_k_max(m: int, max_degree: int) -> int:
@@ -279,6 +281,8 @@ class EnergyModel(nn.Module):
         super().__init__()
         self.radial_net = radial_net
         self.edge_cutoff = edge_cutoff
+        self.n_max = n_max
+        self.pw_e_cutoff = pw_e_cutoff
 
         self.max_degree = max_degree
         self.task       = task
@@ -379,8 +383,25 @@ class EnergyModel(nn.Module):
         f0: Dict[int, torch.Tensor] = {0: f0_raw.unsqueeze(-1), 1: seeded[1], 2: seeded[2]}
         f: Dict[int, torch.Tensor] = dict(f0)
 
+        # x_wrapped, the local-attention edge list, and the plane-wave kvecs/mode_mask are all
+        # invariant across every layer in this forward pass (positions and V never change layer to
+        # layer) -- computed once here instead of redundantly inside every EnergyLayer/
+        # MasterNodeAttention call, which previously re-inverted the box matrix V (an SVD, plus a
+        # host-sync retry check) up to 10x per forward pass for the identical result.
         x_wrapped = minimum_image(x, V)
         x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask)
+
+        x_i = x_wrapped.unsqueeze(2).expand(B, N, N, 3)
+        x_j = x_wrapped.unsqueeze(1).expand(B, N, N, 3)
+        dist = (x_j - x_i).norm(dim=-1)
+        self_mask = ~torch.eye(N, dtype=torch.bool, device=x.device).unsqueeze(0)
+        effective_cutoff = safe_minimum_image_cutoff(V, self.edge_cutoff).view(B, 1, 1)
+        pair_mask = node_mask.unsqueeze(2) & node_mask.unsqueeze(1) & (dist <= effective_cutoff) & self_mask
+        edge_b, edge_i, edge_j = pair_mask.nonzero(as_tuple=True)
+        x_rel_e = x_wrapped[edge_b, edge_j] - x_wrapped[edge_b, edge_i]
+        edge_feat_e = edge_feats[edge_b, edge_i, edge_j]
+
+        kvecs, _, mode_mask = make_wavevectors(V, self.n_max, self.pw_e_cutoff)
 
         agg_per_atom = self.master_pool_agg(f0[0], f0[1], f0[2]).squeeze(-1)
         pooled = self.master_pool_ffn(masked_mean(agg_per_atom, node_mask))
@@ -392,25 +413,28 @@ class EnergyModel(nn.Module):
         for layer in self.layers:
             if self.grad_checkpoint and self.training:
                 f, g_a = checkpoint(
-                    _run_energy_layer, layer, f, f0, g_a, x, x_com, edge_feats, node_mask, V,
+                    _run_energy_layer, layer, f, f0, g_a, x_wrapped, x_com, node_mask,
+                    edge_b, edge_i, edge_j, x_rel_e, edge_feat_e, kvecs, mode_mask,
                     use_reentrant=False,
                 )
             elif collect_scale_feats:
                 f, g_a, scale_feat = layer(
-                    f_in=f, f0=f0, g_a_in=g_a, x=x, x_com=x_com,
-                    edge_feats=edge_feats, node_mask=node_mask, V=V,
+                    f_in=f, f0=f0, g_a_in=g_a, x_wrapped=x_wrapped, x_com=x_com, node_mask=node_mask,
+                    edge_b=edge_b, edge_i=edge_i, edge_j=edge_j, x_rel_e=x_rel_e, edge_feat_e=edge_feat_e,
+                    kvecs=kvecs, mode_mask=mode_mask,
                     return_scale_feat=True,
                 )
                 scale_feats.append(scale_feat)
             else:
                 f, g_a = layer(
-                    f_in=f, f0=f0, g_a_in=g_a, x=x, x_com=x_com,
-                    edge_feats=edge_feats, node_mask=node_mask, V=V,
+                    f_in=f, f0=f0, g_a_in=g_a, x_wrapped=x_wrapped, x_com=x_com, node_mask=node_mask,
+                    edge_b=edge_b, edge_i=edge_i, edge_j=edge_j, x_rel_e=x_rel_e, edge_feat_e=edge_feat_e,
+                    kvecs=kvecs, mode_mask=mode_mask,
                 )
             if return_layer_states:
                 layer_states.append(f)
 
-        fusion_out = self.master_fusion(f_atoms=f, g_a=g_a, x=minimum_image(x, V), x_com=x_com)
+        fusion_out = self.master_fusion(f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com)
         if self.ablate_max_degree is not None:
             fusion_out = {
                 l: (v if l <= self.ablate_max_degree else torch.zeros_like(v))
