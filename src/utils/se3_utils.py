@@ -81,13 +81,6 @@ def cartesian_quadrupole(n: torch.Tensor) -> torch.Tensor:
     return torch.stack([Qxx, Qxy, Qxz, Qyy, Qyz], dim=-1)
 
 def clebsch_gordan_matrix(l: int, k: int, dtype: torch.dtype = None) -> Dict[int, torch.Tensor]:
-    # Cache key MUST include dtype: o3.wigner_3j computes natively at whatever dtype is
-    # requested (verified: float64 differs from float32-then-upcast by ~1.5e-8, real precision,
-    # not relabeling), so a dtype-less cache key means whichever precision happens to touch a
-    # given (l,k) FIRST in the process permanently seeds it there -- silently truncating every
-    # later caller that wanted higher precision, with no error, just excess floating-point error
-    # that looks like a "known ceiling" (this caused base_tests.py's 3 previously-misdiagnosed
-    # failures; see stage_1/CLAUDE.md's 2026-08-21 correction).
     if dtype is None:
         dtype = torch.get_default_dtype()
     key = (l, k, dtype)
@@ -396,7 +389,7 @@ class GatedNonlinearity(nn.Module):
         return x * gate.unsqueeze(-1)
 
 class EquivariantNormReadout(nn.Module):
-    def __init__(self, C: int, hidden: int = 64, floor: float = 0.5):
+    def __init__(self, C: int, hidden: int = 64, floor: float = 0.5, out_dim: int | None = None):
         super().__init__()
         self.floor = floor
         self.equiv_proj = nn.Linear(C, hidden, bias=False)
@@ -404,7 +397,7 @@ class EquivariantNormReadout(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(hidden, hidden, bias=False),
             nn.SiLU(),
-            nn.Linear(hidden, 1, bias=False),
+            nn.Linear(hidden, 1 if out_dim is None else out_dim, bias=False),
         )
         init_sequential_(self.mlp, "silu")
 

@@ -47,8 +47,8 @@ class EqFSAClassifier(nn.Module):
             normalize_z_by_n_real=normalize_z_by_n_real,
             grad_checkpoint=grad_checkpoint,
         )
-        self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
-        self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
+        self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
+        self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
         self.classifier_head = nn.Sequential(
             EquivariantRMSNorm(feature_dim, degree=0),
             EquivariantLinear(feature_dim, hidden_dim, nonlinearity="leaky_relu"),
@@ -71,7 +71,7 @@ class EqFSAClassifier(nn.Module):
         f_target = {l: f[l][batch_ar, target_idx] for l in f}
         u_vec = self.norm_readout1(f_target[1])
         u_ten = self.norm_readout2(f_target[2])
-        full_vec = f_target[0].squeeze(-1) + u_vec.unsqueeze(-1) + u_ten.unsqueeze(-1)
+        full_vec = f_target[0].squeeze(-1) + u_vec + u_ten
         logits = self.classifier_head(full_vec.unsqueeze(-1))
         return logits.squeeze(-1)
 
