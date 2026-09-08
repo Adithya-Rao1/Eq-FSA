@@ -277,12 +277,17 @@ class EnergyModel(nn.Module):
         deterministic_pool_agg: bool = False,
         attention_pool: bool = False,
         skip_master_expand_norm: bool = False,
+        static_box: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
         self.edge_cutoff = edge_cutoff
         self.n_max = n_max
         self.pw_e_cutoff = pw_e_cutoff
+        self.static_box = static_box
+        self._cached_effective_cutoff: Optional[torch.Tensor] = None
+        self._cached_kvecs: Optional[torch.Tensor] = None
+        self._cached_mode_mask: Optional[torch.Tensor] = None
 
         self.max_degree = max_degree
         self.task       = task
@@ -352,6 +357,26 @@ class EnergyModel(nn.Module):
         self.readout = Readout(feature_dim, hidden_dim)
 
         self.diag_enabled = False
+
+    def _box_derived_quantities(self, V: torch.Tensor, B: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if not self.static_box:
+            effective_cutoff = safe_minimum_image_cutoff(V, self.edge_cutoff).view(B, 1, 1)
+            kvecs, _, mode_mask = make_wavevectors(V, self.n_max, self.pw_e_cutoff)
+            return effective_cutoff, kvecs, mode_mask
+
+        if self._cached_kvecs is None:
+            if not torch.equal(V, V[:1].expand_as(V)):
+                raise ValueError
+            effective_cutoff_full = safe_minimum_image_cutoff(V[:1], self.edge_cutoff).view(1, 1, 1)
+            kvecs_full, _, mode_mask_full = make_wavevectors(V[:1], self.n_max, self.pw_e_cutoff)
+            self._cached_effective_cutoff = effective_cutoff_full.detach()
+            self._cached_kvecs = kvecs_full.detach()
+            self._cached_mode_mask = mode_mask_full.detach()
+
+        effective_cutoff = self._cached_effective_cutoff.expand(B, 1, 1)
+        kvecs = self._cached_kvecs.expand(B, -1, -1)
+        mode_mask = self._cached_mode_mask.expand(B, -1)
+        return effective_cutoff, kvecs, mode_mask
         self._diag_stats: Dict[str, float] = {}
 
     def forward(
@@ -393,17 +418,16 @@ class EnergyModel(nn.Module):
 
         x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask)
 
+        effective_cutoff, kvecs, mode_mask = self._box_derived_quantities(V, B)
+
         x_i = x_wrapped.unsqueeze(2).expand(B, N, N, 3)
         x_j = x_wrapped.unsqueeze(1).expand(B, N, N, 3)
         dist = (x_j - x_i).norm(dim=-1)
         self_mask = ~torch.eye(N, dtype=torch.bool, device=x.device).unsqueeze(0)
-        effective_cutoff = safe_minimum_image_cutoff(V, self.edge_cutoff).view(B, 1, 1)
         pair_mask = node_mask.unsqueeze(2) & node_mask.unsqueeze(1) & (dist <= effective_cutoff) & self_mask
         edge_b, edge_i, edge_j = pair_mask.nonzero(as_tuple=True)
         x_rel_e = x_wrapped[edge_b, edge_j] - x_wrapped[edge_b, edge_i]
         edge_feat_e = edge_feats[edge_b, edge_i, edge_j]
-
-        kvecs, _, mode_mask = make_wavevectors(V, self.n_max, self.pw_e_cutoff)
 
         agg_per_atom = self.master_pool_agg(f0[0], f0[1], f0[2]).squeeze(-1)
         if self.attention_pool:

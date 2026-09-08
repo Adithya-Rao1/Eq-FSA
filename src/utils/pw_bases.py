@@ -77,6 +77,8 @@ def minimum_image(dx: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
 def reciprocal_lattice(V: torch.Tensor) -> torch.Tensor:
     return 2 * math.pi * safe_inv(V).mT
 
+_MILLER_INDICES_CACHE: dict = {}
+
 def make_miller_indices(
     n_max: int | Sequence[int],
     device: torch.device = torch.device("cpu"),
@@ -87,12 +89,18 @@ def make_miller_indices(
     else:
         h_max, k_max, l_max = n_max
 
+    key = ((h_max, k_max, l_max), torch.device(device), dtype)
+    if key in _MILLER_INDICES_CACHE:
+        return _MILLER_INDICES_CACHE[key]
+
     hs = torch.arange(-h_max, h_max + 1, device=device)
     ks = torch.arange(-k_max, k_max + 1, device=device)
     ls = torch.arange(-l_max, l_max + 1, device=device)
-    grid = torch.stack(torch.meshgrid(hs, ks, ls, indexing="ij"), dim=-1) 
+    grid = torch.stack(torch.meshgrid(hs, ks, ls, indexing="ij"), dim=-1)
 
-    return grid.reshape(-1, 3).to(dtype=dtype)
+    result = grid.reshape(-1, 3).to(dtype=dtype)
+    _MILLER_INDICES_CACHE[key] = result
+    return result
 
 def make_wavevectors(V, n_max, e_cutoff=None):
     indices = make_miller_indices(n_max, device=V.device, dtype=V.dtype)  

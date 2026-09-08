@@ -31,6 +31,7 @@ class EqFSAClassifier(nn.Module):
         deterministic_pool_agg: bool = True,
         attention_pool: bool = True,
         skip_master_expand_norm: bool = True,
+        static_box: bool = True,
     ):
         super().__init__()
         self.multi_layer_readout = multi_layer_readout
@@ -54,6 +55,7 @@ class EqFSAClassifier(nn.Module):
             deterministic_pool_agg=deterministic_pool_agg,
             attention_pool=attention_pool,
             skip_master_expand_norm=skip_master_expand_norm,
+            static_box=static_box,
         )
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
