@@ -35,11 +35,19 @@ def snapshot(model, dataset, label: str):
 
     x_wrapped = minimum_image(x, V)
     x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask)
+
+    batch_ar = torch.arange(B)
+    label_idx_t = torch.full((B,), dataset.label_idx, dtype=torch.long)
     agg_per_atom = em.master_pool_agg(f0[0], f0[1], f0[2]).squeeze(-1)
-    pooled = em.master_pool_ffn(masked_mean(agg_per_atom, node_mask))
-    g_a = em.master_expand(pooled).view(B, em.n_master_nodes, -1).unsqueeze(-1)
-    g_a = em.master_expand_norm(g_a)
-    report("  g_a (pre-loop)", g_a.reshape(B, -1))
+    report("  agg_per_atom @ label atom (pre-pool)", agg_per_atom[batch_ar, label_idx_t])
+    mean_pooled = masked_mean(agg_per_atom, node_mask)
+    report("  mean_pooled (post masked_mean, pre-FFN)", mean_pooled)
+    pooled = em.master_pool_ffn(mean_pooled)
+    report("  pooled (post master_pool_ffn)", pooled)
+    g_a_pre_norm = em.master_expand(pooled).view(B, em.n_master_nodes, -1).unsqueeze(-1)
+    report("  g_a (post master_expand, pre-norm)", g_a_pre_norm.reshape(B, -1))
+    g_a = em.master_expand_norm(g_a_pre_norm)
+    report("  g_a (pre-loop, post master_expand_norm)", g_a.reshape(B, -1))
 
     for i, layer in enumerate(em.layers):
         B_, N, _ = x.shape
