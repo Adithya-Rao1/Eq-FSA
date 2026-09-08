@@ -1,17 +1,5 @@
 from __future__ import annotations
 
-"""Stage-by-stage trace of `MasterNodeAttention.forward`'s own internal construction of
-`master_attn_out`, at every energy layer.
-
-Continuation of the `master_ln` investigation in `oversquashing/CLAUDE.md` ("master_ln
-investigated and exonerated"): `master_ln` only rescales magnitude; the actual driver of g_a's
-cross-layer relative-signal shrinkage is that `master_attn_out` (each layer's freshly computed
-content) itself carries very little cross-class signal (0.003%-0.048%) despite having access to the
-real per-atom `f_in[0]` and the real (class-dependent) `x_com`. This file mirrors
-`MasterNodeAttention.forward` (`stage_1/attention.py:190-293`) exactly, stage by stage, to find
-which specific step is responsible.
-"""
-
 import torch
 import torch.nn.functional as F
 
@@ -53,8 +41,11 @@ def trace_master_attn_internals(model, dataset, label: str, decouple_ri_norm: bo
         x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask)
 
         agg_per_atom = em.master_pool_agg(f0[0], f0[1], f0[2]).squeeze(-1)
-        pooled = em.master_pool_ffn(masked_mean(agg_per_atom, node_mask))
-        g_a = em.master_expand(pooled).view(B, em.n_master_nodes, -1).unsqueeze(-1)
+        if em.attention_pool:
+            g_a = em.pool_expand(agg_per_atom, node_mask).unsqueeze(-1)
+        else:
+            pooled = em.master_pool_ffn(masked_mean(agg_per_atom, node_mask))
+            g_a = em.master_expand(pooled).view(B, em.n_master_nodes, -1).unsqueeze(-1)
         g_a = em.master_expand_norm(g_a)
 
         for i, layer in enumerate(em.layers):
