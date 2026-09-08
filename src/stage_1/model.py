@@ -61,8 +61,10 @@ def seed_equivariant_features(
     node_mask:     torch.Tensor,
     V:             torch.Tensor,
     diag_sink:     Optional[dict] = None,
+    x_wrapped:     Optional[torch.Tensor] = None,
 ) -> Dict[int, torch.Tensor]:
-    x_wrapped = minimum_image(x, V)
+    if x_wrapped is None:
+        x_wrapped = minimum_image(x, V)
     center, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask)
 
     x_rel   = x_wrapped - center.unsqueeze(1)
@@ -374,9 +376,12 @@ class EnergyModel(nn.Module):
         combined_scalar = (self.seed_proj(torch.cat([f0_ffn_out, mol_ffn_out], dim=-1)))
         combined_scalar = self.seed_proj_norm(self.seed_proj_out(combined_scalar))
 
+        x_wrapped = minimum_image(x, V)
+
         seeded = seed_equivariant_features(
             combined_scalar, self.seed_radial_net, x, seed_masses, node_mask, V,
             diag_sink=(self._diag_stats if self.diag_enabled else None),
+            x_wrapped=x_wrapped,
         )
         if self.ablate_max_degree is not None:
             seeded = {
@@ -386,7 +391,6 @@ class EnergyModel(nn.Module):
         f0: Dict[int, torch.Tensor] = {0: f0_raw.unsqueeze(-1), 1: seeded[1], 2: seeded[2]}
         f: Dict[int, torch.Tensor] = dict(f0)
 
-        x_wrapped = minimum_image(x, V)
         x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask)
 
         x_i = x_wrapped.unsqueeze(2).expand(B, N, N, 3)

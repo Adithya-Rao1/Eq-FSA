@@ -14,6 +14,18 @@ FEATURE_DIMS = {0: 1, 1: 3, 2: 5}
 def safe_inv(V: torch.Tensor, jitter: float = 1e-6, max_tries: int = 5,
              min_singular_value: float = 1e-2) -> torch.Tensor:
     orig_dtype = V.dtype
+
+    diag = torch.diagonal(V, dim1=-2, dim2=-1)
+    off_diag_mask = ~torch.eye(V.shape[-1], dtype=torch.bool, device=V.device)
+    off_diag_max = (V * off_diag_mask).abs().amax(dim=(-2, -1))
+    is_clean_diagonal = (
+        (off_diag_max < 1e-10)
+        & (diag.abs().amin(dim=-1) >= min_singular_value)
+        & torch.isfinite(diag).all(dim=-1)
+    )
+    if bool(is_clean_diagonal.all()):
+        return torch.diag_embed(1.0 / diag).to(orig_dtype)
+
     V_work = V.clone()
     I = torch.eye(V.shape[-1], device=V.device, dtype=V_work.dtype)
     eps = jitter
