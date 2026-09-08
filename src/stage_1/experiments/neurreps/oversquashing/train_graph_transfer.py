@@ -9,6 +9,7 @@ import time
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, random_split
+from tqdm import tqdm
 
 from utils.se3_utils import RadialNetwork
 
@@ -168,7 +169,11 @@ def train_one_realization(
     optimizer = build_optimizer(model, config["lr"], config.get("qk_gamma_wd", 0.0))
 
     log_every = config.get("log_every", 0)
-    for epoch in range(config["epochs"]):
+    epoch_bar = tqdm(
+        range(config["epochs"]), desc=f"{variant} {topology} r={r} seed={seed}",
+        leave=False, unit="epoch",
+    )
+    for epoch in epoch_bar:
         model.train()
         epoch_loss_sum, epoch_grad_norm_sum, epoch_batches = 0.0, 0.0, 0
         for batch in train_loader:
@@ -182,13 +187,13 @@ def train_one_realization(
             epoch_loss_sum += loss.item()
             epoch_grad_norm_sum += float(grad_norm)
             epoch_batches += 1
+        avg_loss = epoch_loss_sum / max(1, epoch_batches)
+        avg_grad_norm = epoch_grad_norm_sum / max(1, epoch_batches)
+        epoch_bar.set_postfix(loss=f"{avg_loss:.4f}", grad_norm=f"{avg_grad_norm:.4f}")
         if log_every and (epoch % log_every == 0 or epoch == config["epochs"] - 1):
-            avg_loss = epoch_loss_sum / max(1, epoch_batches)
-            avg_grad_norm = epoch_grad_norm_sum / max(1, epoch_batches)
-            print(
+            tqdm.write(
                 f"    [{variant} {topology} r={r} seed={seed}] epoch={epoch} loss={avg_loss:.4f} "
                 f"grad_norm={avg_grad_norm:.6f}",
-                flush=True,
             )
 
     model.eval()
@@ -252,7 +257,11 @@ def run_config(
     keys = ["r", "euclid", "val_error", "jacobian_sensitivity", "mi_lower_bound", "n_params"]
     per_realization = {k: [] for k in keys}
 
-    for i, (seed, weight_seed) in enumerate(zip(seeds, weight_seeds)):
+    realization_bar = tqdm(
+        list(enumerate(zip(seeds, weight_seeds))), desc=f"{variant} {topology} r={r} realizations",
+        unit="realization",
+    )
+    for i, (seed, weight_seed) in realization_bar:
         result = train_one_realization(topology, r, variant, config, seed=seed, weight_seed=weight_seed)
         for k in keys:
             per_realization[k].append(result[k])
