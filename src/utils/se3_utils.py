@@ -256,8 +256,36 @@ def apply_direct_sum_W(
     max_degree:  int,
     k_max:       int = None,
 ) -> Dict[int, torch.Tensor]:
-    out: Dict[int, torch.Tensor] = {}
     k_hi = max_degree if k_max is None else k_max
+
+    if str(0) in radial_nets and isinstance(radial_nets[str(0)], BatchedRadialNetwork):
+        device, dtype = x.device, x.dtype
+        N = x.shape[0]
+        r = x.norm(dim=-1, keepdim=True)
+        f_concat = torch.cat([f[k] for k in range(k_hi + 1)], dim=-1)
+
+        out: Dict[int, torch.Tensor] = {}
+        for l in range(max_degree + 1):
+            phi_all = radial_nets[str(l)](r) if N > 0 else None
+            blocks = []
+            idx = 0
+            for k in range(k_hi + 1):
+                cg = clebsch_gordan_matrix(l, k, dtype=dtype)
+                W_lk = torch.zeros(N, 2 * l + 1, 2 * k + 1, device=device, dtype=dtype)
+                for J in range(abs(l - k), l + k + 1):
+                    if N > 0:
+                        phi = phi_all[idx]
+                        Q_J = cg[J].to(device=device, dtype=dtype)
+                        Y_J = get_spherical_harmonics(J, x)
+                        QTY = torch.einsum("ji,ni->nj", Q_J, Y_J)
+                        W_lk = W_lk + (phi * QTY).view(N, 2 * l + 1, 2 * k + 1)
+                    idx += 1
+                blocks.append(W_lk)
+            W_l_concat = torch.cat(blocks, dim=-1)
+            out[l] = torch.einsum("nij,ncj->nci", W_l_concat, f_concat)
+        return out
+
+    out: Dict[int, torch.Tensor] = {}
 
     for l in range(max_degree + 1):
         any_k = next(iter(f.values()))

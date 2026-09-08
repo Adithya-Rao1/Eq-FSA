@@ -95,13 +95,11 @@ class SRAttention(nn.Module):
 
         self.radial_V_sr = nn.ModuleDict()
         for l in range(max_degree + 1):
-            for k in range(k_max + 1):
-                key = f"{l}_{k}"
-                n_J = (l + k + 1) - abs(l - k)
-                self.radial_V_sr[key] = BatchedRadialNetwork(
-                    n_copies=n_J, num_basis=(2 * l + 1), hidden_dim=hidden_dim,
-                    radial_net_cls=radial_net,
-                )
+            n_copies = sum((l + k + 1) - abs(l - k) for k in range(k_max + 1))
+            self.radial_V_sr[str(l)] = BatchedRadialNetwork(
+                n_copies=n_copies, num_basis=(2 * l + 1), hidden_dim=hidden_dim,
+                radial_net_cls=radial_net,
+            )
 
         self.pair_readout = nn.ModuleDict({
             str(k): NormedPairReadout(2 * feature_dim, hidden_dim)
