@@ -349,15 +349,9 @@ class MasterFusionAttention(nn.Module):
         self.readout_V = nn.ModuleDict({
             str(l): EquivariantLinearRMSNorm(feature_dim) for l in range(max_degree + 1)
         })
-        self.radial_K = nn.ModuleDict({
-            f"{l}_0": BatchedRadialNetwork(
-                n_copies=1, num_basis=2 * l + 1, hidden_dim=hidden_dim, radial_net_cls=radial_net,
-            )
-            for l in range(max_degree + 1)
-        })
-        self.radial_V = nn.ModuleDict({
-            f"{l}_0": BatchedRadialNetwork(
-                n_copies=1, num_basis=2 * l + 1, hidden_dim=hidden_dim, radial_net_cls=radial_net,
+        self.radial_KV = nn.ModuleDict({
+            str(l): BatchedRadialNetwork(
+                n_copies=2, num_basis=2 * l + 1, hidden_dim=hidden_dim, radial_net_cls=radial_net,
             )
             for l in range(max_degree + 1)
         })
@@ -379,14 +373,26 @@ class MasterFusionAttention(nn.Module):
 
         Q = {l: self.W_Q[str(l)](f_atoms[l]) for l in range(self.max_degree + 1)}
 
+        num_pos = x_rel_flat.shape[0]
+        r = x_rel_flat.norm(dim=-1, keepdim=True) if num_pos > 0 else None
+
         K_lifted: Dict[int, torch.Tensor] = {}
         V_lifted: Dict[int, torch.Tensor] = {}
         for l in range(self.max_degree + 1):
             K_content = self.readout_K[str(l)](g_a)
             V_content = self.readout_V[str(l)](g_a)
 
-            W_K = equivariant_weight_matrix(x_rel_flat, l, 0, self.radial_K[f"{l}_0"]).view(B, N, 2 * l + 1, 1)
-            W_V = equivariant_weight_matrix(x_rel_flat, l, 0, self.radial_V[f"{l}_0"]).view(B, N, 2 * l + 1, 1)
+            if num_pos > 0:
+                phi_kv = self.radial_KV[str(l)](r)
+                cg = clebsch_gordan_matrix(l, 0, dtype=x.dtype)
+                Q_J = cg[l].to(device=x.device, dtype=x.dtype)
+                Y_J = get_spherical_harmonics(l, x_rel_flat)
+                QTY = torch.einsum("ji,ni->nj", Q_J, Y_J)
+                W_K = (phi_kv[0] * QTY).view(B, N, 2 * l + 1, 1)
+                W_V = (phi_kv[1] * QTY).view(B, N, 2 * l + 1, 1)
+            else:
+                W_K = torch.zeros(B, N, 2 * l + 1, 1, device=x.device, dtype=x.dtype)
+                W_V = torch.zeros(B, N, 2 * l + 1, 1, device=x.device, dtype=x.dtype)
             if l > 0:
                 W_K = W_K * has_dir
                 W_V = W_V * has_dir
@@ -394,22 +400,28 @@ class MasterFusionAttention(nn.Module):
             K_lifted[l] = torch.einsum("bnij,bacj->bnaci", W_K, K_content)
             V_lifted[l] = torch.einsum("bnij,bacj->bnaci", W_V, V_content)
 
-        score = None
-        for l in range(self.max_degree + 1):
-            Qh = Q[l].view(B, N, H, Ch, 2 * l + 1)
-            Kh = K_lifted[l].view(B, N, N_a, H, Ch, 2 * l + 1)
-            contrib = torch.einsum("bnhcd,bnahcd->bnah", Qh, Kh)
-            score = contrib if score is None else score + contrib
-        score = score / self.scale
+        Q_concat = torch.cat(
+            [Q[l].view(B, N, H, Ch, 2 * l + 1) for l in range(self.max_degree + 1)], dim=-1,
+        )
+        K_concat = torch.cat(
+            [K_lifted[l].view(B, N, N_a, H, Ch, 2 * l + 1) for l in range(self.max_degree + 1)], dim=-1,
+        )
+        score = torch.einsum("bnhcd,bnahcd->bnah", Q_concat, K_concat) / self.scale
 
         alpha = softmax_over_neighbors(score.permute(0, 1, 3, 2))
         alpha = alpha.permute(0, 1, 3, 2)
 
+        V_concat = torch.cat(
+            [V_lifted[l].view(B, N, N_a, H, Ch, 2 * l + 1) for l in range(self.max_degree + 1)], dim=-1,
+        )
+        weighted_concat = torch.einsum("bnah,bnahcd->bnhcd", alpha, V_concat).reshape(B, N, C, -1)
+
         out: Dict[int, torch.Tensor] = {}
+        row_start = 0
         for l in range(self.max_degree + 1):
-            Vh = V_lifted[l].view(B, N, N_a, H, Ch, 2 * l + 1)
-            weighted = torch.einsum("bnah,bnahcd->bnhcd", alpha, Vh)
-            out[l] = weighted.reshape(B, N, C, 2 * l + 1)
+            row_end = row_start + (2 * l + 1)
+            out[l] = weighted_concat[..., row_start:row_end]
+            row_start = row_end
 
         return out
 

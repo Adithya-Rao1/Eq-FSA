@@ -4,6 +4,7 @@ import torch
 
 from stage_1.model import minimum_image, masked_weighted_com, safe_minimum_image_cutoff
 from stage_1.attention import equivariant_weight_matrix, softmax_over_neighbors
+from utils.se3_utils import clebsch_gordan_matrix, get_spherical_harmonics
 from utils.pw_bases import make_wavevectors
 from diagnostics.trace_eqfsa_classifier_signal import (
     build_dataset, build_model, _one_per_class, report,
@@ -100,8 +101,14 @@ def trace_master_fusion(model, dataset, label: str, ablate_g_a_variation: bool =
             report(f"K_content[{l}] (per master node, shared across atoms)", K_content.reshape(B, -1))
             report(f"V_content[{l}] (per master node, shared across atoms)", V_content.reshape(B, -1))
 
-            W_K = equivariant_weight_matrix(x_rel_flat, l, 0, mf.radial_K[f"{l}_0"]).view(B, N, 2 * l + 1, 1)
-            W_V = equivariant_weight_matrix(x_rel_flat, l, 0, mf.radial_V[f"{l}_0"]).view(B, N, 2 * l + 1, 1)
+            r_kv = x_rel_flat.norm(dim=-1, keepdim=True)
+            phi_kv = mf.radial_KV[str(l)](r_kv)
+            cg_kv = clebsch_gordan_matrix(l, 0, dtype=x.dtype)
+            Q_J_kv = cg_kv[l].to(device=x.device, dtype=x.dtype)
+            Y_J_kv = get_spherical_harmonics(l, x_rel_flat)
+            QTY_kv = torch.einsum("ji,ni->nj", Q_J_kv, Y_J_kv)
+            W_K = (phi_kv[0] * QTY_kv).view(B, N, 2 * l + 1, 1)
+            W_V = (phi_kv[1] * QTY_kv).view(B, N, 2 * l + 1, 1)
             if l > 0:
                 W_K = W_K * has_dir
                 W_V = W_V * has_dir

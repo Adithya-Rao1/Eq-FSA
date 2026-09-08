@@ -264,7 +264,7 @@ def apply_direct_sum_W(
         r = x.norm(dim=-1, keepdim=True)
         f_concat = torch.cat([f[k] for k in range(k_hi + 1)], dim=-1)
 
-        out: Dict[int, torch.Tensor] = {}
+        row_blocks = []
         for l in range(max_degree + 1):
             phi_all = radial_nets[str(l)](r) if N > 0 else None
             blocks = []
@@ -281,8 +281,17 @@ def apply_direct_sum_W(
                         W_lk = W_lk + (phi * QTY).view(N, 2 * l + 1, 2 * k + 1)
                     idx += 1
                 blocks.append(W_lk)
-            W_l_concat = torch.cat(blocks, dim=-1)
-            out[l] = torch.einsum("nij,ncj->nci", W_l_concat, f_concat)
+            row_blocks.append(torch.cat(blocks, dim=-1))
+
+        W_full = torch.cat(row_blocks, dim=-2) 
+        out_concat = torch.einsum("nij,ncj->nci", W_full, f_concat)  
+
+        out: Dict[int, torch.Tensor] = {}
+        row_start = 0
+        for l in range(max_degree + 1):
+            row_end = row_start + (2 * l + 1)
+            out[l] = out_concat[..., row_start:row_end]
+            row_start = row_end
         return out
 
     out: Dict[int, torch.Tensor] = {}
