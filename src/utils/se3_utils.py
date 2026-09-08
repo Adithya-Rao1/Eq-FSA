@@ -6,6 +6,7 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 
 from utils.spherical_harm import *
@@ -144,14 +145,66 @@ class RadialNetwork(nn.Module):
         if self.edge_feature_dim > 0:
             basis = torch.cat([basis, edge_feat], dim=-1)
         return self.net(basis)
-              
+
+
+class BatchedRadialNetwork(nn.Module):
+    def __init__(
+        self,
+        n_copies:      int,
+        num_basis:     int = 8,
+        hidden_dim:    int = 32,
+        cutoff_radius: float = 5.0,
+        num_heads:     int = 1,
+        envelope_floor: float = 0.02,
+        radial_net_cls: type = None,
+    ):
+        super().__init__()
+        radial_net_cls = RadialNetwork if radial_net_cls is None else radial_net_cls
+        self.n_copies = n_copies
+        self.cutoff_radius = cutoff_radius
+        self.envelope_floor = envelope_floor
+
+        centres = torch.linspace(0.0, cutoff_radius, num_basis)
+        self.register_buffer("centres", centres)
+        width = cutoff_radius / max(num_basis - 1, 1)
+        self.register_buffer("inv_width_sq", torch.tensor(-1.0 / (2.0 * width ** 2)))
+
+        templates = [
+            radial_net_cls(num_basis, hidden_dim, cutoff_radius, num_heads, edge_feature_dim=0,
+                            envelope_floor=envelope_floor)
+            for _ in range(n_copies)
+        ]
+        self.W1 = nn.Parameter(torch.stack([t.net[0].weight.detach().clone() for t in templates]))
+        self.b1 = nn.Parameter(torch.stack([t.net[0].bias.detach().clone() for t in templates]))
+        self.g1 = nn.Parameter(torch.stack([t.net[1].weight.detach().clone() for t in templates]))
+        self.W2 = nn.Parameter(torch.stack([t.net[3].weight.detach().clone() for t in templates]))
+        self.g2 = nn.Parameter(torch.stack([t.net[4].weight.detach().clone() for t in templates]))
+        self.W3 = nn.Parameter(torch.stack([t.net[6].weight.detach().clone() for t in templates]))
+
+    def _basis(self, r: torch.Tensor) -> torch.Tensor:
+        diff = r - self.centres.unsqueeze(0)
+        rbf  = torch.exp(self.inv_width_sq * diff * diff)
+        r_scaled = (r / self.cutoff_radius).clamp(max=1.0)
+        envelope = (1.0 - self.envelope_floor) * 0.5 * (torch.cos(math.pi * r_scaled) + 1.0) + self.envelope_floor
+        return rbf * envelope
+
+    def forward(self, r: torch.Tensor) -> torch.Tensor:
+        basis = self._basis(r)
+        h1 = torch.einsum("nb,jhb->jnh", basis, self.W1) + self.b1.unsqueeze(1)
+        h1 = F.rms_norm(h1, (h1.shape[-1],), None, None) * self.g1.unsqueeze(1)
+        h1 = F.silu(h1)
+        h2 = torch.einsum("jnh,jgh->jng", h1, self.W2)
+        h2 = F.rms_norm(h2, (h2.shape[-1],), None, None) * self.g2.unsqueeze(1)
+        h2 = F.silu(h2)
+        return torch.einsum("jnh,joh->jno", h2, self.W3)
+
 
 def equivariant_weight_matrix(
-    x:          torch.Tensor,   
+    x:          torch.Tensor,
     l:          int,
     k:          int,
     radial_net: nn.Module,
-) -> torch.Tensor:               
+) -> torch.Tensor:
     device, dtype = x.device, x.dtype
     N = x.shape[0]
     W = torch.zeros(N, 2 * l + 1, 2 * k + 1, device=device, dtype=dtype)
@@ -161,8 +214,19 @@ def equivariant_weight_matrix(
 
     r  = x.norm(dim=-1, keepdim=True)
     cg = clebsch_gordan_matrix(l, k, dtype=dtype)
+    Js = list(range(abs(l - k), l + k + 1))
 
-    for J in range(abs(l - k), l + k + 1):
+    if isinstance(radial_net, BatchedRadialNetwork):
+        phi_all = radial_net(r)
+        for idx, J in enumerate(Js):
+            Q_J = cg[J].to(device=device, dtype=dtype)
+            Y_J = get_spherical_harmonics(J, x)
+            QTY = torch.einsum("ji,ni->nj", Q_J, Y_J)
+            had = phi_all[idx] * QTY
+            W   = W + had.view(N, 2 * l + 1, 2 * k + 1)
+        return W
+
+    for J in Js:
         if J not in cg:
             continue
 

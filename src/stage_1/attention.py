@@ -97,10 +97,11 @@ class SRAttention(nn.Module):
         for l in range(max_degree + 1):
             for k in range(k_max + 1):
                 key = f"{l}_{k}"
-                self.radial_V_sr[key] = nn.ModuleDict({
-                    str(J): radial_net(num_basis=(2 * l + 1), hidden_dim=hidden_dim)
-                    for J in range(abs(l - k), l + k + 1)
-                })
+                n_J = (l + k + 1) - abs(l - k)
+                self.radial_V_sr[key] = BatchedRadialNetwork(
+                    n_copies=n_J, num_basis=(2 * l + 1), hidden_dim=hidden_dim,
+                    radial_net_cls=radial_net,
+                )
 
         self.pair_readout = nn.ModuleDict({
             str(k): NormedPairReadout(2 * feature_dim, hidden_dim)
@@ -351,11 +352,15 @@ class MasterFusionAttention(nn.Module):
             str(l): EquivariantLinearRMSNorm(feature_dim) for l in range(max_degree + 1)
         })
         self.radial_K = nn.ModuleDict({
-            f"{l}_0": nn.ModuleDict({str(l): radial_net(num_basis=2 * l + 1, hidden_dim=hidden_dim)})
+            f"{l}_0": BatchedRadialNetwork(
+                n_copies=1, num_basis=2 * l + 1, hidden_dim=hidden_dim, radial_net_cls=radial_net,
+            )
             for l in range(max_degree + 1)
         })
         self.radial_V = nn.ModuleDict({
-            f"{l}_0": nn.ModuleDict({str(l): radial_net(num_basis=2 * l + 1, hidden_dim=hidden_dim)})
+            f"{l}_0": BatchedRadialNetwork(
+                n_copies=1, num_basis=2 * l + 1, hidden_dim=hidden_dim, radial_net_cls=radial_net,
+            )
             for l in range(max_degree + 1)
         })
 

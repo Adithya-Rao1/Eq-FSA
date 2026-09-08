@@ -181,11 +181,6 @@ class EnergyLayer(nn.Module):
     ) -> Tuple[Dict[int, torch.Tensor], torch.Tensor]:
         B, N, _ = x_wrapped.shape
 
-        # x_wrapped, the edge list (edge_b/edge_i/edge_j/x_rel_e/edge_feat_e), and kvecs/mode_mask
-        # are all invariant across every layer within one EnergyModel.forward call (positions and V
-        # never change layer to layer) -- computed once by the caller (EnergyModel.forward) instead
-        # of being rebuilt (including a redundant O(N^2) distance matrix + minimum_image's SVD-based
-        # box inverse) on every single layer call.
         f_in = {l: self.layer_norm_in[str(l)](f_in[l]) for l in f_in}
 
         f_in_i_e = {k: f_in[k][edge_b, edge_i] for k in range(self.k_max + 1)}
@@ -383,11 +378,6 @@ class EnergyModel(nn.Module):
         f0: Dict[int, torch.Tensor] = {0: f0_raw.unsqueeze(-1), 1: seeded[1], 2: seeded[2]}
         f: Dict[int, torch.Tensor] = dict(f0)
 
-        # x_wrapped, the local-attention edge list, and the plane-wave kvecs/mode_mask are all
-        # invariant across every layer in this forward pass (positions and V never change layer to
-        # layer) -- computed once here instead of redundantly inside every EnergyLayer/
-        # MasterNodeAttention call, which previously re-inverted the box matrix V (an SVD, plus a
-        # host-sync retry check) up to 10x per forward pass for the identical result.
         x_wrapped = minimum_image(x, V)
         x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask)
 

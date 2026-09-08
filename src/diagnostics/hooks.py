@@ -120,9 +120,8 @@ def _instrumented_submodules(model: SPICEEnergyForceModel):
         yield layer.sr_attn.psi_e, f"layer{i}.sr_attn.psi_e"
         for k, mod in layer.sr_attn.pair_readout.items():
             yield mod, f"layer{i}.sr_attn.pair_readout[{k}]"
-        for lk_key, j_nets in layer.sr_attn.radial_V_sr.items():
-            for j_key, rnet in j_nets.items():
-                yield rnet, f"layer{i}.sr_attn.radial_V_sr[{lk_key}][{j_key}]"
+        for lk_key, rnet in layer.sr_attn.radial_V_sr.items():
+            yield rnet, f"layer{i}.sr_attn.radial_V_sr[{lk_key}]"
         yield layer.master_attn, f"layer{i}.master_attn"
         yield layer.master_ln, f"layer{i}.master_ln"
         yield layer.W_V_self["1"], f"layer{i}.W_V_self[1]"
