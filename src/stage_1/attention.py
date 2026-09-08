@@ -84,6 +84,32 @@ class NormedPairReadout(nn.Module):
         h = self.hidden_ffn(norms)
         return self.out(h).squeeze(-1)
 
+
+class BatchedNormedPairReadout(nn.Module):
+    def __init__(self, C: int, hidden: int, k_max: int, floor: float = 0.5):
+        super().__init__()
+        self.k_max = k_max
+        self.floor = floor
+
+        templates = [NormedPairReadout(C, hidden, floor=floor) for _ in range(k_max + 1)]
+        self.equiv_proj = nn.ModuleList([t.equiv_proj for t in templates])
+        self.W_h1 = nn.Parameter(torch.stack([t.hidden_ffn[0].weight.detach().clone() for t in templates]))
+        self.g_h1 = nn.Parameter(torch.stack([t.hidden_ffn[1].weight.detach().clone() for t in templates]))
+        self.W_out = nn.Parameter(torch.stack([t.out.weight.detach().clone() for t in templates]))
+
+    def forward(self, cats: list) -> torch.Tensor:
+        norms = []
+        for k, x in enumerate(cats):
+            v = self.equiv_proj[k](x.transpose(-1, -2)).transpose(-1, -2)
+            norms.append(straight_through_norm(v, dim=-1, floor=self.floor))
+        h0 = torch.stack(norms, dim=0)
+        h1 = torch.einsum("keh,kgh->keg", h0, self.W_h1)
+        h1 = F.rms_norm(h1, (h1.shape[-1],), None, None) * self.g_h1.unsqueeze(1)
+        h1 = F.silu(h1)
+        out = torch.einsum("keh,koh->keo", h1, self.W_out).squeeze(-1)
+        return out.sum(dim=0)
+
+
 class SRAttention(nn.Module):
     def __init__(
         self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int,
@@ -101,10 +127,7 @@ class SRAttention(nn.Module):
                 radial_net_cls=radial_net,
             )
 
-        self.pair_readout = nn.ModuleDict({
-            str(k): NormedPairReadout(2 * feature_dim, hidden_dim)
-            for k in range(k_max + 1)
-        })
+        self.pair_readout = BatchedNormedPairReadout(2 * feature_dim, hidden_dim, k_max)
         
         self.edge_input_norm = nn.RMSNorm(1 + edge_feat_dim)
         self.psi_e = scalar_ffn(1 + edge_feat_dim, hidden_dim)
@@ -126,11 +149,8 @@ class SRAttention(nn.Module):
         batch_size: int,
         num_atoms:  int,
     ) -> Tuple[torch.Tensor, Dict[int, torch.Tensor]]:
-        score = None
-        for k in range(self.k_max + 1):
-            cat_k = torch.cat([f_in_i_e[k], f0_j_e[k]], dim=-2)
-            contrib = self.pair_readout[str(k)](cat_k)
-            score = contrib if score is None else score + contrib
+        cats = [torch.cat([f_in_i_e[k], f0_j_e[k]], dim=-2) for k in range(self.k_max + 1)]
+        score = self.pair_readout(cats)
 
         dist = x_rel_e.norm(dim=-1, keepdim=True)
         edge_feats = self.edge_input_norm(torch.cat([dist, edge_feat_e], dim=-1))
