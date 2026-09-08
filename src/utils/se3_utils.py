@@ -453,21 +453,15 @@ class AttentionPoolExpand(nn.Module):
         super().__init__()
         self.n_master_nodes = n_master_nodes
         self.queries = nn.Parameter(torch.randn(n_master_nodes, feature_dim) * (feature_dim ** -0.5))
-        self.W_K = nn.Linear(feature_dim, feature_dim, bias=False)
-        self.W_V = nn.Linear(feature_dim, feature_dim, bias=False)
-        init_linear_(self.W_K, "linear")
-        init_linear_(self.W_V, "linear")
         self.scale = feature_dim ** 0.5
 
     def forward(self, agg_per_atom: torch.Tensor, node_mask: torch.Tensor) -> torch.Tensor:
         B = agg_per_atom.shape[0]
         Q = self.queries.unsqueeze(0).expand(B, -1, -1)
-        K = self.W_K(agg_per_atom)
-        V = self.W_V(agg_per_atom)
-        scores = torch.einsum("bac,bnc->ban", Q, K) / self.scale
+        scores = torch.einsum("bac,bnc->ban", Q, agg_per_atom) / self.scale
         scores = scores.masked_fill(~node_mask.unsqueeze(1), float("-inf"))
         alpha = torch.softmax(scores, dim=-1)
-        return torch.einsum("ban,bnc->bac", alpha, V)
+        return torch.einsum("ban,bnc->bac", alpha, agg_per_atom)
 
 class IrrepLinear(nn.Module):
     def __init__(self, channels, nonlinearity: str = "linear"):
