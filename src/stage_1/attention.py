@@ -180,10 +180,8 @@ class MasterNodeAttention(nn.Module):
         self.pw_e_cutoff = pw_e_cutoff
         self.alpha_floor = alpha_floor
 
-        self.W_Q = high_ord_ffn(feature_dim, hidden_dim, 1)
+        self.W_QK = BatchedHighOrdFFN(feature_dim, hidden_dim, degree=1, n_copies=2)
         self.w_vq_norm = EquivariantRMSNorm(feature_dim, 1)
-
-        self.W_K = high_ord_ffn(feature_dim, hidden_dim, 1)
         self.w_vk_norm = EquivariantRMSNorm(feature_dim, 1)
 
         self.W_V0 = nn.Sequential(
@@ -214,6 +212,14 @@ class MasterNodeAttention(nn.Module):
         self._diag_Z_min: Optional[float] = None
         self._diag_ipr: Optional[torch.Tensor] = None
 
+    def qk_pre_norm(self, g_a: torch.Tensor, f_in0: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        N_a, N = g_a.shape[1], f_in0.shape[1]
+        M = max(N_a, N)
+        g_a_padded = F.pad(g_a, (0, 0, 0, 0, 0, M - N_a)) if M > N_a else g_a
+        f_in0_padded = F.pad(f_in0, (0, 0, 0, 0, 0, M - N)) if M > N else f_in0
+        qk_out = self.W_QK(torch.stack([g_a_padded, f_in0_padded], dim=1))
+        return qk_out[:, 0, :N_a], qk_out[:, 1, :N]
+
     def forward(
         self,
         g_a:       torch.Tensor,
@@ -233,8 +239,9 @@ class MasterNodeAttention(nn.Module):
         B, N_a, C, _ = g_a.shape
         m = node_mask.to(x.dtype)
 
-        Q = self.w_vq_norm(self.W_Q(g_a)).squeeze(-1)
-        K = self.w_vk_norm(self.W_K(f_in0)).squeeze(-1)
+        Q_pre_norm, K_pre_norm = self.qk_pre_norm(g_a, f_in0)
+        Q = self.w_vq_norm(Q_pre_norm).squeeze(-1)
+        K = self.w_vk_norm(K_pre_norm).squeeze(-1)
         phi_Q = F.elu(Q) + 1
         phi_K = (F.elu(K) + 1) * m.unsqueeze(-1)
 

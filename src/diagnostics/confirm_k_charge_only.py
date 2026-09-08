@@ -19,8 +19,8 @@ def main() -> None:
     charges = torch.cat([torch.ones(N // 2), -torch.ones(N // 2)]).unsqueeze(0) 
     positions = torch.rand(1, N, 3) * 20.0 
 
-    f_in0 = embed(charges)  
-    K_pre_norm = module.W_K(f_in0)
+    f_in0 = embed(charges)
+    _, K_pre_norm = module.qk_pre_norm(torch.zeros(1, 1, feature_dim, 1), f_in0)
     K_post_norm = module.w_vk_norm(K_pre_norm)
     phi_K = F.elu(K_post_norm.squeeze(-1)) + 1 
 

@@ -55,7 +55,7 @@ def build_optimizer(model: torch.nn.Module, lr: float, qk_gamma_wd: float) -> to
     decay_params, other_params = [], []
     for name, p in model.named_parameters():
         if (name.endswith("w_vq_norm.gamma") or name.endswith("w_vk_norm.gamma")
-                or name.startswith("master_attn.W_Q.") or name.startswith("master_attn.W_K.")
+                or name.startswith("master_attn.W_QK.")
                 or name.endswith("s_ri_norm.weight")):
             decay_params.append(p)
         else:

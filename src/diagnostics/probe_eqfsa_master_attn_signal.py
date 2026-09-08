@@ -42,12 +42,11 @@ def instrumented_master_node_attn_forward(
     B, N_a, C, _ = g_a.shape
     m = node_mask.to(x.dtype)
 
-    Q_pre_norm = module.W_Q(g_a)
+    Q_pre_norm, K_pre_norm = module.qk_pre_norm(g_a, f_in0)
     Q_post_norm = module.w_vq_norm(Q_pre_norm)
     Q = Q_post_norm.squeeze(-1)
     diag["Q_pre_norm"], diag["Q_post_norm"] = Q_pre_norm.detach(), Q_post_norm.detach()
 
-    K_pre_norm = module.W_K(f_in0)
     K_post_norm = module.w_vk_norm(K_pre_norm)
     K = K_post_norm.squeeze(-1)
     diag["K_pre_norm"], diag["K_post_norm"] = K_pre_norm.detach(), K_post_norm.detach()

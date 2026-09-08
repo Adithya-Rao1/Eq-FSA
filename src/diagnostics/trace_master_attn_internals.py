@@ -98,8 +98,9 @@ def trace_master_attn_internals(model, dataset, label: str, decouple_ri_norm: bo
             ma = layer.master_attn
             f_in0 = f_in[0]
 
-            Q = ma.w_vq_norm(ma.W_Q(g_a)).squeeze(-1)
-            K = ma.w_vk_norm(ma.W_K(f_in0)).squeeze(-1)
+            Q_pre_norm, K_pre_norm = ma.qk_pre_norm(g_a, f_in0)
+            Q = ma.w_vq_norm(Q_pre_norm).squeeze(-1)
+            K = ma.w_vk_norm(K_pre_norm).squeeze(-1)
             phi_Q = F.elu(Q) + 1
             phi_K = (F.elu(K) + 1) * m.unsqueeze(-1)
             report(f"    phi_Q", phi_Q.reshape(B, -1))

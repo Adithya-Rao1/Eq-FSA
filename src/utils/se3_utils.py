@@ -624,6 +624,75 @@ class BatchedEquivariantRMSNorm(nn.Module):
 
         return {d: dirs[i] * target[i].unsqueeze(-1) for i, d in enumerate(self.degrees)}
 
+
+class BatchedHighOrdFFN(nn.Module):
+    def __init__(
+        self, feature_dim: int, hidden_dim: int, degree: int, n_copies: int,
+        floor: float = 0.5, eps: float = 1e-8,
+    ):
+        super().__init__()
+        self.degree = degree
+        self.floor = floor
+        self.eps = eps
+        self.n_copies = n_copies
+
+        templates = [high_ord_ffn(feature_dim, hidden_dim, degree) for _ in range(n_copies)]
+
+        def stack_rms(idx):
+            return nn.Parameter(torch.stack([t[idx].gamma.detach().clone() for t in templates]))
+
+        def stack_lin(idx):
+            return nn.Parameter(torch.stack([t[idx].weight.weight.detach().clone() for t in templates]))
+
+        def stack_gate(idx):
+            w = nn.Parameter(torch.stack([t[idx].gate_lin.weight.detach().clone() for t in templates]))
+            b = nn.Parameter(torch.stack([t[idx].gate_lin.bias.detach().clone() for t in templates]))
+            return w, b
+
+        self.gamma0 = stack_rms(0)
+        self.W1 = stack_lin(1)
+        self.gamma1 = stack_rms(2)
+        self.gate_w1, self.gate_b1 = stack_gate(3)
+        self.W2 = stack_lin(4)
+        self.gamma2 = stack_rms(5)
+        self.gate_w2, self.gate_b2 = stack_gate(6)
+        self.W3 = stack_lin(7)
+        self.gamma3 = stack_rms(8)
+        self.gate_w3, self.gate_b3 = stack_gate(9)
+        self.W4 = stack_lin(10)
+
+    def _rms(self, x: torch.Tensor, gamma: torch.Tensor) -> torch.Tensor:
+        floor = 0.0 if self.degree == 0 else self.floor
+        norm, x_dir = straight_through_norm_and_direction(x, dim=-1, floor=floor)
+        rms = norm.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
+        target = (norm / rms) * gamma.view(1, self.n_copies, 1, -1)
+        return x_dir * target.unsqueeze(-1)
+
+    def _lin(self, x: torch.Tensor, W: torch.Tensor) -> torch.Tensor:
+        return torch.einsum("doi,bdnim->bdnom", W, x)
+
+    def _gate(self, x: torch.Tensor, w: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        norm = straight_through_norm(x, dim=-1, floor=self.floor)
+        gate_pre = torch.einsum("doi,bdni->bdno", w, norm) + b.view(1, self.n_copies, 1, -1)
+        gate = torch.tanh(gate_pre)
+        return x * gate.unsqueeze(-1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, n_copies, M, feature_dim, 2*degree+1)."""
+        x = self._rms(x, self.gamma0)
+        x = self._lin(x, self.W1)
+        x = self._rms(x, self.gamma1)
+        x = self._gate(x, self.gate_w1, self.gate_b1)
+        x = self._lin(x, self.W2)
+        x = self._rms(x, self.gamma2)
+        x = self._gate(x, self.gate_w2, self.gate_b2)
+        x = self._lin(x, self.W3)
+        x = self._rms(x, self.gamma3)
+        x = self._gate(x, self.gate_w3, self.gate_b3)
+        x = self._lin(x, self.W4)
+        return x
+
+
 def cg_for_J(l: int, k: int, J: int) -> torch.Tensor:
     return clebsch_gordan_matrix(l, k)[J]
 
