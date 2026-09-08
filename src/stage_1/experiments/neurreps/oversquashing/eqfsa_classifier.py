@@ -28,9 +28,9 @@ class EqFSAClassifier(nn.Module):
         multi_layer_readout: bool = True,
         normalize_z_by_n_real: bool = True,
         decouple_ri_norm: bool = True,
-        deterministic_pool_agg: bool = False,
-        attention_pool: bool = False,
-        skip_master_expand_norm: bool = False,
+        deterministic_pool_agg: bool = True,
+        attention_pool: bool = True,
+        skip_master_expand_norm: bool = True,
     ):
         super().__init__()
         self.multi_layer_readout = multi_layer_readout
