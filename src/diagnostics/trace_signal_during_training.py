@@ -41,7 +41,17 @@ def snapshot(model, dataset, label: str):
     agg_per_atom = em.master_pool_agg(f0[0], f0[1], f0[2]).squeeze(-1)
     report("  agg_per_atom @ label atom (pre-pool)", agg_per_atom[batch_ar, label_idx_t])
     if em.attention_pool:
-        g_a_pre_norm = em.pool_expand(agg_per_atom, node_mask).unsqueeze(-1)
+        pe = em.pool_expand
+        Q_pool = pe.queries.unsqueeze(0).expand(B, -1, -1)
+        scores = torch.einsum("bac,bnc->ban", Q_pool, agg_per_atom) / pe.scale
+        scores = scores.masked_fill(~node_mask.unsqueeze(1), float("-inf"))
+        alpha = torch.softmax(scores, dim=-1)
+        top_idx = alpha.argmax(dim=-1)
+        top_val = alpha.max(dim=-1).values
+        for a in range(pe.n_master_nodes):
+            pairs = [f"c{c}->atom{top_idx[c,a].item()}({top_val[c,a].item():.2f})" for c in range(B)]
+            print(f"    pool attn master node {a}: {pairs}  (label_idx={dataset.label_idx})")
+        g_a_pre_norm = torch.einsum("ban,bnc->bac", alpha, agg_per_atom).unsqueeze(-1)
         report("  g_a (post attention pool_expand, pre-norm)", g_a_pre_norm.reshape(B, -1))
     else:
         mean_pooled = masked_mean(agg_per_atom, node_mask)
