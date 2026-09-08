@@ -474,6 +474,24 @@ class AttentionPoolExpand(nn.Module):
         alpha = torch.softmax(scores, dim=-1)
         return torch.einsum("ban,bnc->bac", alpha, agg_per_atom)
 
+class ContentWeightedCOM(nn.Module):
+    def __init__(self, feature_dim: int, hidden_dim: int):
+        super().__init__()
+        self.score = nn.Sequential(
+            nn.RMSNorm(feature_dim),
+            nn.Linear(feature_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 1, bias=False),
+        )
+        init_sequential_(self.score, "silu")
+
+    def forward(self, f0_raw: torch.Tensor, x: torch.Tensor, node_mask: torch.Tensor) -> torch.Tensor:
+        logits = self.score(f0_raw).squeeze(-1)
+        logits = logits.masked_fill(~node_mask, float("-inf"))
+        weights = torch.softmax(logits, dim=-1)
+        return torch.einsum("bn,bni->bi", weights, x)
+
+
 class IrrepLinear(nn.Module):
     def __init__(self, channels, nonlinearity: str = "linear"):
         super().__init__()

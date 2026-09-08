@@ -233,6 +233,7 @@ class MasterNodeAttention(nn.Module):
         node_conditioned_k: bool = False,
         normalize_z_by_n_real: bool = False,
         decouple_ri_norm: bool = False,
+        imaginary_only_ri: bool = False,
         kvecs: Optional[torch.Tensor] = None,
         mode_mask: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
@@ -306,8 +307,11 @@ class MasterNodeAttention(nn.Module):
             raw_S_im0 = torch.einsum("bgc,bgnd,bgm->bmcnd", phi_K_use, V_proj0, sin_g)
         raw_S_ri = torch.cat([raw_S_re0, raw_S_im0], dim=-2)
         if return_scale_feat:
-            raw_S_ri_mag = raw_S_ri.norm(dim=-2)
-        if decouple_ri_norm:
+            raw_S_ri_mag = raw_S_im0.norm(dim=-2) if imaginary_only_ri else raw_S_ri.norm(dim=-2)
+        if imaginary_only_ri:
+            S_im0 = self.s_im_norm(raw_S_im0.transpose(-1, -2)).transpose(-1, -2)
+            S_re0 = torch.zeros_like(S_im0)
+        elif decouple_ri_norm:
             S_re0 = self.s_re_norm(raw_S_re0.transpose(-1, -2)).transpose(-1, -2)
             S_im0 = self.s_im_norm(raw_S_im0.transpose(-1, -2)).transpose(-1, -2)
         else:

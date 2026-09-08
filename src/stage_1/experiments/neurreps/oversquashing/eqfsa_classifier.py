@@ -27,11 +27,13 @@ class EqFSAClassifier(nn.Module):
         grad_checkpoint: bool = False,
         multi_layer_readout: bool = True,
         normalize_z_by_n_real: bool = True,
-        decouple_ri_norm: bool = True,
+        decouple_ri_norm: bool = False,
+        imaginary_only_ri: bool = True,
         deterministic_pool_agg: bool = True,
         attention_pool: bool = True,
         skip_master_expand_norm: bool = True,
         static_box: bool = True,
+        content_weighted_com: bool = True,
     ):
         super().__init__()
         self.multi_layer_readout = multi_layer_readout
@@ -52,10 +54,12 @@ class EqFSAClassifier(nn.Module):
             normalize_z_by_n_real=normalize_z_by_n_real,
             grad_checkpoint=grad_checkpoint,
             decouple_ri_norm=decouple_ri_norm,
+            imaginary_only_ri=imaginary_only_ri,
             deterministic_pool_agg=deterministic_pool_agg,
             attention_pool=attention_pool,
             skip_master_expand_norm=skip_master_expand_norm,
             static_box=static_box,
+            content_weighted_com=content_weighted_com,
         )
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)

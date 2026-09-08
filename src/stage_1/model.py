@@ -115,6 +115,7 @@ class EnergyLayer(nn.Module):
         k_max: int = 0, edge_feat_dim: int = 8, ablate_max_degree: Optional[int] = None,
         ablate_lr: bool = False, normalize_z_by_n_real: bool = False,
         decouple_ri_norm: bool = False,
+        imaginary_only_ri: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -126,6 +127,7 @@ class EnergyLayer(nn.Module):
         self.ablate_lr = ablate_lr
         self.normalize_z_by_n_real = normalize_z_by_n_real
         self.decouple_ri_norm = decouple_ri_norm
+        self.imaginary_only_ri = imaginary_only_ri
         self.sr_attn = SRAttention(
             radial_net, max_degree, feature_dim, hidden_dim, k_max=k_max, edge_feat_dim=edge_feat_dim,
         )
@@ -210,6 +212,7 @@ class EnergyLayer(nn.Module):
             normalize_z_by_n_real=self.normalize_z_by_n_real,
             return_scale_feat=return_scale_feat,
             decouple_ri_norm=self.decouple_ri_norm,
+            imaginary_only_ri=self.imaginary_only_ri,
             kvecs=kvecs, mode_mask=mode_mask,
         )
         scale_feat = None
@@ -261,10 +264,12 @@ class EnergyModel(nn.Module):
         grad_checkpoint: bool = False,
         normalize_z_by_n_real: bool = False,
         decouple_ri_norm: bool = False,
+        imaginary_only_ri: bool = False,
         deterministic_pool_agg: bool = False,
         attention_pool: bool = False,
         skip_master_expand_norm: bool = False,
         static_box: bool = False,
+        content_weighted_com: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -275,6 +280,8 @@ class EnergyModel(nn.Module):
         self._cached_effective_cutoff: Optional[torch.Tensor] = None
         self._cached_kvecs: Optional[torch.Tensor] = None
         self._cached_mode_mask: Optional[torch.Tensor] = None
+        self.content_weighted_com = content_weighted_com
+        self.com_weighting = ContentWeightedCOM(feature_dim, hidden_dim) if content_weighted_com else None
 
         self.max_degree = max_degree
         self.task       = task
@@ -284,6 +291,7 @@ class EnergyModel(nn.Module):
         self.grad_checkpoint = grad_checkpoint
         self.normalize_z_by_n_real = normalize_z_by_n_real
         self.decouple_ri_norm = decouple_ri_norm
+        self.imaginary_only_ri = imaginary_only_ri
         self.attention_pool = attention_pool
 
         self.input_embedding = nn.Embedding(num_atom_types, feature_dim)
@@ -329,6 +337,7 @@ class EnergyModel(nn.Module):
                 ablate_max_degree=ablate_max_degree, ablate_lr=ablate_lr,
                 normalize_z_by_n_real=normalize_z_by_n_real,
                 decouple_ri_norm=decouple_ri_norm,
+                imaginary_only_ri=imaginary_only_ri,
             )
             for m in range(num_layers)
         ])
@@ -403,7 +412,10 @@ class EnergyModel(nn.Module):
         f0: Dict[int, torch.Tensor] = {0: f0_raw.unsqueeze(-1), 1: seeded[1], 2: seeded[2]}
         f: Dict[int, torch.Tensor] = dict(f0)
 
-        x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask)
+        if self.content_weighted_com:
+            x_com = self.com_weighting(f0_raw, x_wrapped, node_mask)
+        else:
+            x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask)
 
         effective_cutoff, kvecs, mode_mask = self._box_derived_quantities(V, B)
 
