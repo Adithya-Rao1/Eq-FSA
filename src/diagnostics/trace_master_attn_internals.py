@@ -71,28 +71,28 @@ def trace_master_attn_internals(model, dataset, label: str, decouple_ri_norm: bo
             x_rel_e = x_wrapped[edge_b, edge_j] - x_wrapped[edge_b, edge_i]
             edge_feat_e = edge_feats[edge_b, edge_i, edge_j]
 
-            f_in = {l: layer.layer_norm_in[str(l)](f[l]) for l in f}
+            f_in = layer.layer_norm_in(f)
             f_in_i_e = {k: f_in[k][edge_b, edge_i] for k in range(layer.k_max + 1)}
             f0_j_e = {k: f0[k][edge_b, edge_j] for k in range(layer.k_max + 1)}
             alpha_e, Wv_j_sr_flat = layer.sr_attn(
                 f_in_i_e, f0_j_e, x_rel_e, edge_feat_e, edge_b, edge_i, batch_size=B_, num_atoms=N,
             )
             receiver_flat = edge_b * N + edge_i
-            f_out = {}
+            self_terms_raw = {l: layer.W_V_self_linear[str(l)](f_in[l]) for l in range(layer.max_degree + 1)}
+            self_terms = layer.W_V_self_norm(self_terms_raw)
+            neighbor_raws = {}
             for l in range(layer.max_degree + 1):
-                if l not in f_in:
-                    continue
                 C = f_in[l].shape[2]
-                self_term = layer.W_V_self[str(l)](f_in[l])
                 contrib_e = alpha_e.view(-1, 1, 1) * Wv_j_sr_flat[l]
-                neighbor_raw = torch.zeros(B_ * N, C, 2 * l + 1, device=x.device, dtype=x.dtype).scatter_add(
+                neighbor_raws[l] = torch.zeros(B_ * N, C, 2 * l + 1, device=x.device, dtype=x.dtype).scatter_add(
                     0, receiver_flat.view(-1, 1, 1).expand(-1, C, 2 * l + 1), contrib_e,
                 ).view(B_, N, C, 2 * l + 1)
-                neighbor_term = layer.sigma_gate[str(l)](neighbor_raw)
-                f_out[l] = layer.layer_norm_mid[str(l)](f_in[l] + self_term + neighbor_term)
+            neighbor_terms = layer.sigma_gate(neighbor_raws)
+            pre_mid = {l: f_in[l] + self_terms[l] + neighbor_terms[l] for l in range(layer.max_degree + 1)}
+            f_out = layer.layer_norm_mid(pre_mid)
             f_next = layer.readout(f_out)
-            for l in range(layer.max_degree + 1):
-                f_next[l] = layer.layer_norm_out[str(l)](f_next[l] + f_out[l])
+            pre_out = {l: f_next[l] + f_out[l] for l in range(layer.max_degree + 1)}
+            f_next = layer.layer_norm_out(pre_out)
 
             # --- mirror MasterNodeAttention.forward, instrumented ---
             ma = layer.master_attn

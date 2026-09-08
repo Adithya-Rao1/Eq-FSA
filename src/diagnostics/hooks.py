@@ -118,16 +118,15 @@ def _instrumented_submodules(model: SPICEEnergyForceModel):
     for i, layer in enumerate(em.layers):
         yield layer.sr_attn, f"layer{i}.sr_attn"
         yield layer.sr_attn.psi_e, f"layer{i}.sr_attn.psi_e"
-        for k, mod in layer.sr_attn.pair_readout.items():
-            yield mod, f"layer{i}.sr_attn.pair_readout[{k}]"
+        yield layer.sr_attn.pair_readout, f"layer{i}.sr_attn.pair_readout"
         for lk_key, rnet in layer.sr_attn.radial_V_sr.items():
             yield rnet, f"layer{i}.sr_attn.radial_V_sr[{lk_key}]"
         yield layer.master_attn, f"layer{i}.master_attn"
         yield layer.master_ln, f"layer{i}.master_ln"
-        yield layer.W_V_self["1"], f"layer{i}.W_V_self[1]"
-        yield layer.sigma_gate["1"], f"layer{i}.sigma_gate[1]"
-        for l, ln_mod in layer.layer_norm_in.items():
-            yield ln_mod, f"layer{i}.layer_norm_in[{l}]"
+        yield layer.W_V_self_linear["1"], f"layer{i}.W_V_self_linear[1]"
+        yield layer.W_V_self_norm, f"layer{i}.W_V_self_norm"
+        yield layer.sigma_gate, f"layer{i}.sigma_gate"
+        yield layer.layer_norm_in, f"layer{i}.layer_norm_in"
         yield layer.readout.ffn0, f"layer{i}.readout.ffn0"
         yield layer.readout.ffn1, f"layer{i}.readout.ffn1"
         yield layer.readout.ffn2, f"layer{i}.readout.ffn2"

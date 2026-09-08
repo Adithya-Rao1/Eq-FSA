@@ -522,6 +522,25 @@ class GatedNonlinearity(nn.Module):
         gate = torch.tanh(self.gate_lin(norm))
         return x * gate.unsqueeze(-1)
 
+
+class BatchedGatedNonlinearity(nn.Module):
+    def __init__(self, num_channels: int, degrees: list, floor: float = 0.5):
+        super().__init__()
+        self.degrees = list(degrees)
+        self.floor = floor
+        templates = [GatedNonlinearity(num_channels, floor=floor) for _ in self.degrees]
+        self.W_gate = nn.Parameter(torch.stack([t.gate_lin.weight.detach().clone() for t in templates]))
+        self.b_gate = nn.Parameter(torch.stack([t.gate_lin.bias.detach().clone() for t in templates]))
+
+    def forward(self, x: Dict[int, torch.Tensor]) -> Dict[int, torch.Tensor]:
+        norms = [straight_through_norm(x[d], dim=-1, floor=self.floor) for d in self.degrees]
+        norm_stack = torch.stack(norms, dim=0)
+        lead_shape = norm_stack.shape[1:-1]
+        flat = norm_stack.reshape(len(self.degrees), -1, norm_stack.shape[-1])
+        gate_flat = torch.einsum("doc,dnc->dno", self.W_gate, flat) + self.b_gate.unsqueeze(1)
+        gate = torch.tanh(gate_flat).reshape(len(self.degrees), *lead_shape, -1)
+        return {d: x[d] * gate[i].unsqueeze(-1) for i, d in enumerate(self.degrees)}
+
 class EquivariantNormReadout(nn.Module):
     def __init__(self, C: int, hidden: int = 64, floor: float = 0.5, out_dim: int | None = None):
         super().__init__()
@@ -580,8 +599,32 @@ class EquivariantRMSNorm(nn.Module):
             target = (norm / rms) * self.gamma
             return x_dir * target.unsqueeze(-1)
 
+
+class BatchedEquivariantRMSNorm(nn.Module):
+    def __init__(self, num_channels: int, degrees: list, eps: float = 1e-8, floor: float = 0.5):
+        super().__init__()
+        self.degrees = list(degrees)
+        self.eps = eps
+        self.floor = floor
+        templates = [EquivariantRMSNorm(num_channels, degree=d, eps=eps, floor=floor) for d in self.degrees]
+        self.gamma = nn.Parameter(torch.stack([t.gamma.detach().clone() for t in templates]))
+
+    def forward(self, x: Dict[int, torch.Tensor]) -> Dict[int, torch.Tensor]:
+        norms, dirs = [], []
+        for d in self.degrees:
+            floor_d = 0.0 if d == 0 else self.floor
+            norm_d, dir_d = straight_through_norm_and_direction(x[d], dim=-1, floor=floor_d)
+            norms.append(norm_d)
+            dirs.append(dir_d)
+
+        norm_stack = torch.stack(norms, dim=0)
+        rms = norm_stack.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
+        gamma_view = self.gamma.view(len(self.degrees), *([1] * (norm_stack.dim() - 2)), -1)
+        target = (norm_stack / rms) * gamma_view
+
+        return {d: dirs[i] * target[i].unsqueeze(-1) for i, d in enumerate(self.degrees)}
+
 def cg_for_J(l: int, k: int, J: int) -> torch.Tensor:
-    """Return the CG matrix for a single J from the cached dict."""
     return clebsch_gordan_matrix(l, k)[J]
 
 def equivariant_weight_single_J(

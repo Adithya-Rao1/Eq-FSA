@@ -130,34 +130,20 @@ class EnergyLayer(nn.Module):
             radial_net, max_degree, feature_dim, hidden_dim, k_max=k_max, edge_feat_dim=edge_feat_dim,
         )
 
-        self.W_V_self = nn.ModuleDict({
-            str(l): nn.Sequential(
-                EquivariantLinear(feature_dim, feature_dim),
-                EquivariantRMSNorm(feature_dim, 1)
-            )
+        self.W_V_self_linear = nn.ModuleDict({
+            str(l): EquivariantLinear(feature_dim, feature_dim)
             for l in range(max_degree + 1)
         })
-        self.sigma_gate = nn.ModuleDict({
-            str(l): GatedNonlinearity(feature_dim)
-            for l in range(max_degree + 1)
-        })
+        self.W_V_self_norm = BatchedEquivariantRMSNorm(feature_dim, degrees=list(range(max_degree + 1)))
+        self.sigma_gate = BatchedGatedNonlinearity(feature_dim, degrees=list(range(max_degree + 1)))
 
         self.W_master_self = IrrepLinear(feature_dim)
         self.master_attn = MasterNodeAttention(feature_dim, n_max, pw_e_cutoff, hidden_dim)
         self.master_ln = EquivariantRMSNorm(feature_dim, degree=0)
 
-        self.layer_norm_in = nn.ModuleDict({
-            str(l): EquivariantRMSNorm(feature_dim, degree=l)
-            for l in range(max_degree + 1)
-        })
-        self.layer_norm_mid = nn.ModuleDict({
-            str(l): EquivariantRMSNorm(feature_dim, degree=l)
-            for l in range(max_degree + 1)
-        })
-        self.layer_norm_out = nn.ModuleDict({
-            str(l): EquivariantRMSNorm(feature_dim, degree=l)
-            for l in range(max_degree + 1)
-        })
+        self.layer_norm_in = BatchedEquivariantRMSNorm(feature_dim, degrees=list(range(max_degree + 1)))
+        self.layer_norm_mid = BatchedEquivariantRMSNorm(feature_dim, degrees=list(range(max_degree + 1)))
+        self.layer_norm_out = BatchedEquivariantRMSNorm(feature_dim, degrees=list(range(max_degree + 1)))
 
         self.readout = Readout(feature_dim, hidden_dim)
 
@@ -183,7 +169,7 @@ class EnergyLayer(nn.Module):
     ) -> Tuple[Dict[int, torch.Tensor], torch.Tensor]:
         B, N, _ = x_wrapped.shape
 
-        f_in = {l: self.layer_norm_in[str(l)](f_in[l]) for l in f_in}
+        f_in = self.layer_norm_in(f_in)
 
         f_in_i_e = {k: f_in[k][edge_b, edge_i] for k in range(self.k_max + 1)}
         f0_j_e   = {k: f0[k][edge_b, edge_j]   for k in range(self.k_max + 1)}
@@ -195,28 +181,29 @@ class EnergyLayer(nn.Module):
         receiver_flat = edge_b * N + edge_i
 
         # Final local features
-        f_out: Dict[int, torch.Tensor] = {}
-        for l in range(self.max_degree + 1):
-            if l not in f_in:
-                continue
-            C = f_in[l].shape[2]
-            self_term = self.W_V_self[str(l)](f_in[l])
+        self_terms_raw = {l: self.W_V_self_linear[str(l)](f_in[l]) for l in range(self.max_degree + 1)}
+        self_terms = self.W_V_self_norm(self_terms_raw)
 
+        neighbor_raws: Dict[int, torch.Tensor] = {}
+        for l in range(self.max_degree + 1):
+            C = f_in[l].shape[2]
             contrib_e    = alpha_e.view(-1, 1, 1) * Wv_j_sr_flat[l]
-            neighbor_raw = torch.zeros(
+            neighbor_raws[l] = torch.zeros(
                 B * N, C, 2 * l + 1, device=x_wrapped.device, dtype=x_wrapped.dtype,
             ).scatter_add(
                 0, receiver_flat.view(-1, 1, 1).expand(-1, C, 2 * l + 1), contrib_e,
             ).view(B, N, C, 2 * l + 1)
-            neighbor_term = self.sigma_gate[str(l)](neighbor_raw)
+        neighbor_terms = self.sigma_gate(neighbor_raws)
 
-            f_out[l] = self.layer_norm_mid[str(l)](f_in[l] + self_term + neighbor_term)
+        pre_mid = {l: f_in[l] + self_terms[l] + neighbor_terms[l] for l in range(self.max_degree + 1)}
+        f_out = self.layer_norm_mid(pre_mid)
+        for l in range(self.max_degree + 1):
             if self.ablate_max_degree is not None and l > self.ablate_max_degree:
                 f_out[l] = torch.zeros_like(f_out[l])
 
         f = self.readout(f_out)
-        for l in range(self.max_degree + 1):
-            f[l] = self.layer_norm_out[str(l)](f[l] + f_out[l])
+        pre_out = {l: f[l] + f_out[l] for l in range(self.max_degree + 1)}
+        f = self.layer_norm_out(pre_out)
 
         master_attn_result = self.master_attn(
             g_a_in, f_in[0], x_wrapped, x_com, node_mask,
