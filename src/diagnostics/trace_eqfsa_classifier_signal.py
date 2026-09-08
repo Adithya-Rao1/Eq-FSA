@@ -26,12 +26,15 @@ def build_dataset(topology="chain", r=2, classes=CLASSES, samples=60, seed=0, re
     raise RuntimeError("no safe seed found")
 
 
-def build_model(zero_init_head: bool = True) -> EqFSAClassifier:
+def build_model(
+    zero_init_head: bool = True, deterministic_pool_agg: bool = False, attention_pool: bool = False,
+) -> EqFSAClassifier:
     torch.manual_seed(123)
     model = EqFSAClassifier(
         radial_net=RadialNetwork, num_atom_types=3, max_degree=2, num_layers=4,
         feature_dim=FEATURE_DIM, hidden_dim=HIDDEN_DIM, edge_cutoff=CUTOFF, n_max=1,
         classes=CLASSES, edge_feat_dim=GRAPH_EDGE_FEAT_DIM,
+        deterministic_pool_agg=deterministic_pool_agg, attention_pool=attention_pool,
     )
     if zero_init_head:
         with torch.no_grad():

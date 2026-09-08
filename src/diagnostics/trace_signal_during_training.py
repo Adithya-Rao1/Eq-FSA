@@ -40,12 +40,16 @@ def snapshot(model, dataset, label: str):
     label_idx_t = torch.full((B,), dataset.label_idx, dtype=torch.long)
     agg_per_atom = em.master_pool_agg(f0[0], f0[1], f0[2]).squeeze(-1)
     report("  agg_per_atom @ label atom (pre-pool)", agg_per_atom[batch_ar, label_idx_t])
-    mean_pooled = masked_mean(agg_per_atom, node_mask)
-    report("  mean_pooled (post masked_mean, pre-FFN)", mean_pooled)
-    pooled = em.master_pool_ffn(mean_pooled)
-    report("  pooled (post master_pool_ffn)", pooled)
-    g_a_pre_norm = em.master_expand(pooled).view(B, em.n_master_nodes, -1).unsqueeze(-1)
-    report("  g_a (post master_expand, pre-norm)", g_a_pre_norm.reshape(B, -1))
+    if em.attention_pool:
+        g_a_pre_norm = em.pool_expand(agg_per_atom, node_mask).unsqueeze(-1)
+        report("  g_a (post attention pool_expand, pre-norm)", g_a_pre_norm.reshape(B, -1))
+    else:
+        mean_pooled = masked_mean(agg_per_atom, node_mask)
+        report("  mean_pooled (post masked_mean, pre-FFN)", mean_pooled)
+        pooled = em.master_pool_ffn(mean_pooled)
+        report("  pooled (post master_pool_ffn)", pooled)
+        g_a_pre_norm = em.master_expand(pooled).view(B, em.n_master_nodes, -1).unsqueeze(-1)
+        report("  g_a (post master_expand, pre-norm)", g_a_pre_norm.reshape(B, -1))
     g_a = em.master_expand_norm(g_a_pre_norm)
     report("  g_a (pre-loop, post master_expand_norm)", g_a.reshape(B, -1))
 
@@ -103,10 +107,13 @@ def snapshot(model, dataset, label: str):
         g_a = g_a_out
 
 
-def main():
+def main(deterministic_pool_agg: bool = False, attention_pool: bool = False):
+    print(f"### deterministic_pool_agg={deterministic_pool_agg} attention_pool={attention_pool} ###")
     torch.manual_seed(0)
     dataset = build_dataset()
-    model = build_model(zero_init_head=True)
+    model = build_model(
+        zero_init_head=True, deterministic_pool_agg=deterministic_pool_agg, attention_pool=attention_pool,
+    )
     optimizer = build_optimizer(model, lr=1e-3, qk_gamma_wd=0.0, base_weight_decay=0.0)
 
     checkpoints = {0, 25, 50, 100, 150, 200, 300}
@@ -139,4 +146,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    main(
+        deterministic_pool_agg="--deterministic" in sys.argv,
+        attention_pool="--attention-pool" in sys.argv,
+    )

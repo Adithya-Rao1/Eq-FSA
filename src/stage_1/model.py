@@ -272,6 +272,8 @@ class EnergyModel(nn.Module):
         grad_checkpoint: bool = False,
         normalize_z_by_n_real: bool = False,
         decouple_ri_norm: bool = False,
+        deterministic_pool_agg: bool = False,
+        attention_pool: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -287,6 +289,7 @@ class EnergyModel(nn.Module):
         self.grad_checkpoint = grad_checkpoint
         self.normalize_z_by_n_real = normalize_z_by_n_real
         self.decouple_ri_norm = decouple_ri_norm
+        self.attention_pool = attention_pool
 
         self.input_embedding = nn.Embedding(num_atom_types, feature_dim)
         self.ln1             = nn.RMSNorm(feature_dim)
@@ -308,16 +311,20 @@ class EnergyModel(nn.Module):
        
         self.seed_radial_net = radial_net(num_basis=1, hidden_dim=hidden_dim)
 
-        self.master_pool_agg = AggregateFeatures(
-            out_feat_dim=feature_dim, inp_feat_dim=feature_dim, hidden_dim=hidden_dim,
+        self.master_pool_agg = (
+            DeterministicMeanAggregate() if deterministic_pool_agg else
+            AggregateFeatures(out_feat_dim=feature_dim, inp_feat_dim=feature_dim, hidden_dim=hidden_dim)
         )
-        self.master_pool_ffn = scalar_ffn(feature_dim, hidden_dim)
-        self.master_expand   = nn.Sequential(
-            nn.RMSNorm(feature_dim),
-            nn.LeakyReLU(),
-            nn.Linear(feature_dim, n_master_nodes * feature_dim)
-        )
-        init_sequential_(self.master_expand, "leaky_relu")
+        if attention_pool:
+            self.pool_expand = AttentionPoolExpand(feature_dim, n_master_nodes)
+        else:
+            self.master_pool_ffn = scalar_ffn(feature_dim, hidden_dim)
+            self.master_expand   = nn.Sequential(
+                nn.RMSNorm(feature_dim),
+                nn.LeakyReLU(),
+                nn.Linear(feature_dim, n_master_nodes * feature_dim)
+            )
+            init_sequential_(self.master_expand, "leaky_relu")
         self.master_expand_norm = EquivariantRMSNorm(feature_dim, degree=0)
 
         self.layers = nn.ModuleList([
@@ -394,8 +401,11 @@ class EnergyModel(nn.Module):
         kvecs, _, mode_mask = make_wavevectors(V, self.n_max, self.pw_e_cutoff)
 
         agg_per_atom = self.master_pool_agg(f0[0], f0[1], f0[2]).squeeze(-1)
-        pooled = self.master_pool_ffn(masked_mean(agg_per_atom, node_mask))
-        g_a = self.master_expand(pooled).view(B, self.n_master_nodes, -1).unsqueeze(-1)
+        if self.attention_pool:
+            g_a = self.pool_expand(agg_per_atom, node_mask).unsqueeze(-1)
+        else:
+            pooled = self.master_pool_ffn(masked_mean(agg_per_atom, node_mask))
+            g_a = self.master_expand(pooled).view(B, self.n_master_nodes, -1).unsqueeze(-1)
         g_a = self.master_expand_norm(g_a)
 
         layer_states = [] if return_layer_states else None

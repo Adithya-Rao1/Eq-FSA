@@ -441,6 +441,34 @@ class AggregateFeatures(nn.Module):
 
         return f_out
 
+class DeterministicMeanAggregate(nn.Module):
+    def forward(self, f0, f1, f2):
+        f0_inv = f0.squeeze(-1)
+        f1_inv = f1.norm(dim=-1)
+        f2_inv = f2.norm(dim=-1)
+        return ((f0_inv + f1_inv + f2_inv) / 3.0).unsqueeze(-1)
+
+class AttentionPoolExpand(nn.Module):
+    def __init__(self, feature_dim: int, n_master_nodes: int):
+        super().__init__()
+        self.n_master_nodes = n_master_nodes
+        self.queries = nn.Parameter(torch.randn(n_master_nodes, feature_dim) * (feature_dim ** -0.5))
+        self.W_K = nn.Linear(feature_dim, feature_dim, bias=False)
+        self.W_V = nn.Linear(feature_dim, feature_dim, bias=False)
+        init_linear_(self.W_K, "linear")
+        init_linear_(self.W_V, "linear")
+        self.scale = feature_dim ** 0.5
+
+    def forward(self, agg_per_atom: torch.Tensor, node_mask: torch.Tensor) -> torch.Tensor:
+        B = agg_per_atom.shape[0]
+        Q = self.queries.unsqueeze(0).expand(B, -1, -1)
+        K = self.W_K(agg_per_atom)
+        V = self.W_V(agg_per_atom)
+        scores = torch.einsum("bac,bnc->ban", Q, K) / self.scale
+        scores = scores.masked_fill(~node_mask.unsqueeze(1), float("-inf"))
+        alpha = torch.softmax(scores, dim=-1)
+        return torch.einsum("ban,bnc->bac", alpha, V)
+
 class IrrepLinear(nn.Module):
     def __init__(self, channels, nonlinearity: str = "linear"):
         super().__init__()
