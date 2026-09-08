@@ -166,9 +166,11 @@ def train_one_realization(
         variant, realized_r, classes, num_atom_types, config, avg_num_neighbors=avg_num_neighbors,
     ).to(device)
     embedding_module = model.input_embedding_module
-    if config.get("torch_compile") and variant == "eqfsa_full":
-        model = torch.compile(model, dynamic=True)
     optimizer = build_optimizer(model, config["lr"], config.get("qk_gamma_wd", 0.0))
+
+    train_model = model
+    if config.get("torch_compile") and variant == "eqfsa_full":
+        train_model = torch.compile(model, dynamic=True)
 
     log_every = config.get("log_every", 0)
     epoch_bar = tqdm(
@@ -181,7 +183,7 @@ def train_one_realization(
         for batch in train_loader:
             batch = _to_device(batch, device)
             optimizer.zero_grad()
-            logits = call_model(model, variant, batch)
+            logits = call_model(train_model, variant, batch)
             loss = F.cross_entropy(logits, batch["labels"])
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
