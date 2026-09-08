@@ -166,6 +166,8 @@ def train_one_realization(
         variant, realized_r, classes, num_atom_types, config, avg_num_neighbors=avg_num_neighbors,
     ).to(device)
     embedding_module = model.input_embedding_module
+    if config.get("torch_compile") and variant == "eqfsa_full":
+        model = torch.compile(model, dynamic=True)
     optimizer = build_optimizer(model, config["lr"], config.get("qk_gamma_wd", 0.0))
 
     log_every = config.get("log_every", 0)
@@ -336,6 +338,7 @@ def main():
     parser.add_argument("--csv-path", type=str, default=None)
     parser.add_argument("--device", type=str, default=None,)
     parser.add_argument("--smoke-test", action="store_true",)
+    parser.add_argument("--torch-compile", action="store_true",)
     args = parser.parse_args()
     config = vars(args)
     config["_device"] = detect_device(config["device"])
