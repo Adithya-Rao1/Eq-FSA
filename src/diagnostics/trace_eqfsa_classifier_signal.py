@@ -27,8 +27,8 @@ def build_dataset(topology="chain", r=2, classes=CLASSES, samples=60, seed=0, re
 
 
 def build_model(
-    zero_init_head: bool = True, deterministic_pool_agg: bool = False, attention_pool: bool = False,
-    skip_master_expand_norm: bool = False,
+    zero_init_head: bool = True, deterministic_pool_agg: bool = True, attention_pool: bool = True,
+    skip_master_expand_norm: bool = True,
 ) -> EqFSAClassifier:
     torch.manual_seed(123)
     model = EqFSAClassifier(
