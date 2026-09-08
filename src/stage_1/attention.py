@@ -384,8 +384,8 @@ class MasterFusionAttention(nn.Module):
 
             if num_pos > 0:
                 phi_kv = self.radial_KV[str(l)](r)
-                cg = clebsch_gordan_matrix(l, 0, dtype=x.dtype)
-                Q_J = cg[l].to(device=x.device, dtype=x.dtype)
+                cg = clebsch_gordan_matrix(l, 0, dtype=x.dtype, device=x.device)
+                Q_J = cg[l]
                 Y_J = get_spherical_harmonics(l, x_rel_flat)
                 QTY = torch.einsum("ji,ni->nj", Q_J, Y_J)
                 W_K = (phi_kv[0] * QTY).view(B, N, 2 * l + 1, 1)

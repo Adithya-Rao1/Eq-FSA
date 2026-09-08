@@ -81,17 +81,22 @@ def cartesian_quadrupole(n: torch.Tensor) -> torch.Tensor:
     Qyz = Y * Z
     return torch.stack([Qxx, Qxy, Qxz, Qyy, Qyz], dim=-1)
 
-def clebsch_gordan_matrix(l: int, k: int, dtype: torch.dtype = None) -> Dict[int, torch.Tensor]:
+def clebsch_gordan_matrix(
+    l: int, k: int, dtype: torch.dtype = None, device: torch.device = None,
+) -> Dict[int, torch.Tensor]:
     if dtype is None:
         dtype = torch.get_default_dtype()
-    key = (l, k, dtype)
+    key = (l, k, dtype, None if device is None else torch.device(device))
     if key in _CG_CACHE:
         return _CG_CACHE[key]
 
     result: Dict[int, torch.Tensor] = {}
     for J in range(abs(l - k), l + k + 1):
         w3j = o3.wigner_3j(l, k, J, dtype=dtype) * math.sqrt(2 * J + 1)
-        result[J] = w3j.reshape((2 * l + 1) * (2 * k + 1), 2 * J + 1)
+        w3j = w3j.reshape((2 * l + 1) * (2 * k + 1), 2 * J + 1)
+        if device is not None:
+            w3j = w3j.to(device=device)
+        result[J] = w3j
 
     _CG_CACHE[key] = result
     return result
@@ -213,7 +218,7 @@ def equivariant_weight_matrix(
         return W
 
     r  = x.norm(dim=-1, keepdim=True)
-    cg = clebsch_gordan_matrix(l, k, dtype=dtype)
+    cg = clebsch_gordan_matrix(l, k, dtype=dtype, device=device)
     Js = list(range(abs(l - k), l + k + 1))
 
     if isinstance(radial_net, BatchedRadialNetwork):
@@ -264,19 +269,25 @@ def apply_direct_sum_W(
         r = x.norm(dim=-1, keepdim=True)
         f_concat = torch.cat([f[k] for k in range(k_hi + 1)], dim=-1)
 
+        Y_cache: Dict[int, torch.Tensor] = {}
+        def get_Y(J: int) -> torch.Tensor:
+            if J not in Y_cache:
+                Y_cache[J] = get_spherical_harmonics(J, x)
+            return Y_cache[J]
+
         row_blocks = []
         for l in range(max_degree + 1):
             phi_all = radial_nets[str(l)](r) if N > 0 else None
             blocks = []
             idx = 0
             for k in range(k_hi + 1):
-                cg = clebsch_gordan_matrix(l, k, dtype=dtype)
+                cg = clebsch_gordan_matrix(l, k, dtype=dtype, device=device)
                 W_lk = torch.zeros(N, 2 * l + 1, 2 * k + 1, device=device, dtype=dtype)
                 for J in range(abs(l - k), l + k + 1):
                     if N > 0:
                         phi = phi_all[idx]
-                        Q_J = cg[J].to(device=device, dtype=dtype)
-                        Y_J = get_spherical_harmonics(J, x)
+                        Q_J = cg[J]
+                        Y_J = get_Y(J)
                         QTY = torch.einsum("ji,ni->nj", Q_J, Y_J)
                         W_lk = W_lk + (phi * QTY).view(N, 2 * l + 1, 2 * k + 1)
                     idx += 1
