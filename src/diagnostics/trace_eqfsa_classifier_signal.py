@@ -28,6 +28,7 @@ def build_dataset(topology="chain", r=2, classes=CLASSES, samples=60, seed=0, re
 
 def build_model(
     zero_init_head: bool = True, deterministic_pool_agg: bool = False, attention_pool: bool = False,
+    skip_master_expand_norm: bool = False,
 ) -> EqFSAClassifier:
     torch.manual_seed(123)
     model = EqFSAClassifier(
@@ -35,6 +36,7 @@ def build_model(
         feature_dim=FEATURE_DIM, hidden_dim=HIDDEN_DIM, edge_cutoff=CUTOFF, n_max=1,
         classes=CLASSES, edge_feat_dim=GRAPH_EDGE_FEAT_DIM,
         deterministic_pool_agg=deterministic_pool_agg, attention_pool=attention_pool,
+        skip_master_expand_norm=skip_master_expand_norm,
     )
     if zero_init_head:
         with torch.no_grad():

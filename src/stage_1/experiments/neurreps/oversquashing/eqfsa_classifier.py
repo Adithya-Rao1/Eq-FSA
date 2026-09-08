@@ -30,6 +30,7 @@ class EqFSAClassifier(nn.Module):
         decouple_ri_norm: bool = True,
         deterministic_pool_agg: bool = False,
         attention_pool: bool = False,
+        skip_master_expand_norm: bool = False,
     ):
         super().__init__()
         self.multi_layer_readout = multi_layer_readout
@@ -52,6 +53,7 @@ class EqFSAClassifier(nn.Module):
             decouple_ri_norm=decouple_ri_norm,
             deterministic_pool_agg=deterministic_pool_agg,
             attention_pool=attention_pool,
+            skip_master_expand_norm=skip_master_expand_norm,
         )
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)

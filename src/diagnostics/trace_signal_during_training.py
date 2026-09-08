@@ -52,6 +52,12 @@ def snapshot(model, dataset, label: str):
         report("  g_a (post master_expand, pre-norm)", g_a_pre_norm.reshape(B, -1))
     g_a = em.master_expand_norm(g_a_pre_norm)
     report("  g_a (pre-loop, post master_expand_norm)", g_a.reshape(B, -1))
+    if hasattr(em.master_expand_norm, "gamma"):
+        print(f"    ||master_expand_norm.gamma||={em.master_expand_norm.gamma.norm().item():.4f}")
+    pre_norm_per_class_mag = g_a_pre_norm.reshape(B, -1).norm(dim=-1)
+    mag_mean = pre_norm_per_class_mag.mean().item()
+    mag_cv = pre_norm_per_class_mag.std().item() / (mag_mean + 1e-12)
+    print(f"    g_a_pre_norm per-class magnitude: {pre_norm_per_class_mag.tolist()} (CV={mag_cv:.4%})")
 
     for i, layer in enumerate(em.layers):
         B_, N, _ = x.shape
@@ -107,12 +113,14 @@ def snapshot(model, dataset, label: str):
         g_a = g_a_out
 
 
-def main(deterministic_pool_agg: bool = False, attention_pool: bool = False):
-    print(f"### deterministic_pool_agg={deterministic_pool_agg} attention_pool={attention_pool} ###")
+def main(deterministic_pool_agg: bool = False, attention_pool: bool = False, skip_master_expand_norm: bool = False):
+    print(f"### deterministic_pool_agg={deterministic_pool_agg} attention_pool={attention_pool} "
+          f"skip_master_expand_norm={skip_master_expand_norm} ###")
     torch.manual_seed(0)
     dataset = build_dataset()
     model = build_model(
         zero_init_head=True, deterministic_pool_agg=deterministic_pool_agg, attention_pool=attention_pool,
+        skip_master_expand_norm=skip_master_expand_norm,
     )
     optimizer = build_optimizer(model, lr=1e-3, qk_gamma_wd=0.0, base_weight_decay=0.0)
 
@@ -150,4 +158,5 @@ if __name__ == "__main__":
     main(
         deterministic_pool_agg="--deterministic" in sys.argv,
         attention_pool="--attention-pool" in sys.argv,
+        skip_master_expand_norm="--skip-master-expand-norm" in sys.argv,
     )

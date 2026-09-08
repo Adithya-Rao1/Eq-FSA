@@ -274,6 +274,7 @@ class EnergyModel(nn.Module):
         decouple_ri_norm: bool = False,
         deterministic_pool_agg: bool = False,
         attention_pool: bool = False,
+        skip_master_expand_norm: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -325,7 +326,7 @@ class EnergyModel(nn.Module):
                 nn.Linear(feature_dim, n_master_nodes * feature_dim)
             )
             init_sequential_(self.master_expand, "leaky_relu")
-        self.master_expand_norm = EquivariantRMSNorm(feature_dim, degree=0)
+        self.master_expand_norm = nn.Identity() if skip_master_expand_norm else EquivariantRMSNorm(feature_dim, degree=0)
 
         self.layers = nn.ModuleList([
             EnergyLayer(
