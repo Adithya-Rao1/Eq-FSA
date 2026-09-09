@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from torch_geometric.nn.models import DimeNetPlusPlus
 
-def _radius_graph(
+def radius_graph(
     pos: torch.Tensor, r: float, batch: torch.Tensor, max_num_neighbors: int = 32,
 ) -> torch.Tensor:
     same_graph = batch.unsqueeze(0) == batch.unsqueeze(1)
@@ -86,7 +86,7 @@ class DimeNetPlusPlusClassifier(nn.Module):
         pos = x[mask]
         
         d = self.dimenet
-        edge_index = _radius_graph(pos, r=d.cutoff, batch=batch_vec, max_num_neighbors=d.max_num_neighbors)
+        edge_index = radius_graph(pos, r=d.cutoff, batch=batch_vec, max_num_neighbors=d.max_num_neighbors)
         i, j, idx_i, idx_j, idx_k, idx_kj, idx_ji = _triplets(edge_index, num_nodes=z.size(0))
 
         dist = (pos[i] - pos[j]).pow(2).sum(dim=-1).sqrt()
