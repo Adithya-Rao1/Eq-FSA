@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from oversquashing.dimenet_baseline import radius_graph
+from stage_1.experiments.neurreps.oversquashing.dimenet_baseline import radius_graph
 
 from nequip.data import AtomicDataDict
 from nequip.model import NequIPGNNModel
