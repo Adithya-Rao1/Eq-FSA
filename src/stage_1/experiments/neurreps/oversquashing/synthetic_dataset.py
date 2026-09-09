@@ -6,6 +6,7 @@ import torch
 from torch.utils.data import Dataset
 
 from utils.calc_props import _MOL_FEAT_DIM, _MOL_FEAT_NAMES
+from utils.pw_bases import compute_molecular_box
 
 from stage_1.experiments.neurreps.oversquashing.synthetic_geometry import (
     DEFAULT_CUTOFF,
@@ -56,6 +57,7 @@ class GraphTransferDataset(Dataset):
         self.realized_r = geo["realized_r"]
         self.realized_euclid = geo["realized_euclid"]
         self.n_atoms = self.positions.shape[0]
+        self.V = compute_molecular_box(self.positions, self.cutoff, self.cutoff, self.cutoff)
 
         base_types = torch.full((self.n_atoms,), FILLER_TYPE_IDX, dtype=torch.long)
         base_types[self.readout_idx] = READOUT_TYPE_IDX
@@ -81,6 +83,7 @@ class GraphTransferDataset(Dataset):
             "label": label,
             "r": self.realized_r,
             "mol_props": self.mol_props,
+            "V": self.V,
         }
 
 
@@ -102,6 +105,7 @@ class GeometricGraphTransferDataset(Dataset):
         self.realized_r = geo["realized_r"]
         self.realized_euclid = geo["realized_euclid"]
         self.n_atoms = self.positions.shape[0]
+        self.V = compute_molecular_box(self.positions, self.cutoff, self.cutoff, self.cutoff)
 
         base_types = torch.full((self.n_atoms,), FILLER_TYPE_IDX, dtype=torch.long)
         base_types[self.readout_idx] = READOUT_TYPE_IDX
@@ -166,6 +170,7 @@ class GeometricGraphTransferDataset(Dataset):
             "label": label,
             "r": self.realized_r,
             "mol_props": self.mol_props,
+            "V": self.V,
         }
 
 
@@ -192,7 +197,7 @@ def graph_transfer_collate_fn(batch: List[Dict[str, object]]) -> Dict[str, objec
     if "seed_masses" in batch[0]:
         seed_masses = torch.stack([_pad1(item["seed_masses"], N_max) for item in batch], dim=0) * all_mask.float()
 
-    V = torch.eye(3).unsqueeze(0).expand(B, 3, 3).contiguous() * GRAPH_BOX_HALFWIDTH
+    V = torch.stack([item["V"] for item in batch], dim=0)
     mol_props = torch.stack([item["mol_props"] for item in batch], dim=0)
     edge_feats = torch.zeros(B, N_max, N_max, GRAPH_EDGE_FEAT_DIM)
 
