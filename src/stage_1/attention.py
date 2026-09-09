@@ -362,7 +362,10 @@ class EquivariantLinearRMSNorm(nn.Module):
         return self.norm(y.transpose(-1, -2)).transpose(-1, -2)
 
 class MasterFusionAttention(nn.Module):
-    def __init__(self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int, num_heads: int):
+    def __init__(
+        self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int, num_heads: int,
+        reduce_norms: bool = False,
+    ):
         super().__init__()
         assert feature_dim % num_heads == 0, "feature_dim must be divisible by num_fusion_heads"
         self.max_degree = max_degree
@@ -374,12 +377,12 @@ class MasterFusionAttention(nn.Module):
         self.W_Q = nn.ModuleDict({
             str(l): EquivariantLinear(feature_dim, feature_dim) for l in range(max_degree + 1)
         })
-        self.readout_K = nn.ModuleDict({
-            str(l): EquivariantLinearRMSNorm(feature_dim) for l in range(max_degree + 1)
-        })
-        self.readout_V = nn.ModuleDict({
-            str(l): EquivariantLinearRMSNorm(feature_dim) for l in range(max_degree + 1)
-        })
+        def _kv_readout() -> nn.Module:
+            if reduce_norms:
+                return EquivariantLinear(feature_dim, feature_dim)
+            return EquivariantLinearRMSNorm(feature_dim)
+        self.readout_K = nn.ModuleDict({str(l): _kv_readout() for l in range(max_degree + 1)})
+        self.readout_V = nn.ModuleDict({str(l): _kv_readout() for l in range(max_degree + 1)})
         self.radial_KV = nn.ModuleDict({
             str(l): BatchedRadialNetwork(
                 n_copies=2, num_basis=2 * l + 1, hidden_dim=hidden_dim, radial_net_cls=radial_net,

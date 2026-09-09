@@ -116,6 +116,7 @@ class EnergyLayer(nn.Module):
         ablate_lr: bool = False, normalize_z_by_n_real: bool = False,
         decouple_ri_norm: bool = False,
         imaginary_only_ri: bool = False,
+        reduce_norms: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -136,16 +137,25 @@ class EnergyLayer(nn.Module):
             str(l): EquivariantLinear(feature_dim, feature_dim)
             for l in range(max_degree + 1)
         })
-        self.W_V_self_norm = BatchedEquivariantRMSNorm(feature_dim, degrees=list(range(max_degree + 1)))
+        self.W_V_self_norm = (
+            nn.Identity() if reduce_norms else
+            BatchedEquivariantRMSNorm(feature_dim, degrees=list(range(max_degree + 1)))
+        )
         self.sigma_gate = BatchedGatedNonlinearity(feature_dim, degrees=list(range(max_degree + 1)))
 
         self.W_master_self = IrrepLinear(feature_dim)
         self.master_attn = MasterNodeAttention(feature_dim, n_max, pw_e_cutoff, hidden_dim)
-        self.master_ln = EquivariantRMSNorm(feature_dim, degree=0)
+        self.master_ln = nn.Identity() if reduce_norms else EquivariantRMSNorm(feature_dim, degree=0)
 
-        self.layer_norm_in = BatchedEquivariantRMSNorm(feature_dim, degrees=list(range(max_degree + 1)))
-        self.layer_norm_mid = BatchedEquivariantRMSNorm(feature_dim, degrees=list(range(max_degree + 1)))
-        self.layer_norm_out = BatchedEquivariantRMSNorm(feature_dim, degrees=list(range(max_degree + 1)))
+        norm_degrees = list(range(max_degree + 1))
+        if reduce_norms:
+            self.layer_norm_in = nn.Identity()
+            self.layer_norm_mid = nn.Identity()
+            self.layer_norm_out = nn.Identity()
+        else:
+            self.layer_norm_in = BatchedEquivariantRMSNorm(feature_dim, degrees=norm_degrees)
+            self.layer_norm_mid = BatchedEquivariantRMSNorm(feature_dim, degrees=norm_degrees)
+            self.layer_norm_out = BatchedEquivariantRMSNorm(feature_dim, degrees=norm_degrees)
 
         self.readout = Readout(feature_dim, hidden_dim)
 
@@ -271,6 +281,7 @@ class EnergyModel(nn.Module):
         static_box: bool = False,
         content_weighted_com: bool = False,
         per_layer_fusion: bool = False,
+        reduce_norms: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -297,7 +308,7 @@ class EnergyModel(nn.Module):
         self.per_layer_fusion = per_layer_fusion
 
         self.input_embedding = nn.Embedding(num_atom_types, feature_dim)
-        self.ln1             = nn.RMSNorm(feature_dim)
+        self.ln1             = nn.Identity() if reduce_norms else nn.RMSNorm(feature_dim)
         self.mol_prop_emb    = nn.Sequential(
                             scalar_ffn(_MOL_FEAT_DIM, hidden_dim),
                             nn.RMSNorm(_MOL_FEAT_DIM),
@@ -305,14 +316,14 @@ class EnergyModel(nn.Module):
                             nn.Linear(_MOL_FEAT_DIM, feature_dim)
                         )
         init_sequential_(self.mol_prop_emb, "leaky_relu")
-        self.ln2             = nn.RMSNorm(feature_dim)
+        self.ln2             = nn.Identity() if reduce_norms else nn.RMSNorm(feature_dim)
         self.f0_ffn          = scalar_ffn(feature_dim, hidden_dim)
         self.mol_ffn         = scalar_ffn(feature_dim, hidden_dim)
-        
+
         self.seed_proj       = scalar_ffn(2 * feature_dim, hidden_dim)
         self.seed_proj_out   = nn.Linear(2 * feature_dim, feature_dim)
         init_linear_(self.seed_proj_out, "linear")
-        self.seed_proj_norm  = nn.RMSNorm(feature_dim)
+        self.seed_proj_norm  = nn.Identity() if reduce_norms else nn.RMSNorm(feature_dim)
        
         self.seed_radial_net = radial_net(num_basis=1, hidden_dim=hidden_dim)
 
@@ -340,15 +351,17 @@ class EnergyModel(nn.Module):
                 normalize_z_by_n_real=normalize_z_by_n_real,
                 decouple_ri_norm=decouple_ri_norm,
                 imaginary_only_ri=imaginary_only_ri,
+                reduce_norms=reduce_norms,
             )
             for m in range(num_layers)
         ])
 
         self.master_fusion = MasterFusionAttention(
             radial_net, max_degree, feature_dim, hidden_dim, num_heads=num_fusion_heads,
+            reduce_norms=reduce_norms,
         )
         self.layer_norm_fusion = nn.ModuleDict({
-            str(l): EquivariantRMSNorm(feature_dim, degree=l)
+            str(l): (nn.Identity() if reduce_norms else EquivariantRMSNorm(feature_dim, degree=l))
             for l in range(max_degree + 1)
         })
 
