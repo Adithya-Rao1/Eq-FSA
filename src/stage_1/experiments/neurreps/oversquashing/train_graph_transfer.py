@@ -328,6 +328,7 @@ def main():
         help="'rsa' variant only: max Fourier mode index for RSAAttention's wavevector grid",
     )
     parser.add_argument("--no-eqfsa-normalize-z-by-n-real", dest="eqfsa_normalize_z_by_n_real", action="store_false",)
+    parser.add_argument("--eqfsa-linear-radial-readout", action="store_true",)
     parser.add_argument("--qk-gamma-wd", type=float, default=0.0,)
     parser.add_argument("--cutoff", type=float, default=5.0)
     parser.add_argument("--epochs", type=int, default=60)
