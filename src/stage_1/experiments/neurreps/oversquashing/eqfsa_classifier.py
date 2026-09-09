@@ -27,15 +27,15 @@ class EqFSAClassifier(nn.Module):
         grad_checkpoint: bool = False,
         multi_layer_readout: bool = True,
         normalize_z_by_n_real: bool = True,
-        decouple_ri_norm: bool = False,
-        imaginary_only_ri: bool = True,
+        decouple_ri_norm: bool = True,
+        imaginary_only_ri: bool = False,
         deterministic_pool_agg: bool = True,
         attention_pool: bool = True,
         skip_master_expand_norm: bool = True,
         static_box: bool = True,
-        content_weighted_com: bool = True,
-        per_layer_fusion: bool = False,
-        reduce_norms: bool = False,
+        content_weighted_com: bool = False,
+        per_layer_fusion: bool = True,
+        reduce_norms: bool = True,
     ):
         super().__init__()
         self.multi_layer_readout = multi_layer_readout

@@ -87,11 +87,11 @@ def build_model_for_variant(
             hidden_dim=config["hidden_dim"], edge_cutoff=config["cutoff"], n_max=1,
             classes=classes, edge_feat_dim=GRAPH_EDGE_FEAT_DIM,
             normalize_z_by_n_real=config.get("eqfsa_normalize_z_by_n_real", True),
-            content_weighted_com=config.get("eqfsa_content_weighted_com", True),
-            per_layer_fusion=config.get("eqfsa_per_layer_fusion", False),
-            imaginary_only_ri=config.get("eqfsa_imaginary_only_ri", True),
-            decouple_ri_norm=config.get("eqfsa_decouple_ri_norm", False),
-            reduce_norms=config.get("eqfsa_reduce_norms", False),
+            content_weighted_com=config.get("eqfsa_content_weighted_com", False),
+            per_layer_fusion=config.get("eqfsa_per_layer_fusion", True),
+            imaginary_only_ri=config.get("eqfsa_imaginary_only_ri", False),
+            decouple_ri_norm=config.get("eqfsa_decouple_ri_norm", True),
+            reduce_norms=config.get("eqfsa_reduce_norms", True),
         )
     if variant in ("mean_pool", "attn_pool"):
         from stage_1.experiments.neurreps.oversquashing.trivial_pool_classifier import TrivialPoolClassifier
@@ -334,11 +334,11 @@ def main():
     )
     parser.add_argument("--no-eqfsa-normalize-z-by-n-real", dest="eqfsa_normalize_z_by_n_real", action="store_false",)
     parser.add_argument("--eqfsa-linear-radial-readout", action="store_true",)
-    parser.add_argument("--no-eqfsa-content-weighted-com", dest="eqfsa_content_weighted_com", action="store_false")
-    parser.add_argument("--eqfsa-per-layer-fusion", action="store_true")
-    parser.add_argument("--no-eqfsa-imaginary-only-ri", dest="eqfsa_imaginary_only_ri", action="store_false",)
-    parser.add_argument("--eqfsa-decouple-ri-norm", action="store_true")
-    parser.add_argument("--eqfsa-reduce-norms", action="store_true",)
+    parser.add_argument("--eqfsa-content-weighted-com", action="store_true")
+    parser.add_argument("--no-eqfsa-per-layer-fusion", dest="eqfsa_per_layer_fusion", action="store_false")
+    parser.add_argument("--eqfsa-imaginary-only-ri", action="store_true")
+    parser.add_argument("--no-eqfsa-decouple-ri-norm", dest="eqfsa_decouple_ri_norm", action="store_false")
+    parser.add_argument("--no-eqfsa-reduce-norms", dest="eqfsa_reduce_norms", action="store_false")
     parser.add_argument("--qk-gamma-wd", type=float, default=0.0,)
     parser.add_argument("--cutoff", type=float, default=5.0)
     parser.add_argument("--epochs", type=int, default=60)

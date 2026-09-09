@@ -22,7 +22,6 @@ config = {
     "val_fraction": 0.2, "batch_size": 32, "lr": 1e-3, "qk_gamma_wd": 0.0,
     "epochs": EPOCHS, "eqfsa_num_layers": 4, "feature_dim": 24, "hidden_dim": 32,
     "eqfsa_normalize_z_by_n_real": True, "torch_compile": False,
-    "eqfsa_linear_radial_readout": True,
     "_device": detect_device(None),
 }
 print(f"Using device: {config['_device']}")
