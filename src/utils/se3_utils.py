@@ -110,6 +110,7 @@ class RadialNetwork(nn.Module):
         num_heads:     int = 1,
         edge_feature_dim: int = 0,
         envelope_floor: float = 0.02,
+        linear_readout: bool = False,
     ):
         super().__init__()
         self.num_basis     = num_basis
@@ -117,6 +118,7 @@ class RadialNetwork(nn.Module):
         self.num_heads     = num_heads
         self.edge_feature_dim = edge_feature_dim
         self.envelope_floor = envelope_floor
+        self.linear_readout = linear_readout
 
         centres = torch.linspace(0.0, cutoff_radius, num_basis)
         self.register_buffer("centres", centres)
@@ -126,15 +128,18 @@ class RadialNetwork(nn.Module):
             "inv_width_sq",
             torch.tensor(-1.0 / (2.0 * width ** 2)),
         )
-        self.net = nn.Sequential(
-            nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=True),
-            nn.RMSNorm(hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim, bias=False),
-            nn.RMSNorm(hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, num_heads, bias=False),
-        )
+        if linear_readout:
+            self.net = nn.Linear(num_basis + edge_feature_dim, num_heads, bias=False)
+        else:
+            self.net = nn.Sequential(
+                nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=True),
+                nn.RMSNorm(hidden_dim),
+                nn.SiLU(),
+                nn.Linear(hidden_dim, hidden_dim, bias=False),
+                nn.RMSNorm(hidden_dim),
+                nn.SiLU(),
+                nn.Linear(hidden_dim, num_heads, bias=False),
+            )
 
     def _basis(self, r: torch.Tensor) -> torch.Tensor:
         diff    = r - self.centres.unsqueeze(0)
@@ -179,12 +184,16 @@ class BatchedRadialNetwork(nn.Module):
                             envelope_floor=envelope_floor)
             for _ in range(n_copies)
         ]
-        self.W1 = nn.Parameter(torch.stack([t.net[0].weight.detach().clone() for t in templates]))
-        self.b1 = nn.Parameter(torch.stack([t.net[0].bias.detach().clone() for t in templates]))
-        self.g1 = nn.Parameter(torch.stack([t.net[1].weight.detach().clone() for t in templates]))
-        self.W2 = nn.Parameter(torch.stack([t.net[3].weight.detach().clone() for t in templates]))
-        self.g2 = nn.Parameter(torch.stack([t.net[4].weight.detach().clone() for t in templates]))
-        self.W3 = nn.Parameter(torch.stack([t.net[6].weight.detach().clone() for t in templates]))
+        self.linear_readout = isinstance(templates[0].net, nn.Linear)
+        if self.linear_readout:
+            self.W1 = nn.Parameter(torch.stack([t.net.weight.detach().clone() for t in templates]))
+        else:
+            self.W1 = nn.Parameter(torch.stack([t.net[0].weight.detach().clone() for t in templates]))
+            self.b1 = nn.Parameter(torch.stack([t.net[0].bias.detach().clone() for t in templates]))
+            self.g1 = nn.Parameter(torch.stack([t.net[1].weight.detach().clone() for t in templates]))
+            self.W2 = nn.Parameter(torch.stack([t.net[3].weight.detach().clone() for t in templates]))
+            self.g2 = nn.Parameter(torch.stack([t.net[4].weight.detach().clone() for t in templates]))
+            self.W3 = nn.Parameter(torch.stack([t.net[6].weight.detach().clone() for t in templates]))
 
     def _basis(self, r: torch.Tensor) -> torch.Tensor:
         diff = r - self.centres.unsqueeze(0)
@@ -195,6 +204,8 @@ class BatchedRadialNetwork(nn.Module):
 
     def forward(self, r: torch.Tensor) -> torch.Tensor:
         basis = self._basis(r)
+        if self.linear_readout:
+            return torch.einsum("nb,jhb->jnh", basis, self.W1)
         h1 = torch.einsum("nb,jhb->jnh", basis, self.W1) + self.b1.unsqueeze(1)
         h1 = F.rms_norm(h1, (h1.shape[-1],), None, None) * self.g1.unsqueeze(1)
         h1 = F.silu(h1)

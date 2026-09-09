@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import functools
 import math
 import os
 import time
@@ -77,8 +78,11 @@ def build_model_for_variant(
             cutoff=config["cutoff"], avg_num_neighbors=avg_num_neighbors,
         )
     if variant == "eqfsa_full":
+        radial_net_cls = RadialNetwork
+        if config.get("eqfsa_linear_radial_readout", False):
+            radial_net_cls = functools.partial(RadialNetwork, linear_readout=True)
         return EqFSAClassifier(
-            radial_net=RadialNetwork, num_atom_types=num_atom_types, max_degree=2,
+            radial_net=radial_net_cls, num_atom_types=num_atom_types, max_degree=2,
             num_layers=config["eqfsa_num_layers"], feature_dim=config["feature_dim"],
             hidden_dim=config["hidden_dim"], edge_cutoff=config["cutoff"], n_max=1,
             classes=classes, edge_feat_dim=GRAPH_EDGE_FEAT_DIM,
