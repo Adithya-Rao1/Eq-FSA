@@ -270,6 +270,7 @@ class EnergyModel(nn.Module):
         skip_master_expand_norm: bool = False,
         static_box: bool = False,
         content_weighted_com: bool = False,
+        per_layer_fusion: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -293,6 +294,7 @@ class EnergyModel(nn.Module):
         self.decouple_ri_norm = decouple_ri_norm
         self.imaginary_only_ri = imaginary_only_ri
         self.attention_pool = attention_pool
+        self.per_layer_fusion = per_layer_fusion
 
         self.input_embedding = nn.Embedding(num_atom_types, feature_dim)
         self.ln1             = nn.RMSNorm(feature_dim)
@@ -439,6 +441,7 @@ class EnergyModel(nn.Module):
 
         layer_states = [] if return_layer_states else None
         scale_feats = [] if collect_scale_feats else None
+        fusion_accum = {l: torch.zeros_like(f0[l]) for l in f0} if self.per_layer_fusion else None
         for layer in self.layers:
             if self.grad_checkpoint and self.training:
                 f, g_a = checkpoint(
@@ -460,10 +463,15 @@ class EnergyModel(nn.Module):
                     edge_b=edge_b, edge_i=edge_i, edge_j=edge_j, x_rel_e=x_rel_e, edge_feat_e=edge_feat_e,
                     kvecs=kvecs, mode_mask=mode_mask,
                 )
+            if self.per_layer_fusion:
+                layer_fusion = self.master_fusion(f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com)
+                fusion_accum = {l: fusion_accum[l] + layer_fusion[l] for l in fusion_accum}
             if return_layer_states:
                 layer_states.append(f)
 
-        fusion_out = self.master_fusion(f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com)
+        fusion_out = fusion_accum if self.per_layer_fusion else self.master_fusion(
+            f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com,
+        )
         if self.ablate_max_degree is not None:
             fusion_out = {
                 l: (v if l <= self.ablate_max_degree else torch.zeros_like(v))

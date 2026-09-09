@@ -34,6 +34,7 @@ class EqFSAClassifier(nn.Module):
         skip_master_expand_norm: bool = True,
         static_box: bool = True,
         content_weighted_com: bool = True,
+        per_layer_fusion: bool = False,
     ):
         super().__init__()
         self.multi_layer_readout = multi_layer_readout
@@ -60,6 +61,7 @@ class EqFSAClassifier(nn.Module):
             skip_master_expand_norm=skip_master_expand_norm,
             static_box=static_box,
             content_weighted_com=content_weighted_com,
+            per_layer_fusion=per_layer_fusion,
         )
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)

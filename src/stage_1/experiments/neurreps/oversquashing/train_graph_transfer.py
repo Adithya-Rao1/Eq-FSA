@@ -88,6 +88,7 @@ def build_model_for_variant(
             classes=classes, edge_feat_dim=GRAPH_EDGE_FEAT_DIM,
             normalize_z_by_n_real=config.get("eqfsa_normalize_z_by_n_real", True),
             content_weighted_com=config.get("eqfsa_content_weighted_com", True),
+            per_layer_fusion=config.get("eqfsa_per_layer_fusion", False),
         )
     if variant in ("mean_pool", "attn_pool"):
         from stage_1.experiments.neurreps.oversquashing.trivial_pool_classifier import TrivialPoolClassifier
@@ -331,6 +332,7 @@ def main():
     parser.add_argument("--no-eqfsa-normalize-z-by-n-real", dest="eqfsa_normalize_z_by_n_real", action="store_false",)
     parser.add_argument("--eqfsa-linear-radial-readout", action="store_true",)
     parser.add_argument("--no-eqfsa-content-weighted-com", dest="eqfsa_content_weighted_com", action="store_false")
+    parser.add_argument("--eqfsa-per-layer-fusion", action="store_true")
     parser.add_argument("--qk-gamma-wd", type=float, default=0.0,)
     parser.add_argument("--cutoff", type=float, default=5.0)
     parser.add_argument("--epochs", type=int, default=60)
