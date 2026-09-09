@@ -485,9 +485,14 @@ class ContentWeightedCOM(nn.Module):
         )
         init_sequential_(self.score, "silu")
 
-    def forward(self, f0_raw: torch.Tensor, x: torch.Tensor, node_mask: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, f0_raw: torch.Tensor, x: torch.Tensor, node_mask: torch.Tensor,
+        exclude_idx: torch.Tensor = None,
+    ) -> torch.Tensor:
         logits = self.score(f0_raw).squeeze(-1)
         logits = logits.masked_fill(~node_mask, float("-inf"))
+        if exclude_idx is not None:
+            logits = logits.scatter(1, exclude_idx.view(-1, 1), float("-inf"))
         weights = torch.softmax(logits, dim=-1)
         return torch.einsum("bn,bni->bi", weights, x)
 

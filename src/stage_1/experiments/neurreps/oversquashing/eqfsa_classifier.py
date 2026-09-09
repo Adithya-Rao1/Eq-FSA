@@ -107,12 +107,15 @@ class EqFSAClassifier(nn.Module):
         if self.multi_layer_readout:
             f, layer_states = self.energy_model(
                 x, types, masses, mask, V, mol_props, edge_feats, return_layer_states=True,
-                seed_masses=seed_masses,
+                seed_masses=seed_masses, target_idx=target_idx,
             )
             logits = self._readout_logits(f, batch_ar, target_idx)
             for layer_f in layer_states:
                 logits = logits + self._readout_logits(layer_f, batch_ar, target_idx)
             return logits
 
-        f = self.energy_model(x, types, masses, mask, V, mol_props, edge_feats, seed_masses=seed_masses)
+        f = self.energy_model(
+            x, types, masses, mask, V, mol_props, edge_feats,
+            seed_masses=seed_masses, target_idx=target_idx,
+        )
         return self._readout_logits(f, batch_ar, target_idx)

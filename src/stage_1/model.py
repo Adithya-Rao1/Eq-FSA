@@ -382,6 +382,7 @@ class EnergyModel(nn.Module):
         return_layer_states: bool = False,
         seed_masses=None,
         collect_scale_feats: bool = False,
+        target_idx: torch.Tensor = None,
     ) -> torch.Tensor:
         node_mask = node_mask.bool()
         atomic_masses = atomic_masses * node_mask.to(atomic_masses.dtype)
@@ -413,7 +414,7 @@ class EnergyModel(nn.Module):
         f: Dict[int, torch.Tensor] = dict(f0)
 
         if self.content_weighted_com:
-            x_com = self.com_weighting(f0_raw, x_wrapped, node_mask)
+            x_com = self.com_weighting(f0_raw, x_wrapped, node_mask, exclude_idx=target_idx)
         else:
             x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask)
 
