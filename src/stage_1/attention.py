@@ -88,10 +88,11 @@ class NormedPairReadout(nn.Module):
 
 
 class BatchedNormedPairReadout(nn.Module):
-    def __init__(self, C: int, hidden: int, k_max: int, floor: float = 0.5):
+    def __init__(self, C: int, hidden: int, k_max: int, floor: float = 0.5, use_norms: bool = True):
         super().__init__()
         self.k_max = k_max
         self.floor = floor
+        self.use_norms = use_norms
 
         templates = [NormedPairReadout(C, hidden, floor=floor) for _ in range(k_max + 1)]
         self.equiv_proj = nn.ModuleList([t.equiv_proj for t in templates])
@@ -106,7 +107,8 @@ class BatchedNormedPairReadout(nn.Module):
             norms.append(straight_through_norm(v, dim=-1, floor=self.floor))
         h0 = torch.stack(norms, dim=0)
         h1 = torch.einsum("keh,kgh->keg", h0, self.W_h1)
-        h1 = F.rms_norm(h1, (h1.shape[-1],), None, None) * self.g_h1.unsqueeze(1)
+        if self.use_norms:
+            h1 = F.rms_norm(h1, (h1.shape[-1],), None, None) * self.g_h1.unsqueeze(1)
         h1 = F.silu(h1)
         out = torch.einsum("keh,koh->keo", h1, self.W_out).squeeze(-1)
         return out.sum(dim=0)
@@ -115,7 +117,7 @@ class BatchedNormedPairReadout(nn.Module):
 class SRAttention(nn.Module):
     def __init__(
         self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int,
-        k_max: int, edge_feat_dim: int,
+        k_max: int, edge_feat_dim: int, use_norms: bool = True,
     ):
         super().__init__()
         self.max_degree = max_degree
@@ -126,15 +128,15 @@ class SRAttention(nn.Module):
             n_copies = sum((l + k + 1) - abs(l - k) for k in range(k_max + 1))
             self.radial_V_sr[str(l)] = BatchedRadialNetwork(
                 n_copies=n_copies, num_basis=(2 * l + 1), hidden_dim=hidden_dim,
-                radial_net_cls=radial_net,
+                radial_net_cls=radial_net, use_norms=use_norms,
             )
 
-        self.pair_readout = BatchedNormedPairReadout(2 * feature_dim, hidden_dim, k_max)
-        
-        self.edge_input_norm = nn.RMSNorm(1 + edge_feat_dim)
-        self.psi_e = scalar_ffn(1 + edge_feat_dim, hidden_dim)
+        self.pair_readout = BatchedNormedPairReadout(2 * feature_dim, hidden_dim, k_max, use_norms=use_norms)
+
+        self.edge_input_norm = nn.RMSNorm(1 + edge_feat_dim) if use_norms else nn.Identity()
+        self.psi_e = scalar_ffn(1 + edge_feat_dim, hidden_dim, use_norms=use_norms)
         self.psi_e_out = nn.Sequential(
-            nn.RMSNorm(1 + edge_feat_dim),
+            nn.RMSNorm(1 + edge_feat_dim) if use_norms else nn.Identity(),
             nn.LeakyReLU(),
             nn.Linear(1 + edge_feat_dim, 1),
         )
@@ -176,6 +178,7 @@ class MasterNodeAttention(nn.Module):
         self, feature_dim: int, n_max: int, pw_e_cutoff: Optional[float] = None, hidden_dim: int = 128,
         alpha_floor: float = 1e-4, dist_weighted_content: bool = False,
         dist_rbf_num_basis: int = 12, dist_rbf_min: float = 0.3, dist_rbf_cutoff: float = 25.0,
+        use_norms: bool = True,
     ):
         super().__init__()
         self.feature_dim = feature_dim
@@ -184,15 +187,22 @@ class MasterNodeAttention(nn.Module):
         self.alpha_floor = alpha_floor
         self.dist_weighted_content = dist_weighted_content
         self.dist_rbf_num_basis = dist_rbf_num_basis
+        self.use_norms = use_norms
 
         kv_in_dim = feature_dim + dist_rbf_num_basis if dist_weighted_content else None
-        self.W_QK = BatchedHighOrdFFN(feature_dim, hidden_dim, degree=1, n_copies=2, in_dim=kv_in_dim)
+        # W_QK's internal FFN norms are gated by use_norms; w_vq_norm/w_vk_norm below are NOT --
+        # they're the sole bound on Z (the elu(x)+1 linear-attention normalizer), deliberately
+        # kept unconditional regardless of use_norms (see stage_1/CLAUDE.md Rounds 1-4: removing
+        # this bound without a replacement caused gradient norms up to 3.6e9).
+        self.W_QK = BatchedHighOrdFFN(
+            feature_dim, hidden_dim, degree=1, n_copies=2, in_dim=kv_in_dim, use_norms=use_norms,
+        )
         self.w_vq_norm = EquivariantRMSNorm(feature_dim, 1)
         self.w_vk_norm = EquivariantRMSNorm(feature_dim, 1)
 
         self.W_V0 = nn.Sequential(
-            scalar_ffn(feature_dim, hidden_dim, in_dim=kv_in_dim),
-            nn.RMSNorm(feature_dim),
+            scalar_ffn(feature_dim, hidden_dim, in_dim=kv_in_dim, use_norms=use_norms),
+            nn.RMSNorm(feature_dim) if use_norms else nn.Identity(),
         )
 
         if dist_weighted_content:
@@ -206,9 +216,9 @@ class MasterNodeAttention(nn.Module):
             widths[1:-1] = (gaps[:-1] + gaps[1:]) / 2
             self.register_buffer("dist_rbf_centers", centers)
             self.register_buffer("dist_rbf_inv_width_sq", -1.0 / (2.0 * widths ** 2))
-        self.s_ri_norm = nn.RMSNorm(2 * feature_dim)
-        self.s_re_norm = nn.RMSNorm(feature_dim)
-        self.s_im_norm = nn.RMSNorm(feature_dim)
+        self.s_ri_norm = nn.RMSNorm(2 * feature_dim) if use_norms else nn.Identity()
+        self.s_re_norm = nn.RMSNorm(feature_dim) if use_norms else nn.Identity()
+        self.s_im_norm = nn.RMSNorm(feature_dim) if use_norms else nn.Identity()
         self.cos_com_gamma = nn.Parameter(torch.tensor(1.0))
         self.sin_com_gamma = nn.Parameter(torch.tensor(1.0))
 
@@ -358,7 +368,7 @@ class MasterNodeAttention(nn.Module):
         phase_com = torch.einsum("bai,bmi->bam", x_com_use, kvecs)
         cos_com = torch.cos(phase_com) * damping.unsqueeze(1)
         sin_com = torch.sin(phase_com) * damping.unsqueeze(1)
-        if decouple_ri_norm:
+        if decouple_ri_norm and self.use_norms:
             cos_com = _rms_scalar_norm(cos_com, self.cos_com_gamma)
             sin_com = _rms_scalar_norm(sin_com, self.sin_com_gamma)
 
@@ -401,7 +411,7 @@ class EquivariantLinearRMSNorm(nn.Module):
 class MasterFusionAttention(nn.Module):
     def __init__(
         self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int, num_heads: int,
-        reduce_norms: bool = False,
+        reduce_norms: bool = False, use_norms: bool = True,
     ):
         super().__init__()
         assert feature_dim % num_heads == 0, "feature_dim must be divisible by num_fusion_heads"
@@ -415,7 +425,7 @@ class MasterFusionAttention(nn.Module):
             str(l): EquivariantLinear(feature_dim, feature_dim) for l in range(max_degree + 1)
         })
         def _kv_readout() -> nn.Module:
-            if reduce_norms:
+            if reduce_norms or not use_norms:
                 return EquivariantLinear(feature_dim, feature_dim)
             return EquivariantLinearRMSNorm(feature_dim)
         self.readout_K = nn.ModuleDict({str(l): _kv_readout() for l in range(max_degree + 1)})
@@ -423,6 +433,7 @@ class MasterFusionAttention(nn.Module):
         self.radial_KV = nn.ModuleDict({
             str(l): BatchedRadialNetwork(
                 n_copies=2, num_basis=2 * l + 1, hidden_dim=hidden_dim, radial_net_cls=radial_net,
+                use_norms=use_norms,
             )
             for l in range(max_degree + 1)
         })

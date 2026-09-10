@@ -99,6 +99,7 @@ def build_model_for_variant(
             dist_rbf_min=config.get("eqfsa_dist_rbf_min", 0.3),
             dist_rbf_cutoff=config.get("eqfsa_dist_rbf_cutoff", 25.0),
             linear_com=config.get("eqfsa_linear_com", False),
+            use_norms=not config.get("eqfsa_no_norms_except_z", False),
         )
     if variant in ("mean_pool", "attn_pool"):
         from stage_1.experiments.neurreps.oversquashing.trivial_pool_classifier import TrivialPoolClassifier
@@ -310,36 +311,16 @@ def main():
     parser.add_argument("--topologies", type=str, nargs="+", default=["chain", "ring", "lollipop"])
     parser.add_argument("--r-values", type=int, nargs="+", default=[2, 4, 6, 8, 10, 12, 16, 20])
     parser.add_argument("--variants", type=str, nargs="+", default=["dimenet", "nequip_allegro", "eqfsa_full"])
-    parser.add_argument(
-        "--task", type=str, choices=["type", "geometric"], default="type",
-        help="'type': class is the label atom's discrete type (original benchmark). "
-             "'geometric': class is the label atom's real distance from the readout atom along a "
-             "fixed axis, with its type held constant -- mean_pool/attn_pool are structurally "
-             "capped at chance since they never see positions.",
-    )
-    parser.add_argument("--geometric-class-spacing", type=float, default=None,
-        help="--task geometric only: distance between adjacent classes' target distances",
-    )
-    parser.add_argument(
-        "--geometric-seed-retries", type=int, default=20,
-        help="--task geometric only; number of alternate seeds to try for faulty realization's random-walk",
-    )
+    parser.add_argument("--task", type=str, choices=["type", "geometric"], default="type")
+    parser.add_argument("--geometric-class-spacing", type=float, default=None,)
+    parser.add_argument("--geometric-seed-retries", type=int, default=20,)
     parser.add_argument("--classes", type=int, default=5)
     parser.add_argument("--eqfsa-num-layers", type=int, default=4, help="Fixed depth for Eq-FSA, independent of r")
-    parser.add_argument(
-        "--baseline-layer-margin", type=int, default=4,
-        help="DimeNet++/NequIP-Allegro depth = realized_r + this marginp; rules out underreaching",
-    )
+    parser.add_argument("--baseline-layer-margin", type=int, default=4,)
     parser.add_argument("--feature-dim", type=int, default=24)
     parser.add_argument("--hidden-dim", type=int, default=32)
-    parser.add_argument(
-        "--rsa-sigma", type=float, default=5.0,
-        help="'rsa' variant only; Gaussian mode-weighting bandwidth for RSAAttention (matches lr_sr's default)",
-    )
-    parser.add_argument(
-        "--rsa-n-max", type=int, default=2,
-        help="'rsa' variant only: max Fourier mode index for RSAAttention's wavevector grid",
-    )
+    parser.add_argument("--rsa-sigma", type=float, default=5.0,)
+    parser.add_argument("--rsa-n-max", type=int, default=2,)
     parser.add_argument("--no-eqfsa-normalize-z-by-n-real", dest="eqfsa_normalize_z_by_n_real", action="store_false",)
     parser.add_argument("--eqfsa-linear-radial-readout", action="store_true",)
     parser.add_argument("--eqfsa-content-weighted-com", action="store_true")
@@ -352,6 +333,7 @@ def main():
     parser.add_argument("--eqfsa-dist-rbf-min", type=float, default=0.3)
     parser.add_argument("--eqfsa-dist-rbf-cutoff", type=float, default=25.0)
     parser.add_argument("--eqfsa-linear-com", action="store_true",)
+    parser.add_argument("--eqfsa-no-norms-except-z", action="store_true",)
     parser.add_argument("--qk-gamma-wd", type=float, default=0.0,)
     parser.add_argument("--cutoff", type=float, default=5.0)
     parser.add_argument("--epochs", type=int, default=60)

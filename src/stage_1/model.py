@@ -101,14 +101,14 @@ def seed_equivariant_features(
     return {1: f1, 2: f2}
 
 class Readout(nn.Module):
-    def __init__(self, feature_dim, hidden_dim=128):
+    def __init__(self, feature_dim, hidden_dim=128, use_norms: bool = True):
         super().__init__()
         self.feature_dim = feature_dim
         self.hidden_dim = hidden_dim
 
-        self.ffn0 = scalar_ffn(feature_dim, hidden_dim)
-        self.ffn1 = high_ord_ffn(feature_dim, hidden_dim, 1)
-        self.ffn2 = high_ord_ffn(feature_dim, hidden_dim, 2)
+        self.ffn0 = scalar_ffn(feature_dim, hidden_dim, use_norms=use_norms)
+        self.ffn1 = high_ord_ffn(feature_dim, hidden_dim, 1, use_norms=use_norms)
+        self.ffn2 = high_ord_ffn(feature_dim, hidden_dim, 2, use_norms=use_norms)
 
         self.ffn = [self.ffn0, self.ffn1, self.ffn2]
 
@@ -137,6 +137,7 @@ class EnergyLayer(nn.Module):
         dist_rbf_num_basis: int = 12,
         dist_rbf_min: float = 0.3,
         dist_rbf_cutoff: float = 25.0,
+        use_norms: bool = True,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -151,8 +152,10 @@ class EnergyLayer(nn.Module):
         self.imaginary_only_ri = imaginary_only_ri
         self.per_node_com = per_node_com
         self.node_conditioned_k = node_conditioned_k
+        no_norms = reduce_norms or not use_norms
         self.sr_attn = SRAttention(
             radial_net, max_degree, feature_dim, hidden_dim, k_max=k_max, edge_feat_dim=edge_feat_dim,
+            use_norms=use_norms,
         )
 
         self.W_V_self_linear = nn.ModuleDict({
@@ -160,7 +163,7 @@ class EnergyLayer(nn.Module):
             for l in range(max_degree + 1)
         })
         self.W_V_self_norm = (
-            nn.Identity() if reduce_norms else
+            nn.Identity() if no_norms else
             BatchedEquivariantRMSNorm(feature_dim, degrees=list(range(max_degree + 1)))
         )
         self.sigma_gate = BatchedGatedNonlinearity(feature_dim, degrees=list(range(max_degree + 1)))
@@ -169,12 +172,12 @@ class EnergyLayer(nn.Module):
         self.master_attn = MasterNodeAttention(
             feature_dim, n_max, pw_e_cutoff, hidden_dim, alpha_floor=alpha_floor,
             dist_weighted_content=dist_weighted_content, dist_rbf_num_basis=dist_rbf_num_basis,
-            dist_rbf_min=dist_rbf_min, dist_rbf_cutoff=dist_rbf_cutoff,
+            dist_rbf_min=dist_rbf_min, dist_rbf_cutoff=dist_rbf_cutoff, use_norms=use_norms,
         )
-        self.master_ln = nn.Identity() if reduce_norms else EquivariantRMSNorm(feature_dim, degree=0)
+        self.master_ln = nn.Identity() if no_norms else EquivariantRMSNorm(feature_dim, degree=0)
 
         norm_degrees = list(range(max_degree + 1))
-        if reduce_norms:
+        if no_norms:
             self.layer_norm_in = nn.Identity()
             self.layer_norm_mid = nn.Identity()
             self.layer_norm_out = nn.Identity()
@@ -183,7 +186,7 @@ class EnergyLayer(nn.Module):
             self.layer_norm_mid = BatchedEquivariantRMSNorm(feature_dim, degrees=norm_degrees)
             self.layer_norm_out = BatchedEquivariantRMSNorm(feature_dim, degrees=norm_degrees)
 
-        self.readout = Readout(feature_dim, hidden_dim)
+        self.readout = Readout(feature_dim, hidden_dim, use_norms=use_norms)
 
         self.diag_enabled = False
         self._diag_g_a_norm: Optional[float] = None
@@ -319,8 +322,10 @@ class EnergyModel(nn.Module):
         dist_rbf_min: float = 0.3,
         dist_rbf_cutoff: float = 25.0,
         linear_com: bool = False,
+        use_norms: bool = True,
     ):
         super().__init__()
+        no_norms = reduce_norms or not use_norms
         self.radial_net = radial_net
         self.edge_cutoff = edge_cutoff
         self.n_max = n_max
@@ -346,24 +351,24 @@ class EnergyModel(nn.Module):
         self.per_layer_fusion = per_layer_fusion
 
         self.input_embedding = nn.Embedding(num_atom_types, feature_dim)
-        self.ln1             = nn.Identity() if reduce_norms else nn.RMSNorm(feature_dim)
+        self.ln1             = nn.Identity() if no_norms else nn.RMSNorm(feature_dim)
         self.mol_prop_emb    = nn.Sequential(
-                            scalar_ffn(_MOL_FEAT_DIM, hidden_dim),
-                            nn.RMSNorm(_MOL_FEAT_DIM),
+                            scalar_ffn(_MOL_FEAT_DIM, hidden_dim, use_norms=use_norms),
+                            nn.RMSNorm(_MOL_FEAT_DIM) if use_norms else nn.Identity(),
                             nn.LeakyReLU(),
                             nn.Linear(_MOL_FEAT_DIM, feature_dim)
                         )
         init_sequential_(self.mol_prop_emb, "leaky_relu")
-        self.ln2             = nn.Identity() if reduce_norms else nn.RMSNorm(feature_dim)
-        self.f0_ffn          = scalar_ffn(feature_dim, hidden_dim)
-        self.mol_ffn         = scalar_ffn(feature_dim, hidden_dim)
+        self.ln2             = nn.Identity() if no_norms else nn.RMSNorm(feature_dim)
+        self.f0_ffn          = scalar_ffn(feature_dim, hidden_dim, use_norms=use_norms)
+        self.mol_ffn         = scalar_ffn(feature_dim, hidden_dim, use_norms=use_norms)
 
-        self.seed_proj       = scalar_ffn(2 * feature_dim, hidden_dim)
+        self.seed_proj       = scalar_ffn(2 * feature_dim, hidden_dim, use_norms=use_norms)
         self.seed_proj_out   = nn.Linear(2 * feature_dim, feature_dim)
         init_linear_(self.seed_proj_out, "linear")
-        self.seed_proj_norm  = nn.Identity() if reduce_norms else nn.RMSNorm(feature_dim)
-       
-        self.seed_radial_net = radial_net(num_basis=1, hidden_dim=hidden_dim)
+        self.seed_proj_norm  = nn.Identity() if no_norms else nn.RMSNorm(feature_dim)
+
+        self.seed_radial_net = radial_net(num_basis=1, hidden_dim=hidden_dim, use_norms=use_norms)
 
         self.master_pool_agg = (
             DeterministicMeanAggregate() if deterministic_pool_agg else
@@ -372,14 +377,17 @@ class EnergyModel(nn.Module):
         if attention_pool:
             self.pool_expand = AttentionPoolExpand(feature_dim, n_master_nodes)
         else:
-            self.master_pool_ffn = scalar_ffn(feature_dim, hidden_dim)
+            self.master_pool_ffn = scalar_ffn(feature_dim, hidden_dim, use_norms=use_norms)
             self.master_expand   = nn.Sequential(
-                nn.RMSNorm(feature_dim),
+                nn.RMSNorm(feature_dim) if use_norms else nn.Identity(),
                 nn.LeakyReLU(),
                 nn.Linear(feature_dim, n_master_nodes * feature_dim)
             )
             init_sequential_(self.master_expand, "leaky_relu")
-        self.master_expand_norm = nn.Identity() if skip_master_expand_norm else EquivariantRMSNorm(feature_dim, degree=0)
+        self.master_expand_norm = (
+            nn.Identity() if skip_master_expand_norm or not use_norms
+            else EquivariantRMSNorm(feature_dim, degree=0)
+        )
 
         self.layers = nn.ModuleList([
             EnergyLayer(
@@ -397,20 +405,21 @@ class EnergyModel(nn.Module):
                 dist_rbf_num_basis=dist_rbf_num_basis,
                 dist_rbf_min=dist_rbf_min,
                 dist_rbf_cutoff=dist_rbf_cutoff,
+                use_norms=use_norms,
             )
             for m in range(num_layers)
         ])
 
         self.master_fusion = MasterFusionAttention(
             radial_net, max_degree, feature_dim, hidden_dim, num_heads=num_fusion_heads,
-            reduce_norms=reduce_norms,
+            reduce_norms=reduce_norms, use_norms=use_norms,
         )
         self.layer_norm_fusion = nn.ModuleDict({
-            str(l): (nn.Identity() if reduce_norms else EquivariantRMSNorm(feature_dim, degree=l))
+            str(l): (nn.Identity() if no_norms else EquivariantRMSNorm(feature_dim, degree=l))
             for l in range(max_degree + 1)
         })
 
-        self.readout = Readout(feature_dim, hidden_dim)
+        self.readout = Readout(feature_dim, hidden_dim, use_norms=use_norms)
 
         self.diag_enabled = False
 

@@ -41,6 +41,7 @@ class EqFSAClassifier(nn.Module):
         dist_rbf_min: float = 0.3,
         dist_rbf_cutoff: float = 25.0,
         linear_com: bool = False,
+        use_norms: bool = True,
     ):
         super().__init__()
         self.multi_layer_readout = multi_layer_readout
@@ -74,19 +75,22 @@ class EqFSAClassifier(nn.Module):
             dist_rbf_min=dist_rbf_min,
             dist_rbf_cutoff=dist_rbf_cutoff,
             linear_com=linear_com,
+            use_norms=use_norms,
         )
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
+        def _head_norm(dim: int) -> nn.Module:
+            return EquivariantRMSNorm(dim, degree=0) if use_norms else nn.Identity()
         self.classifier_head = nn.Sequential(
-            EquivariantRMSNorm(feature_dim, degree=0),
+            _head_norm(feature_dim),
             EquivariantLinear(feature_dim, hidden_dim, nonlinearity="leaky_relu"),
-            EquivariantRMSNorm(hidden_dim, degree=0),
+            _head_norm(hidden_dim),
             nn.LeakyReLU(),
             EquivariantLinear(hidden_dim, hidden_dim, nonlinearity="leaky_relu"),
-            EquivariantRMSNorm(hidden_dim, degree=0),
+            _head_norm(hidden_dim),
             nn.LeakyReLU(),
             EquivariantLinear(hidden_dim, hidden_dim, nonlinearity="leaky_relu"),
-            EquivariantRMSNorm(hidden_dim, degree=0),
+            _head_norm(hidden_dim),
             nn.LeakyReLU(),
             EquivariantLinear(hidden_dim, classes),
         )

@@ -35,36 +35,44 @@ def init_sequential_(seq: nn.Sequential, nonlinearity: str, final_nonlinearity: 
         init_linear_(linears[-1], final_nonlinearity)
 
 
-def scalar_ffn(feature_dim: int, hidden_dim: int, in_dim: int | None = None) -> nn.Sequential:
+def scalar_ffn(
+    feature_dim: int, hidden_dim: int, in_dim: int | None = None, use_norms: bool = True,
+) -> nn.Sequential:
     in_dim = feature_dim if in_dim is None else in_dim
+    def _norm(dim: int) -> nn.Module:
+        return nn.RMSNorm(dim) if use_norms else nn.Identity()
     seq = nn.Sequential(
-        nn.RMSNorm(in_dim),
+        _norm(in_dim),
         nn.Linear(in_dim, hidden_dim),
-        nn.RMSNorm(hidden_dim),
+        _norm(hidden_dim),
         nn.LeakyReLU(),
         nn.Linear(hidden_dim, hidden_dim),
-        nn.RMSNorm(hidden_dim),
+        _norm(hidden_dim),
         nn.LeakyReLU(),
         nn.Linear(hidden_dim, hidden_dim),
-        nn.RMSNorm(hidden_dim),
+        _norm(hidden_dim),
         nn.LeakyReLU(),
         nn.Linear(hidden_dim, feature_dim),
     )
     init_sequential_(seq, "leaky_relu")
     return seq
 
-def high_ord_ffn(feature_dim, hidden_dim, degree, in_dim: int | None = None) -> nn.Sequential:
+def high_ord_ffn(
+    feature_dim, hidden_dim, degree, in_dim: int | None = None, use_norms: bool = True,
+) -> nn.Sequential:
     in_dim = feature_dim if in_dim is None else in_dim
+    def _norm(dim: int) -> nn.Module:
+        return EquivariantRMSNorm(dim, degree) if use_norms else nn.Identity()
     seq = nn.Sequential(
-            EquivariantRMSNorm(in_dim, degree),
+            _norm(in_dim),
             EquivariantLinear(in_dim, hidden_dim),
-            EquivariantRMSNorm(hidden_dim, degree),
+            _norm(hidden_dim),
             GatedNonlinearity(hidden_dim),
             EquivariantLinear(hidden_dim, hidden_dim),
-            EquivariantRMSNorm(hidden_dim, degree),
+            _norm(hidden_dim),
             GatedNonlinearity(hidden_dim),
             EquivariantLinear(hidden_dim, hidden_dim),
-            EquivariantRMSNorm(hidden_dim, degree),
+            _norm(hidden_dim),
             GatedNonlinearity(hidden_dim),
             EquivariantLinear(hidden_dim, feature_dim),
         )
@@ -113,6 +121,7 @@ class RadialNetwork(nn.Module):
         edge_feature_dim: int = 0,
         envelope_floor: float = 0.02,
         linear_readout: bool = False,
+        use_norms: bool = True,
     ):
         super().__init__()
         self.num_basis     = num_basis
@@ -133,12 +142,13 @@ class RadialNetwork(nn.Module):
         if linear_readout:
             self.net = nn.Linear(num_basis + edge_feature_dim, num_heads, bias=False)
         else:
+            norm_cls = nn.RMSNorm if use_norms else nn.Identity
             self.net = nn.Sequential(
                 nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=True),
-                nn.RMSNorm(hidden_dim),
+                norm_cls(hidden_dim) if use_norms else norm_cls(),
                 nn.SiLU(),
                 nn.Linear(hidden_dim, hidden_dim, bias=False),
-                nn.RMSNorm(hidden_dim),
+                norm_cls(hidden_dim) if use_norms else norm_cls(),
                 nn.SiLU(),
                 nn.Linear(hidden_dim, num_heads, bias=False),
             )
@@ -169,12 +179,14 @@ class BatchedRadialNetwork(nn.Module):
         num_heads:     int = 1,
         envelope_floor: float = 0.02,
         radial_net_cls: type = None,
+        use_norms: bool = True,
     ):
         super().__init__()
         radial_net_cls = RadialNetwork if radial_net_cls is None else radial_net_cls
         self.n_copies = n_copies
         self.cutoff_radius = cutoff_radius
         self.envelope_floor = envelope_floor
+        self.use_norms = use_norms
 
         centres = torch.linspace(0.0, cutoff_radius, num_basis)
         self.register_buffer("centres", centres)
@@ -209,10 +221,12 @@ class BatchedRadialNetwork(nn.Module):
         if self.linear_readout:
             return torch.einsum("nb,jhb->jnh", basis, self.W1)
         h1 = torch.einsum("nb,jhb->jnh", basis, self.W1) + self.b1.unsqueeze(1)
-        h1 = F.rms_norm(h1, (h1.shape[-1],), None, None) * self.g1.unsqueeze(1)
+        if self.use_norms:
+            h1 = F.rms_norm(h1, (h1.shape[-1],), None, None) * self.g1.unsqueeze(1)
         h1 = F.silu(h1)
         h2 = torch.einsum("jnh,jgh->jng", h1, self.W2)
-        h2 = F.rms_norm(h2, (h2.shape[-1],), None, None) * self.g2.unsqueeze(1)
+        if self.use_norms:
+            h2 = F.rms_norm(h2, (h2.shape[-1],), None, None) * self.g2.unsqueeze(1)
         h2 = F.silu(h2)
         return torch.einsum("jnh,joh->jno", h2, self.W3)
 
@@ -664,13 +678,14 @@ class BatchedEquivariantRMSNorm(nn.Module):
 class BatchedHighOrdFFN(nn.Module):
     def __init__(
         self, feature_dim: int, hidden_dim: int, degree: int, n_copies: int,
-        floor: float = 0.5, eps: float = 1e-8, in_dim: int | None = None,
+        floor: float = 0.5, eps: float = 1e-8, in_dim: int | None = None, use_norms: bool = True,
     ):
         super().__init__()
         self.degree = degree
         self.floor = floor
         self.eps = eps
         self.n_copies = n_copies
+        self.use_norms = use_norms
 
         templates = [high_ord_ffn(feature_dim, hidden_dim, degree, in_dim=in_dim) for _ in range(n_copies)]
 
@@ -698,6 +713,8 @@ class BatchedHighOrdFFN(nn.Module):
         self.W4 = stack_lin(10)
 
     def _rms(self, x: torch.Tensor, gamma: torch.Tensor) -> torch.Tensor:
+        if not self.use_norms:
+            return x
         floor = 0.0 if self.degree == 0 else self.floor
         norm, x_dir = straight_through_norm_and_direction(x, dim=-1, floor=floor)
         rms = norm.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
