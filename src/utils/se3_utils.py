@@ -466,7 +466,7 @@ class AggregateFeatures(nn.Module):
         )
         init_sequential_(self.out, "selu")
 
-    def forward(self, f0, f1, f2):
+    def forward(self, f0, f1, f2, x_rel=None):
         f0_inv = self.f0_norm(f0.squeeze(-1)).unsqueeze(-1)
         f1_inv = self.f1_norm(f1).unsqueeze(-1).unsqueeze(-1)
         f2_inv = self.f2_norm(f2).unsqueeze(-1).unsqueeze(-1)
@@ -480,11 +480,26 @@ class AggregateFeatures(nn.Module):
         return f_out
 
 class DeterministicMeanAggregate(nn.Module):
-    def forward(self, f0, f1, f2):
+    def forward(self, f0, f1, f2, x_rel=None):
         f0_inv = f0.squeeze(-1)
         f1_inv = f1.norm(dim=-1)
         f2_inv = f2.norm(dim=-1)
         return ((f0_inv + f1_inv + f2_inv) / 3.0).unsqueeze(-1)
+
+class DirectionAwareMeanAggregate(nn.Module):
+    def forward(self, f0, f1, f2, x_rel=None):
+        f0_inv = f0.squeeze(-1)
+        f1_inv = f1.norm(dim=-1)
+        f2_inv = f2.norm(dim=-1)
+        if x_rel is None:
+            return ((f0_inv + f1_inv + f2_inv) / 3.0).unsqueeze(-1)
+
+        has_dir = (x_rel.norm(dim=-1, keepdim=True) > 1e-7).to(x_rel.dtype)
+        Y1 = get_spherical_harmonics(1, x_rel) * has_dir
+        Y2 = get_spherical_harmonics(2, x_rel) * has_dir
+        f1_dot = torch.einsum("...ci,...i->...c", f1, Y1)
+        f2_dot = torch.einsum("...cj,...j->...c", f2, Y2)
+        return ((f0_inv + f1_inv + f1_dot + f2_inv + f2_dot) / 5.0).unsqueeze(-1)
 
 class AttentionPoolExpand(nn.Module):
     def __init__(self, feature_dim: int, n_master_nodes: int):

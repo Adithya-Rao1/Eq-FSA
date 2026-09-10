@@ -310,6 +310,7 @@ class EnergyModel(nn.Module):
         decouple_ri_norm: bool = False,
         imaginary_only_ri: bool = False,
         deterministic_pool_agg: bool = False,
+        direction_aware_pool_agg: bool = False,
         attention_pool: bool = False,
         skip_master_expand_norm: bool = False,
         static_box: bool = False,
@@ -374,6 +375,7 @@ class EnergyModel(nn.Module):
         self.seed_radial_net = radial_net(num_basis=1, hidden_dim=hidden_dim, use_norms=use_norms)
 
         self.master_pool_agg = (
+            DirectionAwareMeanAggregate() if direction_aware_pool_agg else
             DeterministicMeanAggregate() if deterministic_pool_agg else
             AggregateFeatures(out_feat_dim=feature_dim, inp_feat_dim=feature_dim, hidden_dim=hidden_dim)
         )
@@ -503,7 +505,8 @@ class EnergyModel(nn.Module):
         x_rel_e = x_diff[edge_b, edge_i, edge_j]
         edge_feat_e = edge_feats[edge_b, edge_i, edge_j]
 
-        agg_per_atom = self.master_pool_agg(f0[0], f0[1], f0[2]).squeeze(-1)
+        x_rel_com = minimum_image(x_wrapped - x_com.unsqueeze(1), V)
+        agg_per_atom = self.master_pool_agg(f0[0], f0[1], f0[2], x_rel=x_rel_com).squeeze(-1)
         if self.attention_pool:
             g_a = self.pool_expand(agg_per_atom, node_mask).unsqueeze(-1)
         else:
