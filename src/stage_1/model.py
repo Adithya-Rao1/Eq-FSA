@@ -8,7 +8,7 @@ from typing import Dict, Optional, Tuple
 
 from stage_1.attention import SRAttention, MasterNodeAttention, MasterFusionAttention, SRCrossAttention
 from utils.se3_utils import *
-from utils.pw_bases import PWProjection, minimum_image, make_wavevectors
+from utils.pw_bases import PWProjection, minimum_image, make_wavevectors, to_fractional, to_cartesian
 from utils.calc_props import _MOL_FEAT_DIM
 
 if os.path.exists("sh1_cartesian.pt"):
@@ -24,14 +24,27 @@ else:
     torch.save(SH2_TO_CARTESIAN, "sh2_cartesian.pt")
 
 def masked_weighted_com(
-    x:    torch.Tensor,   
-    mass: torch.Tensor,  
-    mask: torch.Tensor,  
+    x:    torch.Tensor,
+    mass: torch.Tensor,
+    mask: torch.Tensor,
+    V:    Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     w = mass * mask.to(mass.dtype)
     has_atoms = mask.any(dim=1)
     w_sum = w.sum(dim=1, keepdim=True).clamp(min=1e-8)
-    com = (w.unsqueeze(-1) * x).sum(dim=1) / w_sum
+
+    if V is None:
+        com = (w.unsqueeze(-1) * x).sum(dim=1) / w_sum
+        return com, has_atoms
+
+    s = to_fractional(x, V)
+    theta = 2 * math.pi * s
+    w3 = w.unsqueeze(-1)
+    sin_mean = (w3 * torch.sin(theta)).sum(dim=1)
+    cos_mean = (w3 * torch.cos(theta)).sum(dim=1)
+    theta_com = torch.atan2(sin_mean, cos_mean)
+    s_com = theta_com / (2 * math.pi)
+    com = to_cartesian(s_com.unsqueeze(1), V).squeeze(1)
     return com, has_atoms
 
 def masked_mean(feat: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -65,9 +78,9 @@ def seed_equivariant_features(
 ) -> Dict[int, torch.Tensor]:
     if x_wrapped is None:
         x_wrapped = minimum_image(x, V)
-    center, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask)
+    center, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask, V=V)
 
-    x_rel   = x_wrapped - center.unsqueeze(1)
+    x_rel   = minimum_image(x_wrapped - center.unsqueeze(1), V)
     r_true  = x_rel.norm(dim=-1)
     r       = r_true.clamp(min=1e-8)
     has_dir = (r_true > 1e-7).unsqueeze(-1)
@@ -117,6 +130,9 @@ class EnergyLayer(nn.Module):
         decouple_ri_norm: bool = False,
         imaginary_only_ri: bool = False,
         reduce_norms: bool = False,
+        per_node_com: bool = False,
+        node_conditioned_k: bool = False,
+        alpha_floor: float = 1e-4,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -129,6 +145,8 @@ class EnergyLayer(nn.Module):
         self.normalize_z_by_n_real = normalize_z_by_n_real
         self.decouple_ri_norm = decouple_ri_norm
         self.imaginary_only_ri = imaginary_only_ri
+        self.per_node_com = per_node_com
+        self.node_conditioned_k = node_conditioned_k
         self.sr_attn = SRAttention(
             radial_net, max_degree, feature_dim, hidden_dim, k_max=k_max, edge_feat_dim=edge_feat_dim,
         )
@@ -144,7 +162,7 @@ class EnergyLayer(nn.Module):
         self.sigma_gate = BatchedGatedNonlinearity(feature_dim, degrees=list(range(max_degree + 1)))
 
         self.W_master_self = IrrepLinear(feature_dim)
-        self.master_attn = MasterNodeAttention(feature_dim, n_max, pw_e_cutoff, hidden_dim)
+        self.master_attn = MasterNodeAttention(feature_dim, n_max, pw_e_cutoff, hidden_dim, alpha_floor=alpha_floor)
         self.master_ln = nn.Identity() if reduce_norms else EquivariantRMSNorm(feature_dim, degree=0)
 
         norm_degrees = list(range(max_degree + 1))
@@ -178,6 +196,7 @@ class EnergyLayer(nn.Module):
         kvecs:       torch.Tensor,
         mode_mask:   torch.Tensor,
         return_scale_feat: bool = False,
+        V:           Optional[torch.Tensor] = None,
     ) -> Tuple[Dict[int, torch.Tensor], torch.Tensor]:
         B, N, _ = x_wrapped.shape
 
@@ -223,7 +242,9 @@ class EnergyLayer(nn.Module):
             return_scale_feat=return_scale_feat,
             decouple_ri_norm=self.decouple_ri_norm,
             imaginary_only_ri=self.imaginary_only_ri,
-            kvecs=kvecs, mode_mask=mode_mask,
+            per_node_com=self.per_node_com,
+            node_conditioned_k=self.node_conditioned_k,
+            kvecs=kvecs, mode_mask=mode_mask, V=V,
         )
         scale_feat = None
         if return_scale_feat:
@@ -242,12 +263,12 @@ class EnergyLayer(nn.Module):
 
 def _run_energy_layer(
     layer, f_in, f0, g_a_in, x_wrapped, x_com, node_mask,
-    edge_b, edge_i, edge_j, x_rel_e, edge_feat_e, kvecs, mode_mask,
+    edge_b, edge_i, edge_j, x_rel_e, edge_feat_e, kvecs, mode_mask, V=None,
 ):
     return layer(
         f_in=f_in, f0=f0, g_a_in=g_a_in, x_wrapped=x_wrapped, x_com=x_com, node_mask=node_mask,
         edge_b=edge_b, edge_i=edge_i, edge_j=edge_j, x_rel_e=x_rel_e, edge_feat_e=edge_feat_e,
-        kvecs=kvecs, mode_mask=mode_mask,
+        kvecs=kvecs, mode_mask=mode_mask, V=V,
     )
 
 def _compute_k_max(m: int, max_degree: int) -> int:
@@ -282,6 +303,9 @@ class EnergyModel(nn.Module):
         content_weighted_com: bool = False,
         per_layer_fusion: bool = False,
         reduce_norms: bool = False,
+        per_node_com: bool = False,
+        node_conditioned_k: bool = False,
+        alpha_floor: float = 1e-4,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -352,6 +376,9 @@ class EnergyModel(nn.Module):
                 decouple_ri_norm=decouple_ri_norm,
                 imaginary_only_ri=imaginary_only_ri,
                 reduce_norms=reduce_norms,
+                per_node_com=per_node_com,
+                node_conditioned_k=node_conditioned_k,
+                alpha_floor=alpha_floor,
             )
             for m in range(num_layers)
         ])
@@ -398,13 +425,14 @@ class EnergyModel(nn.Module):
         seed_masses=None,
         collect_scale_feats: bool = False,
         target_idx: torch.Tensor = None,
+        input_features: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         node_mask = node_mask.bool()
         atomic_masses = atomic_masses * node_mask.to(atomic_masses.dtype)
         seed_masses = atomic_masses if seed_masses is None else seed_masses * node_mask.to(seed_masses.dtype)
         B, N = node_types.shape
 
-        f0_raw = self.input_embedding(node_types)
+        f0_raw = input_features if input_features is not None else self.input_embedding(node_types)
         f0_ffn_out = self.f0_ffn(self.ln1(f0_raw))
 
         mol_ctx = self.mol_prop_emb(mol_props).unsqueeze(1).expand(-1, N, -1)
@@ -431,17 +459,17 @@ class EnergyModel(nn.Module):
         if self.content_weighted_com:
             x_com = self.com_weighting(f0_raw, x_wrapped, node_mask, exclude_idx=target_idx)
         else:
-            x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask)
+            x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask, V=V)
 
         effective_cutoff, kvecs, mode_mask = self._box_derived_quantities(V, B)
-
-        x_i = x_wrapped.unsqueeze(2).expand(B, N, N, 3)
-        x_j = x_wrapped.unsqueeze(1).expand(B, N, N, 3)
-        dist = (x_j - x_i).norm(dim=-1)
+        
+        x_diff_raw = x_wrapped.unsqueeze(1) - x_wrapped.unsqueeze(2) 
+        x_diff = minimum_image(x_diff_raw.reshape(B, N * N, 3), V).reshape(B, N, N, 3)
+        dist = x_diff.norm(dim=-1)
         self_mask = ~torch.eye(N, dtype=torch.bool, device=x.device).unsqueeze(0)
         pair_mask = node_mask.unsqueeze(2) & node_mask.unsqueeze(1) & (dist <= effective_cutoff) & self_mask
         edge_b, edge_i, edge_j = pair_mask.nonzero(as_tuple=True)
-        x_rel_e = x_wrapped[edge_b, edge_j] - x_wrapped[edge_b, edge_i]
+        x_rel_e = x_diff[edge_b, edge_i, edge_j]
         edge_feat_e = edge_feats[edge_b, edge_i, edge_j]
 
         agg_per_atom = self.master_pool_agg(f0[0], f0[1], f0[2]).squeeze(-1)
@@ -459,14 +487,14 @@ class EnergyModel(nn.Module):
             if self.grad_checkpoint and self.training:
                 f, g_a = checkpoint(
                     _run_energy_layer, layer, f, f0, g_a, x_wrapped, x_com, node_mask,
-                    edge_b, edge_i, edge_j, x_rel_e, edge_feat_e, kvecs, mode_mask,
+                    edge_b, edge_i, edge_j, x_rel_e, edge_feat_e, kvecs, mode_mask, V,
                     use_reentrant=False,
                 )
             elif collect_scale_feats:
                 f, g_a, scale_feat = layer(
                     f_in=f, f0=f0, g_a_in=g_a, x_wrapped=x_wrapped, x_com=x_com, node_mask=node_mask,
                     edge_b=edge_b, edge_i=edge_i, edge_j=edge_j, x_rel_e=x_rel_e, edge_feat_e=edge_feat_e,
-                    kvecs=kvecs, mode_mask=mode_mask,
+                    kvecs=kvecs, mode_mask=mode_mask, V=V,
                     return_scale_feat=True,
                 )
                 scale_feats.append(scale_feat)
@@ -474,16 +502,16 @@ class EnergyModel(nn.Module):
                 f, g_a = layer(
                     f_in=f, f0=f0, g_a_in=g_a, x_wrapped=x_wrapped, x_com=x_com, node_mask=node_mask,
                     edge_b=edge_b, edge_i=edge_i, edge_j=edge_j, x_rel_e=x_rel_e, edge_feat_e=edge_feat_e,
-                    kvecs=kvecs, mode_mask=mode_mask,
+                    kvecs=kvecs, mode_mask=mode_mask, V=V,
                 )
             if self.per_layer_fusion:
-                layer_fusion = self.master_fusion(f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com)
+                layer_fusion = self.master_fusion(f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com, V=V)
                 fusion_accum = {l: fusion_accum[l] + layer_fusion[l] for l in fusion_accum}
             if return_layer_states:
                 layer_states.append(f)
 
         fusion_out = fusion_accum if self.per_layer_fusion else self.master_fusion(
-            f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com,
+            f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com, V=V,
         )
         if self.ablate_max_degree is not None:
             fusion_out = {
