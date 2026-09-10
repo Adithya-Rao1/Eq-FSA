@@ -118,6 +118,32 @@ def calc_rdkit_mol_props(mol) -> list[float]:
 
     return out
 
+# Real atomic masses / valence-electron counts for the synthetic +1=H / -1=O charge convention
+# used across lr_sr (see mace_lr_model.py::CHARGE_TO_ELEMENT, lr_sr/dataset.py's
+# POSITIVE_TYPE_IDX/NEGATIVE_TYPE_IDX). Only fields meaningfully defined by bare atom counts
+# (no bonds/rings) are populated -- everything else stays at the same 0.0 mask value
+# calc_rdkit_mol_props uses on failure.
+_H_MASS = 1.008
+_O_MASS = 15.999
+_H_VALENCE_ELECTRONS = 1
+_O_VALENCE_ELECTRONS = 6
+
+def mol_props_from_atom_counts(n_h: torch.Tensor, n_o: torch.Tensor) -> torch.Tensor:
+    n_h = n_h.float() if torch.is_tensor(n_h) else torch.tensor(float(n_h))
+    n_o = n_o.float() if torch.is_tensor(n_o) else torch.tensor(float(n_o))
+    n_h, n_o = torch.broadcast_tensors(n_h, n_o)
+
+    vec = torch.zeros(*n_h.shape, _MOL_FEAT_DIM, dtype=n_h.dtype, device=n_h.device)
+    vec[..., _MOL_FEAT_NAMES.index("MolWt")] = n_h * _H_MASS + n_o * _O_MASS
+    vec[..., _MOL_FEAT_NAMES.index("HeavyAtomCount")] = n_o
+    vec[..., _MOL_FEAT_NAMES.index("HeavyAtomMolWt")] = n_o * _O_MASS
+    vec[..., _MOL_FEAT_NAMES.index("NumHeteroatoms")] = n_o
+    vec[..., _MOL_FEAT_NAMES.index("NumValenceElectrons")] = (
+        n_h * _H_VALENCE_ELECTRONS + n_o * _O_VALENCE_ELECTRONS
+    )
+    return vec
+
+
 def calc_rdkit_mol_props_smiles(smiles: str | None) -> list[float]:
     zero_vec = [0.0] * _MOL_FEAT_DIM
     if smiles is None:
