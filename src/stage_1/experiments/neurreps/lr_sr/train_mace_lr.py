@@ -44,6 +44,7 @@ def build_model(variant: str, mace_model, mace_init_state: dict, config: dict, d
     return MaceLRModel(
         mace_model, variant, feature_dim=config["feature_dim"], hidden_dim=config["hidden_dim"],
         n_max=config["n_max"], num_master_nodes=config["num_master_nodes"], rsa_sigma=config["rsa_sigma"],
+        num_lr_layers=config.get("num_lr_layers", 1),
     ).to(device)
 
 
@@ -222,31 +223,20 @@ def main():
     parser.add_argument("--n-max", type=int, default=2)
     parser.add_argument("--num-master-nodes", type=int, default=4)
     parser.add_argument("--rsa-sigma", type=float, default=5.0)
+    parser.add_argument("--num-lr-layers", type=int, default=1,)
     parser.add_argument("--feature-dim", type=int, default=32)
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--log-every", type=int, default=0,
-                         help="Print mean training loss (energy/force terms + current lr) every N "
-                              "epochs (0=silent, the previous default -- no per-epoch visibility at "
-                              "all otherwise).")
+    parser.add_argument("--log-every", type=int, default=0,)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--no-lr-schedule", dest="lr_schedule", action="store_false",
-                         help="Disable the LR schedule (default: on) -- linear warmup then cosine "
-                              "decay to --min-lr, exactly matching train_spice.py's scheduler "
-                              "(LinearLR -> CosineAnnealingLR via SequentialLR, stepped per-batch).")
-    parser.add_argument("--warmup-epochs", type=int, default=5,
-                         help="Epochs of linear LR warmup before cosine annealing begins (matches "
-                              "train_spice.py's own default).")
+    parser.add_argument("--no-lr-schedule", dest="lr_schedule", action="store_false",)
+    parser.add_argument("--warmup-epochs", type=int, default=5,)
     parser.add_argument("--min-lr", type=float, default=1e-6,
                          help="Cosine annealing floor (matches train_spice.py's own default).")
     parser.add_argument("--lambda-energy", type=float, default=1.0)
     parser.add_argument("--lambda-force", type=float, default=0.5)
-    parser.add_argument("--two-phase-loss", action="store_true",
-                         help="Curriculum loss: force-dominated for the first --phase1-epochs "
-                              "(denser per-config supervision, N*3 components vs. 1 energy scalar), "
-                              "then energy-dominated for the rest. Overrides --lambda-energy/"
-                              "--lambda-force entirely when set.")
+    parser.add_argument("--two-phase-loss", action="store_true")
     parser.add_argument("--phase1-epochs", type=int, default=100)
     parser.add_argument("--phase1-lambda-energy", type=float, default=1.0)
     parser.add_argument("--phase1-lambda-force", type=float, default=1000.0)
