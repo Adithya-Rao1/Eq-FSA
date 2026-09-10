@@ -94,12 +94,12 @@ def build_model_for_variant(
             imaginary_only_ri=config.get("eqfsa_imaginary_only_ri", False),
             decouple_ri_norm=config.get("eqfsa_decouple_ri_norm", True),
             reduce_norms=config.get("eqfsa_reduce_norms", True),
-            dist_weighted_content=config.get("eqfsa_dist_weighted_content", False),
+            dist_weighted_content=config.get("eqfsa_dist_weighted_content", True),
             dist_rbf_num_basis=config.get("eqfsa_dist_rbf_num_basis", 12),
             dist_rbf_min=config.get("eqfsa_dist_rbf_min", 0.3),
             dist_rbf_cutoff=config.get("eqfsa_dist_rbf_cutoff", 25.0),
             linear_com=config.get("eqfsa_linear_com", False),
-            use_norms=not config.get("eqfsa_no_norms_except_z", False),
+            use_norms=not config.get("eqfsa_no_norms_except_z", True),
             qk_pre_elu_scale=config.get("eqfsa_qk_pre_elu_scale", 1.0),
             direction_aware_pool_agg=config.get("eqfsa_direction_aware_pool_agg", False),
         )
@@ -330,14 +330,14 @@ def main():
     parser.add_argument("--eqfsa-imaginary-only-ri", action="store_true")
     parser.add_argument("--no-eqfsa-decouple-ri-norm", dest="eqfsa_decouple_ri_norm", action="store_false")
     parser.add_argument("--no-eqfsa-reduce-norms", dest="eqfsa_reduce_norms", action="store_false")
-    parser.add_argument("--eqfsa-dist-weighted-content", action="store_true",)
+    parser.add_argument("--no-eqfsa-dist-weighted-content", dest="eqfsa_dist_weighted_content", action="store_false",)
     parser.add_argument("--eqfsa-dist-rbf-num-basis", type=int, default=12)
     parser.add_argument("--eqfsa-dist-rbf-min", type=float, default=0.3)
     parser.add_argument("--eqfsa-dist-rbf-cutoff", type=float, default=25.0)
     parser.add_argument("--eqfsa-linear-com", action="store_true",)
     parser.add_argument("--eqfsa-qk-pre-elu-scale", type=float, default=1.0,)
     parser.add_argument("--eqfsa-direction-aware-pool-agg", action="store_true",)
-    parser.add_argument("--eqfsa-no-norms-except-z", action="store_true",)
+    parser.add_argument("--no-eqfsa-no-norms-except-z", dest="eqfsa_no_norms_except_z", action="store_false",)
     parser.add_argument("--qk-gamma-wd", type=float, default=0.0,)
     parser.add_argument("--cutoff", type=float, default=5.0)
     parser.add_argument("--epochs", type=int, default=60)
