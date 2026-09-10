@@ -74,6 +74,23 @@ def minimum_image(dx: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
     ds_mic = ds - torch.round(ds)
     return to_cartesian(ds_mic, V)
 
+def minimum_image_like(dx: torch.Tensor, dx_reference: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
+    """Wraps dx into the periodic image chosen by dx_reference, instead of wrapping dx on its own.
+
+    Needed whenever dx has been rescaled in a way that changes its magnitude without changing the
+    underlying physical position it represents (e.g. an artificially inflated COM reference).
+    Wrapping such a dx independently can flip to a different periodic image purely because the
+    rescaling happened to land its fractional coordinate near a rounding boundary (round() has a
+    hard discontinuity there) -- producing a spurious, discontinuous jump uncorrelated with any
+    real geometric signal. Tying the image choice to a reference with the true physical magnitude
+    avoids this: confirmed directly to eliminate a case where an inflated COM's fractional
+    coordinate sat at 7.4988-7.5064 across 5 classes, crossing the round-to-nearest boundary
+    between two of them and producing a fake, non-generalizable "signal".
+    """
+    shift = torch.round(to_fractional(dx_reference, V))
+    ds = to_fractional(dx, V) - shift
+    return to_cartesian(ds, V)
+
 def reciprocal_lattice(V: torch.Tensor) -> torch.Tensor:
     return 2 * math.pi * safe_inv(V).mT
 

@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from typing import Dict, Optional, Tuple, Union
 
 from utils.se3_utils import *
-from utils.pw_bases import make_wavevectors, minimum_image
+from utils.pw_bases import make_wavevectors, minimum_image, minimum_image_like
 
 def _rms_scalar_norm(t: torch.Tensor, gamma: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     rms = t.pow(2).mean(dim=-1, keepdim=True).clamp(min=eps).sqrt()
@@ -448,12 +448,13 @@ class MasterFusionAttention(nn.Module):
         N_a = g_a.shape[1]
         H, Ch = self.num_heads, self.head_dim
         
-        x_rel = x - x_com.unsqueeze(1)
-        if V is not None:
-            x_rel = minimum_image(x_rel, V)
-        x_rel_dir = x_rel if x_com_dir is None else x - x_com_dir.unsqueeze(1)
-        if x_com_dir is not None and V is not None:
-            x_rel_dir = minimum_image(x_rel_dir, V)
+        x_rel_raw = x - x_com.unsqueeze(1)
+        x_rel = minimum_image(x_rel_raw, V) if V is not None else x_rel_raw
+        if x_com_dir is None:
+            x_rel_dir = x_rel
+        else:
+            x_rel_dir_raw = x - x_com_dir.unsqueeze(1)
+            x_rel_dir = minimum_image_like(x_rel_dir_raw, x_rel_raw, V) if V is not None else x_rel_dir_raw
         x_rel_flat = x_rel.reshape(B * N, 3)
         x_rel_dir_flat = x_rel_dir.reshape(B * N, 3)
         has_dir = (x_rel_dir.norm(dim=-1) > 1e-7).to(x.dtype).view(B, N, 1, 1)

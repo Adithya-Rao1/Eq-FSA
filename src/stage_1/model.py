@@ -8,7 +8,9 @@ from typing import Dict, Optional, Tuple
 
 from stage_1.attention import SRAttention, MasterNodeAttention, MasterFusionAttention, SRCrossAttention
 from utils.se3_utils import *
-from utils.pw_bases import PWProjection, minimum_image, make_wavevectors, to_fractional, to_cartesian
+from utils.pw_bases import (
+    PWProjection, minimum_image, minimum_image_like, make_wavevectors, to_fractional, to_cartesian,
+)
 from utils.calc_props import _MOL_FEAT_DIM
 
 if os.path.exists("sh1_cartesian.pt"):
@@ -513,7 +515,12 @@ class EnergyModel(nn.Module):
         x_rel_e = x_diff[edge_b, edge_i, edge_j]
         edge_feat_e = edge_feats[edge_b, edge_i, edge_j]
 
-        x_rel_com = minimum_image(x_wrapped - x_com_geom.unsqueeze(1), V)
+        if self.boost_com_by_n_real:
+            x_rel_com = minimum_image_like(
+                x_wrapped - x_com_geom.unsqueeze(1), x_wrapped - x_com.unsqueeze(1), V,
+            )
+        else:
+            x_rel_com = minimum_image(x_wrapped - x_com_geom.unsqueeze(1), V)
         agg_per_atom = self.master_pool_agg(f0[0], f0[1], f0[2], x_rel=x_rel_com).squeeze(-1)
         if self.attention_pool:
             g_a = self.pool_expand(agg_per_atom, node_mask).unsqueeze(-1)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from stage_1.model import EnergyModel, minimum_image, masked_weighted_com
+from stage_1.model import EnergyModel, minimum_image, minimum_image_like, masked_weighted_com
 from utils.se3_utils import (
     DirectionAwareNormReadout, EquivariantLinear, EquivariantNormReadout, EquivariantRMSNorm,
 )
@@ -154,11 +154,15 @@ class EqFSAClassifier(nn.Module):
             if self.energy_model.boost_com_by_n_real:
                 n_real = node_mask.sum(dim=1, keepdim=True).clamp(min=1).to(x_com.dtype)
                 x_com_geom = x_com * n_real
+                x_rel_readout = minimum_image_like(
+                    (x_wrapped[batch_ar, target_idx] - x_com_geom).unsqueeze(1),
+                    (x_wrapped[batch_ar, target_idx] - x_com).unsqueeze(1), V,
+                ).squeeze(1)
             else:
                 x_com_geom = x_com
-            x_rel_readout = minimum_image(
-                (x_wrapped[batch_ar, target_idx] - x_com_geom).unsqueeze(1), V,
-            ).squeeze(1)
+                x_rel_readout = minimum_image(
+                    (x_wrapped[batch_ar, target_idx] - x_com_geom).unsqueeze(1), V,
+                ).squeeze(1)
 
         if self.multi_layer_readout:
             f, layer_states = self.energy_model(
