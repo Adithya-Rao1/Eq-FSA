@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 import torch
 from torch.utils.data import Dataset
 
-from utils.calc_props import _MOL_FEAT_DIM
+from utils.calc_props import mol_props_from_atom_counts
 from stage_1.experiments.neurreps.lr_sr.physics import compute_energy_and_forces
 
 N_ATOMS = 128
@@ -74,7 +74,7 @@ def generate_configuration(seed: int) -> Dict[str, torch.Tensor]:
     pos_b, charges_b, V_b = positions.unsqueeze(0), charges.unsqueeze(0), V.unsqueeze(0)
     energy, forces = compute_energy_and_forces(pos_b, charges_b, V_b)
 
-    mol_props = torch.randn(_MOL_FEAT_DIM, generator=generator, dtype=torch.double)
+    mol_props = mol_props_from_atom_counts(N_POSITIVE, N_NEGATIVE).double()
 
     return {
         "x": positions.float(),
