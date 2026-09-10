@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -172,22 +174,38 @@ class SRAttention(nn.Module):
 class MasterNodeAttention(nn.Module):
     def __init__(
         self, feature_dim: int, n_max: int, pw_e_cutoff: Optional[float] = None, hidden_dim: int = 128,
-        alpha_floor: float = 1e-4,
+        alpha_floor: float = 1e-4, dist_weighted_content: bool = False,
+        dist_rbf_num_basis: int = 12, dist_rbf_min: float = 0.3, dist_rbf_cutoff: float = 25.0,
     ):
         super().__init__()
         self.feature_dim = feature_dim
         self.n_max = n_max
         self.pw_e_cutoff = pw_e_cutoff
         self.alpha_floor = alpha_floor
+        self.dist_weighted_content = dist_weighted_content
+        self.dist_rbf_num_basis = dist_rbf_num_basis
 
-        self.W_QK = BatchedHighOrdFFN(feature_dim, hidden_dim, degree=1, n_copies=2)
+        kv_in_dim = feature_dim + dist_rbf_num_basis if dist_weighted_content else None
+        self.W_QK = BatchedHighOrdFFN(feature_dim, hidden_dim, degree=1, n_copies=2, in_dim=kv_in_dim)
         self.w_vq_norm = EquivariantRMSNorm(feature_dim, 1)
         self.w_vk_norm = EquivariantRMSNorm(feature_dim, 1)
 
         self.W_V0 = nn.Sequential(
-            scalar_ffn(feature_dim, hidden_dim),
+            scalar_ffn(feature_dim, hidden_dim, in_dim=kv_in_dim),
             nn.RMSNorm(feature_dim),
         )
+
+        if dist_weighted_content:
+            centers = torch.logspace(
+                math.log10(dist_rbf_min), math.log10(dist_rbf_cutoff), dist_rbf_num_basis,
+            )
+            gaps = centers[1:] - centers[:-1]
+            widths = torch.empty(dist_rbf_num_basis)
+            widths[0] = gaps[0]
+            widths[-1] = gaps[-1]
+            widths[1:-1] = (gaps[:-1] + gaps[1:]) / 2
+            self.register_buffer("dist_rbf_centers", centers)
+            self.register_buffer("dist_rbf_inv_width_sq", -1.0 / (2.0 * widths ** 2))
         self.s_ri_norm = nn.RMSNorm(2 * feature_dim)
         self.s_re_norm = nn.RMSNorm(feature_dim)
         self.s_im_norm = nn.RMSNorm(feature_dim)
@@ -220,6 +238,10 @@ class MasterNodeAttention(nn.Module):
         qk_out = self.W_QK(torch.stack([g_a_padded, f_in0_padded], dim=1))
         return qk_out[:, 0, :N_a], qk_out[:, 1, :N]
 
+    def _dist_basis(self, dist: torch.Tensor) -> torch.Tensor:
+        diff = dist - self.dist_rbf_centers.view(*([1] * (dist.dim() - 1)), -1)
+        return torch.exp(self.dist_rbf_inv_width_sq * diff * diff)
+
     def forward(
         self,
         g_a:       torch.Tensor,
@@ -240,7 +262,19 @@ class MasterNodeAttention(nn.Module):
         B, N_a, C, _ = g_a.shape
         m = node_mask.to(x.dtype)
 
-        Q_pre_norm, K_pre_norm = self.qk_pre_norm(g_a, f_in0)
+        if self.dist_weighted_content:
+            x_rel_to_com_content = x - x_com.unsqueeze(1)
+            if V is not None:
+                x_rel_to_com_content = minimum_image(x_rel_to_com_content, V)
+            dist_to_com_content = x_rel_to_com_content.norm(dim=-1, keepdim=True)
+            dist_basis = self._dist_basis(dist_to_com_content)
+            f_in0_kv = torch.cat([f_in0.squeeze(-1), dist_basis], dim=-1).unsqueeze(-1)
+            g_a_kv = F.pad(g_a, (0, 0, 0, self.dist_rbf_num_basis))
+        else:
+            f_in0_kv = f_in0
+            g_a_kv = g_a
+
+        Q_pre_norm, K_pre_norm = self.qk_pre_norm(g_a_kv, f_in0_kv)
         Q = self.w_vq_norm(Q_pre_norm).squeeze(-1)
         K = self.w_vk_norm(K_pre_norm).squeeze(-1)
         phi_Q = F.elu(Q) + 1
@@ -300,7 +334,7 @@ class MasterNodeAttention(nn.Module):
         cos_g = torch.cos(phase_g) * mode_mask_f.unsqueeze(1)
         sin_g = torch.sin(phase_g) * mode_mask_f.unsqueeze(1)
 
-        V_proj0 = self.W_V0(f_in0.squeeze(-1)).unsqueeze(-1)
+        V_proj0 = self.W_V0(f_in0_kv.squeeze(-1)).unsqueeze(-1)
 
         if node_conditioned_k:
             raw_S_re0 = torch.einsum("bagc,bgnd,bgm->bamcnd", phi_K_use, V_proj0, cos_g)

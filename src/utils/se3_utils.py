@@ -35,10 +35,11 @@ def init_sequential_(seq: nn.Sequential, nonlinearity: str, final_nonlinearity: 
         init_linear_(linears[-1], final_nonlinearity)
 
 
-def scalar_ffn(feature_dim: int, hidden_dim: int) -> nn.Sequential:
+def scalar_ffn(feature_dim: int, hidden_dim: int, in_dim: int | None = None) -> nn.Sequential:
+    in_dim = feature_dim if in_dim is None else in_dim
     seq = nn.Sequential(
-        nn.RMSNorm(feature_dim),
-        nn.Linear(feature_dim, hidden_dim),
+        nn.RMSNorm(in_dim),
+        nn.Linear(in_dim, hidden_dim),
         nn.RMSNorm(hidden_dim),
         nn.LeakyReLU(),
         nn.Linear(hidden_dim, hidden_dim),
@@ -52,10 +53,11 @@ def scalar_ffn(feature_dim: int, hidden_dim: int) -> nn.Sequential:
     init_sequential_(seq, "leaky_relu")
     return seq
 
-def high_ord_ffn(feature_dim, hidden_dim, degree) -> nn.Sequential:
+def high_ord_ffn(feature_dim, hidden_dim, degree, in_dim: int | None = None) -> nn.Sequential:
+    in_dim = feature_dim if in_dim is None else in_dim
     seq = nn.Sequential(
-            EquivariantRMSNorm(feature_dim, degree),
-            EquivariantLinear(feature_dim, hidden_dim),
+            EquivariantRMSNorm(in_dim, degree),
+            EquivariantLinear(in_dim, hidden_dim),
             EquivariantRMSNorm(hidden_dim, degree),
             GatedNonlinearity(hidden_dim),
             EquivariantLinear(hidden_dim, hidden_dim),
@@ -662,7 +664,7 @@ class BatchedEquivariantRMSNorm(nn.Module):
 class BatchedHighOrdFFN(nn.Module):
     def __init__(
         self, feature_dim: int, hidden_dim: int, degree: int, n_copies: int,
-        floor: float = 0.5, eps: float = 1e-8,
+        floor: float = 0.5, eps: float = 1e-8, in_dim: int | None = None,
     ):
         super().__init__()
         self.degree = degree
@@ -670,7 +672,7 @@ class BatchedHighOrdFFN(nn.Module):
         self.eps = eps
         self.n_copies = n_copies
 
-        templates = [high_ord_ffn(feature_dim, hidden_dim, degree) for _ in range(n_copies)]
+        templates = [high_ord_ffn(feature_dim, hidden_dim, degree, in_dim=in_dim) for _ in range(n_copies)]
 
         def stack_rms(idx):
             return nn.Parameter(torch.stack([t[idx].gamma.detach().clone() for t in templates]))

@@ -36,6 +36,10 @@ class EqFSAClassifier(nn.Module):
         content_weighted_com: bool = False,
         per_layer_fusion: bool = True,
         reduce_norms: bool = True,
+        dist_weighted_content: bool = False,
+        dist_rbf_num_basis: int = 12,
+        dist_rbf_min: float = 0.3,
+        dist_rbf_cutoff: float = 25.0,
     ):
         super().__init__()
         self.multi_layer_readout = multi_layer_readout
@@ -64,6 +68,10 @@ class EqFSAClassifier(nn.Module):
             content_weighted_com=content_weighted_com,
             per_layer_fusion=per_layer_fusion,
             reduce_norms=reduce_norms,
+            dist_weighted_content=dist_weighted_content,
+            dist_rbf_num_basis=dist_rbf_num_basis,
+            dist_rbf_min=dist_rbf_min,
+            dist_rbf_cutoff=dist_rbf_cutoff,
         )
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)

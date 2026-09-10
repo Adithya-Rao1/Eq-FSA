@@ -133,6 +133,10 @@ class EnergyLayer(nn.Module):
         per_node_com: bool = False,
         node_conditioned_k: bool = False,
         alpha_floor: float = 1e-4,
+        dist_weighted_content: bool = False,
+        dist_rbf_num_basis: int = 12,
+        dist_rbf_min: float = 0.3,
+        dist_rbf_cutoff: float = 25.0,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -162,7 +166,11 @@ class EnergyLayer(nn.Module):
         self.sigma_gate = BatchedGatedNonlinearity(feature_dim, degrees=list(range(max_degree + 1)))
 
         self.W_master_self = IrrepLinear(feature_dim)
-        self.master_attn = MasterNodeAttention(feature_dim, n_max, pw_e_cutoff, hidden_dim, alpha_floor=alpha_floor)
+        self.master_attn = MasterNodeAttention(
+            feature_dim, n_max, pw_e_cutoff, hidden_dim, alpha_floor=alpha_floor,
+            dist_weighted_content=dist_weighted_content, dist_rbf_num_basis=dist_rbf_num_basis,
+            dist_rbf_min=dist_rbf_min, dist_rbf_cutoff=dist_rbf_cutoff,
+        )
         self.master_ln = nn.Identity() if reduce_norms else EquivariantRMSNorm(feature_dim, degree=0)
 
         norm_degrees = list(range(max_degree + 1))
@@ -306,6 +314,10 @@ class EnergyModel(nn.Module):
         per_node_com: bool = False,
         node_conditioned_k: bool = False,
         alpha_floor: float = 1e-4,
+        dist_weighted_content: bool = False,
+        dist_rbf_num_basis: int = 12,
+        dist_rbf_min: float = 0.3,
+        dist_rbf_cutoff: float = 25.0,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -379,6 +391,10 @@ class EnergyModel(nn.Module):
                 per_node_com=per_node_com,
                 node_conditioned_k=node_conditioned_k,
                 alpha_floor=alpha_floor,
+                dist_weighted_content=dist_weighted_content,
+                dist_rbf_num_basis=dist_rbf_num_basis,
+                dist_rbf_min=dist_rbf_min,
+                dist_rbf_cutoff=dist_rbf_cutoff,
             )
             for m in range(num_layers)
         ])
