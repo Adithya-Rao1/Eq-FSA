@@ -118,11 +118,6 @@ def calc_rdkit_mol_props(mol) -> list[float]:
 
     return out
 
-# Real atomic masses / valence-electron counts for the synthetic +1=H / -1=O charge convention
-# used across lr_sr (see mace_lr_model.py::CHARGE_TO_ELEMENT, lr_sr/dataset.py's
-# POSITIVE_TYPE_IDX/NEGATIVE_TYPE_IDX). Only fields meaningfully defined by bare atom counts
-# (no bonds/rings) are populated -- everything else stays at the same 0.0 mask value
-# calc_rdkit_mol_props uses on failure.
 _H_MASS = 1.008
 _O_MASS = 15.999
 _H_VALENCE_ELECTRONS = 1
