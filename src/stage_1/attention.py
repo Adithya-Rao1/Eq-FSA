@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from typing import Dict, Optional, Tuple, Union
 
 from utils.se3_utils import *
-from utils.pw_bases import make_wavevectors
+from utils.pw_bases import make_wavevectors, minimum_image
 
 def _rms_scalar_norm(t: torch.Tensor, gamma: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     rms = t.pow(2).mean(dim=-1, keepdim=True).clamp(min=eps).sqrt()
@@ -270,13 +270,16 @@ class MasterNodeAttention(nn.Module):
                 self._diag_ipr = 1.0 / w_diag_norm.pow(2).sum(dim=-1).clamp(min=1e-12)
 
         if per_node_com:
-            dist_to_com = (x - x_com.unsqueeze(1)).norm(dim=-1, keepdim=True)
+            x_rel_to_com = x - x_com.unsqueeze(1)
+            if V is not None:
+                x_rel_to_com = minimum_image(x_rel_to_com, V)
+            dist_to_com = x_rel_to_com.norm(dim=-1, keepdim=True)
             dist_feat = self.spatial_radial(dist_to_com)
             spatial_q = self.spatial_query_proj(g_a.squeeze(-1))
             spatial_logit = torch.einsum("bah,bgh->bag", spatial_q, dist_feat) / (dist_feat.shape[-1] ** 0.5)
             spatial_logit = spatial_logit.masked_fill(~m.bool().unsqueeze(1), -1e9)
             spatial_w = torch.softmax(spatial_logit, dim=-1)
-            x_com_use = torch.einsum("bag,bgi->bai", spatial_w, x)
+            x_com_use = x_com.unsqueeze(1) + torch.einsum("bag,bgi->bai", spatial_w, x_rel_to_com)
         else:
             x_com_use = x_com.unsqueeze(1).expand(B, N_a, -1)
 
@@ -396,12 +399,15 @@ class MasterFusionAttention(nn.Module):
         g_a:     torch.Tensor,
         x:       torch.Tensor,
         x_com:   torch.Tensor,
+        V:       Optional[torch.Tensor] = None,
     ) -> Dict[int, torch.Tensor]:
         B, N, C, _ = f_atoms[0].shape
         N_a = g_a.shape[1]
         H, Ch = self.num_heads, self.head_dim
 
         x_rel = x - x_com.unsqueeze(1)
+        if V is not None:
+            x_rel = minimum_image(x_rel, V)
         x_rel_flat = x_rel.reshape(B * N, 3)
         has_dir = (x_rel.norm(dim=-1) > 1e-7).to(x.dtype).view(B, N, 1, 1)
 
