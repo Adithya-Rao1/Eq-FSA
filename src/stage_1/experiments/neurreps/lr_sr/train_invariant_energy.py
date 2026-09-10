@@ -4,6 +4,7 @@ import argparse
 import csv
 import math
 import os
+import re
 import time
 
 import torch
@@ -51,11 +52,14 @@ def detect_device(requested: str | None) -> torch.device:
     return torch.device("cpu")
 
 
+_MASTER_ATTN_W_QK_RE = re.compile(r"(?:^|\.)master_attn\.W_QK\.")
+
+
 def build_optimizer(model: torch.nn.Module, lr: float, qk_gamma_wd: float) -> torch.optim.Optimizer:
     decay_params, other_params = [], []
     for name, p in model.named_parameters():
         if (name.endswith("w_vq_norm.gamma") or name.endswith("w_vk_norm.gamma")
-                or name.startswith("master_attn.W_QK.")
+                or _MASTER_ATTN_W_QK_RE.search(name)
                 or name.endswith("s_ri_norm.weight")):
             decay_params.append(p)
         else:
@@ -71,11 +75,11 @@ def build_model(encoder: str, num_outputs: int, config: dict) -> torch.nn.Module
         return EqFSAEncoder(
             num_master_nodes=config["num_master_nodes"], feature_dim=config["feature_dim"],
             hidden_dim=config["hidden_dim"], n_max=config["n_max"], num_outputs=num_outputs,
+            num_layers=config.get("eqfsa_num_layers", 4),
+            edge_cutoff=config.get("eqfsa_edge_cutoff", 5.0),
             use_scale_feat=config.get("eqfsa_scale_feat", True),
             use_per_node_com=config.get("eqfsa_per_node_com", True),
-            rescale_init_scale=config.get("eqfsa_rescale_init", 500.0),
             alpha_floor=config.get("eqfsa_alpha_floor", 1e-4),
-            use_input_dependent_g_a=config.get("eqfsa_input_dependent_g_a", True),
             use_node_conditioned_k=config.get("eqfsa_node_conditioned_k", True),
             use_linear_decoder=config.get("eqfsa_linear_decoder", False),
             use_normalize_z_by_n_real=config.get("eqfsa_normalize_z_by_n_real", True),
@@ -251,12 +255,12 @@ def main():
     parser.add_argument("--qk-gamma-wd", type=float, default=0.0)
     parser.add_argument("--no-eqfsa-scale-feat", dest="eqfsa_scale_feat", action="store_false")
     parser.add_argument("--no-eqfsa-per-node-com", dest="eqfsa_per_node_com", action="store_false")
-    parser.add_argument("--no-eqfsa-input-dependent-g-a", dest="eqfsa_input_dependent_g_a", action="store_false")
     parser.add_argument("--no-eqfsa-node-conditioned-k", dest="eqfsa_node_conditioned_k", action="store_false")
     parser.add_argument("--no-eqfsa-normalize-z-by-n-real", dest="eqfsa_normalize_z_by_n_real", action="store_false",)
     parser.add_argument("--eqfsa-linear-decoder", action="store_true")
     parser.add_argument("--eqfsa-alpha-floor", type=float, default=1e-4)
-    parser.add_argument("--eqfsa-rescale-init", type=float, default=500.0)
+    parser.add_argument("--eqfsa-num-layers", type=int, default=4)
+    parser.add_argument("--eqfsa-edge-cutoff", type=float, default=5.0,)
     parser.add_argument("--num-realizations", type=int, default=3)
     parser.add_argument("--log-every", type=int, default=0, help="Print training loss every N steps (0=silent)")
     parser.add_argument("--seed", type=int, default=0)
