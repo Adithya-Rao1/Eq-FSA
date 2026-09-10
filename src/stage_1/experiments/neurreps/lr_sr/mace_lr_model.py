@@ -11,7 +11,7 @@ from utils.se3_utils import AggregateFeatures, EquivariantRMSNorm, RadialNetwork
 
 MACE_OFF_MODEL_SIZE = "small"
 MACE_OFF_DTYPE = "float32"
-CHARGE_TO_ELEMENT = {1.0: 1, -1.0: 8}  # +1e -> H (Z=1), -1e -> O (Z=8); see module docstring
+CHARGE_TO_ELEMENT = {1.0: 1, -1.0: 8}  # +1e -> H (Z=1), -1e -> O (Z=8)
 
 
 def load_frozen_mace_off(model_size: str = MACE_OFF_MODEL_SIZE, device: str = "cpu", default_dtype: str = MACE_OFF_DTYPE):
@@ -90,12 +90,13 @@ class MaceLRModel(nn.Module):
     def __init__(
         self, mace_model, variant: str, feature_dim: int = 32, hidden_dim: int = 64,
         n_max: int = 2, num_master_nodes: int = 4, rsa_sigma: float = 5.0,
-        max_degree: int = 2, num_fusion_heads: int = 4,
+        max_degree: int = 2, num_fusion_heads: int = 4, num_lr_layers: int = 1,
     ):
         super().__init__()
         assert variant in ("none", "sr_only", "eqfsa", "rsa")
         self.mace_model = mace_model
         self.variant = variant
+        self.num_lr_layers = num_lr_layers
         self._graph_cache: dict = {}
         for p in self.mace_model.parameters():
             p.requires_grad_(False)
@@ -121,7 +122,7 @@ class MaceLRModel(nn.Module):
             )
             init_sequential_(self.master_expand, "leaky_relu")
             self.master_expand_norm = EquivariantRMSNorm(feature_dim, degree=0)
-            self.lr_attn = MasterNodeAttention(feature_dim, n_max, hidden_dim=hidden_dim)
+            self.master_attn = MasterNodeAttention(feature_dim, n_max, hidden_dim=hidden_dim)
             self.master_fusion = MasterFusionAttention(
                 RadialNetwork, max_degree, feature_dim, hidden_dim, num_heads=num_fusion_heads,
             )
@@ -153,12 +154,16 @@ class MaceLRModel(nn.Module):
             g_a = self.master_expand(pooled_in).view(B, self.num_master_nodes, -1).unsqueeze(-1)
             g_a = self.master_expand_norm(g_a)
 
-            g_a_out = g_a.squeeze(-1) + self.lr_attn(g_a, f_in0, positions, x_com, mask, V).squeeze(-1)
-
-            fusion_out = self.master_fusion(
-                f_atoms=f_atoms, g_a=g_a_out.unsqueeze(-1), x=minimum_image(positions, V), x_com=x_com,
-            )
-            fusion_scalar = self.fusion_pool(fusion_out[0], fusion_out[1], fusion_out[2]).squeeze(-1)
+            x_wrapped = minimum_image(positions, V)
+            fusion_accum = {l: torch.zeros_like(f_atoms[l]) for l in f_atoms}
+            for _ in range(self.num_lr_layers):
+                g_a_out = g_a.squeeze(-1) + self.master_attn(g_a, f_in0, positions, x_com, mask, V).squeeze(-1)
+                g_a = g_a_out.unsqueeze(-1)
+                layer_fusion = self.master_fusion(
+                    f_atoms=f_atoms, g_a=g_a, x=x_wrapped, x_com=x_com, V=V,
+                )
+                fusion_accum = {l: fusion_accum[l] + layer_fusion[l] for l in fusion_accum}
+            fusion_scalar = self.fusion_pool(fusion_accum[0], fusion_accum[1], fusion_accum[2]).squeeze(-1)
             fusion_pooled = masked_mean(fusion_scalar, mask)
 
             decoder_in = torch.cat([g_a_out.reshape(B, -1), fusion_pooled], dim=-1)
@@ -176,9 +181,9 @@ class MaceLRModel(nn.Module):
         N = positions_batch.shape[1]
         mace_batch.positions = positions_batch.reshape(-1, 3)
 
-        data_dict = mace_batch.to_dict()  # VERIFY ON REMOTE: confirm Batch exposes .to_dict()
+        data_dict = mace_batch.to_dict()  
         out = self.mace_model(data_dict, training=self.training, compute_force=False)
-        node_energy = out["node_energy"].reshape(positions_batch.shape[0], N)  # VERIFY ON REMOTE: confirm this key name
+        node_energy = out["node_energy"].reshape(positions_batch.shape[0], N)  
         node_energy = node_energy.to(positions_batch.dtype)
 
         node_e0 = self.mace_model.atomic_energies_fn(data_dict["node_attrs"]).squeeze(-1)
