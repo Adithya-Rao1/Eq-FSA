@@ -327,6 +327,7 @@ class EnergyModel(nn.Module):
         linear_com: bool = False,
         use_norms: bool = True,
         qk_pre_elu_scale: float = 1.0,
+        boost_com_by_n_real: bool = False,
     ):
         super().__init__()
         no_norms = reduce_norms or not use_norms
@@ -341,6 +342,7 @@ class EnergyModel(nn.Module):
         self.content_weighted_com = content_weighted_com
         self.com_weighting = ContentWeightedCOM(feature_dim, hidden_dim) if content_weighted_com else None
         self.linear_com = linear_com
+        self.boost_com_by_n_real = boost_com_by_n_real
 
         self.max_degree = max_degree
         self.task       = task
@@ -494,6 +496,12 @@ class EnergyModel(nn.Module):
         else:
             x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask, V=None if self.linear_com else V)
 
+        if self.boost_com_by_n_real:
+            n_real = node_mask.sum(dim=1, keepdim=True).clamp(min=1).to(x_com.dtype)
+            x_com_geom = x_com * n_real
+        else:
+            x_com_geom = x_com
+
         effective_cutoff, kvecs, mode_mask = self._box_derived_quantities(V, B)
         
         x_diff_raw = x_wrapped.unsqueeze(1) - x_wrapped.unsqueeze(2) 
@@ -505,7 +513,7 @@ class EnergyModel(nn.Module):
         x_rel_e = x_diff[edge_b, edge_i, edge_j]
         edge_feat_e = edge_feats[edge_b, edge_i, edge_j]
 
-        x_rel_com = minimum_image(x_wrapped - x_com.unsqueeze(1), V)
+        x_rel_com = minimum_image(x_wrapped - x_com_geom.unsqueeze(1), V)
         agg_per_atom = self.master_pool_agg(f0[0], f0[1], f0[2], x_rel=x_rel_com).squeeze(-1)
         if self.attention_pool:
             g_a = self.pool_expand(agg_per_atom, node_mask).unsqueeze(-1)
@@ -539,13 +547,13 @@ class EnergyModel(nn.Module):
                     kvecs=kvecs, mode_mask=mode_mask, V=V,
                 )
             if self.per_layer_fusion:
-                layer_fusion = self.master_fusion(f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com, V=V)
+                layer_fusion = self.master_fusion(f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com_geom, V=V)
                 fusion_accum = {l: fusion_accum[l] + layer_fusion[l] for l in fusion_accum}
             if return_layer_states:
                 layer_states.append(f)
 
         fusion_out = fusion_accum if self.per_layer_fusion else self.master_fusion(
-            f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com, V=V,
+            f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com_geom, V=V,
         )
         if self.ablate_max_degree is not None:
             fusion_out = {

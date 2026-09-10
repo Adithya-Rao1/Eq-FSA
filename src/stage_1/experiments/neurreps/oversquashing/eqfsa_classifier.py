@@ -44,6 +44,7 @@ class EqFSAClassifier(nn.Module):
         linear_com: bool = False,
         use_norms: bool = True,
         qk_pre_elu_scale: float = 1.0,
+        boost_com_by_n_real: bool = False,
     ):
         super().__init__()
         self.multi_layer_readout = multi_layer_readout
@@ -80,6 +81,7 @@ class EqFSAClassifier(nn.Module):
             linear_com=linear_com,
             use_norms=use_norms,
             qk_pre_elu_scale=qk_pre_elu_scale,
+            boost_com_by_n_real=boost_com_by_n_real,
         )
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)

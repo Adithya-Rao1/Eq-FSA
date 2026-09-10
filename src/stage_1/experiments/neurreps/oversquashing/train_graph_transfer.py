@@ -102,6 +102,7 @@ def build_model_for_variant(
             use_norms=not config.get("eqfsa_no_norms_except_z", True),
             qk_pre_elu_scale=config.get("eqfsa_qk_pre_elu_scale", 1.0),
             direction_aware_pool_agg=config.get("eqfsa_direction_aware_pool_agg", False),
+            boost_com_by_n_real=config.get("eqfsa_boost_com_by_n_real", False),
         )
     if variant in ("mean_pool", "attn_pool"):
         from stage_1.experiments.neurreps.oversquashing.trivial_pool_classifier import TrivialPoolClassifier
@@ -337,6 +338,7 @@ def main():
     parser.add_argument("--eqfsa-linear-com", action="store_true",)
     parser.add_argument("--eqfsa-qk-pre-elu-scale", type=float, default=1.0,)
     parser.add_argument("--eqfsa-direction-aware-pool-agg", action="store_true",)
+    parser.add_argument("--eqfsa-boost-com-by-n-real", action="store_true",)
     parser.add_argument("--no-eqfsa-no-norms-except-z", dest="eqfsa_no_norms_except_z", action="store_false",)
     parser.add_argument("--qk-gamma-wd", type=float, default=0.0,)
     parser.add_argument("--cutoff", type=float, default=5.0)

@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import numpy as np
 
 from utils.spherical_harm import *
+from utils.pw_bases import minimum_image
 from diagnostics import counters
 
 from e3nn import o3
