@@ -626,6 +626,36 @@ class EquivariantNormReadout(nn.Module):
         norms = straight_through_norm(v, dim=-1, floor=self.floor)
         return self.mlp(norms).squeeze(-1)
 
+
+class DirectionAwareNormReadout(nn.Module):
+    def __init__(self, C: int, degree: int, hidden: int = 64, floor: float = 0.5, out_dim: int | None = None):
+        super().__init__()
+        self.degree = degree
+        self.floor = floor
+        self.equiv_proj = nn.Linear(C, hidden, bias=False)
+        init_linear_(self.equiv_proj, "linear")
+        self.dir_proj = nn.Linear(C, hidden, bias=False)
+        init_linear_(self.dir_proj, "linear")
+        self.mlp = nn.Sequential(
+            nn.Linear(2 * hidden, hidden, bias=False),
+            nn.SiLU(),
+            nn.Linear(hidden, 1 if out_dim is None else out_dim, bias=False),
+        )
+        init_sequential_(self.mlp, "silu")
+
+    def forward(self, x: torch.Tensor, x_rel: torch.Tensor) -> torch.Tensor:
+        v = self.equiv_proj(x.transpose(-1, -2)).transpose(-1, -2)
+        norms = straight_through_norm(v, dim=-1, floor=self.floor)
+
+        has_dir = (x_rel.norm(dim=-1, keepdim=True) > 1e-7).to(x_rel.dtype)
+        Y = get_spherical_harmonics(self.degree, x_rel) * has_dir
+        v_dir = self.dir_proj(x.transpose(-1, -2)).transpose(-1, -2)
+        dots = torch.einsum("...hi,...i->...h", v_dir, Y)
+
+        combined = torch.cat([norms, dots], dim=-1)
+        return self.mlp(combined).squeeze(-1)
+
+
 class EquivariantLinear(nn.Module):
     def __init__(self, cin, cout, nonlinearity: str = "linear"):
         super().__init__()

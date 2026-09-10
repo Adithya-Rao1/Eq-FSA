@@ -3,8 +3,10 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from stage_1.model import EnergyModel
-from utils.se3_utils import EquivariantLinear, EquivariantNormReadout, EquivariantRMSNorm
+from stage_1.model import EnergyModel, minimum_image, masked_weighted_com
+from utils.se3_utils import (
+    DirectionAwareNormReadout, EquivariantLinear, EquivariantNormReadout, EquivariantRMSNorm,
+)
 
 
 class EqFSAClassifier(nn.Module):
@@ -45,9 +47,11 @@ class EqFSAClassifier(nn.Module):
         use_norms: bool = True,
         qk_pre_elu_scale: float = 1.0,
         boost_com_by_n_real: bool = False,
+        direction_aware_readout: bool = False,
     ):
         super().__init__()
         self.multi_layer_readout = multi_layer_readout
+        self.direction_aware_readout = direction_aware_readout
         self.energy_model = EnergyModel(
             radial_net=radial_net,
             num_atom_types=num_atom_types,
@@ -83,8 +87,12 @@ class EqFSAClassifier(nn.Module):
             qk_pre_elu_scale=qk_pre_elu_scale,
             boost_com_by_n_real=boost_com_by_n_real,
         )
-        self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
-        self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
+        if direction_aware_readout:
+            self.norm_readout1 = DirectionAwareNormReadout(C=feature_dim, degree=1, hidden=hidden_dim, out_dim=feature_dim)
+            self.norm_readout2 = DirectionAwareNormReadout(C=feature_dim, degree=2, hidden=hidden_dim, out_dim=feature_dim)
+        else:
+            self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
+            self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
         def _head_norm(dim: int) -> nn.Module:
             return EquivariantRMSNorm(dim, degree=0) if use_norms else nn.Identity()
         self.classifier_head = nn.Sequential(
@@ -105,10 +113,17 @@ class EqFSAClassifier(nn.Module):
     def input_embedding_module(self) -> nn.Embedding:
         return self.energy_model.input_embedding
 
-    def _readout_logits(self, f: dict, batch_ar: torch.Tensor, target_idx: torch.Tensor) -> torch.Tensor:
+    def _readout_logits(
+        self, f: dict, batch_ar: torch.Tensor, target_idx: torch.Tensor,
+        x_rel_readout: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         f_target = {l: f[l][batch_ar, target_idx] for l in f}
-        u_vec = self.norm_readout1(f_target[1])
-        u_ten = self.norm_readout2(f_target[2])
+        if self.direction_aware_readout:
+            u_vec = self.norm_readout1(f_target[1], x_rel_readout)
+            u_ten = self.norm_readout2(f_target[2], x_rel_readout)
+        else:
+            u_vec = self.norm_readout1(f_target[1])
+            u_ten = self.norm_readout2(f_target[2])
         full_vec = f_target[0].squeeze(-1) + u_vec + u_ten
         logits = self.classifier_head(full_vec.unsqueeze(-1))
         return logits.squeeze(-1)
@@ -128,18 +143,35 @@ class EqFSAClassifier(nn.Module):
         B = x.shape[0]
         batch_ar = torch.arange(B, device=x.device)
 
+        x_rel_readout = None
+        if self.direction_aware_readout:
+            node_mask = mask.bool()
+            atomic_masses = masses * node_mask.to(masses.dtype)
+            x_wrapped = minimum_image(x, V)
+            x_com, _ = masked_weighted_com(
+                x_wrapped, atomic_masses, node_mask, V=None if self.energy_model.linear_com else V,
+            )
+            if self.energy_model.boost_com_by_n_real:
+                n_real = node_mask.sum(dim=1, keepdim=True).clamp(min=1).to(x_com.dtype)
+                x_com_geom = x_com * n_real
+            else:
+                x_com_geom = x_com
+            x_rel_readout = minimum_image(
+                (x_wrapped[batch_ar, target_idx] - x_com_geom).unsqueeze(1), V,
+            ).squeeze(1)
+
         if self.multi_layer_readout:
             f, layer_states = self.energy_model(
                 x, types, masses, mask, V, mol_props, edge_feats, return_layer_states=True,
                 seed_masses=seed_masses, target_idx=target_idx,
             )
-            logits = self._readout_logits(f, batch_ar, target_idx)
+            logits = self._readout_logits(f, batch_ar, target_idx, x_rel_readout)
             for layer_f in layer_states:
-                logits = logits + self._readout_logits(layer_f, batch_ar, target_idx)
+                logits = logits + self._readout_logits(layer_f, batch_ar, target_idx, x_rel_readout)
             return logits
 
         f = self.energy_model(
             x, types, masses, mask, V, mol_props, edge_feats,
             seed_masses=seed_masses, target_idx=target_idx,
         )
-        return self._readout_logits(f, batch_ar, target_idx)
+        return self._readout_logits(f, batch_ar, target_idx, x_rel_readout)
