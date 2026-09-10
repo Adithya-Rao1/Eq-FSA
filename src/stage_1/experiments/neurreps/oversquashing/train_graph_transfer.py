@@ -7,6 +7,8 @@ import math
 import os
 import time
 
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, random_split
@@ -167,6 +169,7 @@ def train_one_realization(
     )
     train_loader = DataLoader(
         train_ds, batch_size=config["batch_size"], shuffle=True, collate_fn=graph_transfer_collate_fn,
+        generator=torch.Generator().manual_seed(seed + 200000),
     )
     val_loader = DataLoader(
         val_ds, batch_size=config["batch_size"], shuffle=False, collate_fn=graph_transfer_collate_fn,
@@ -362,12 +365,20 @@ def main():
     parser.add_argument("--outdir", type=str, default="stage_1/experiments/neurreps/results")
     parser.add_argument("--csv-path", type=str, default=None)
     parser.add_argument("--device", type=str, default=None,)
+    parser.add_argument("--no-deterministic", dest="deterministic", action="store_false",)
     parser.add_argument("--smoke-test", action="store_true",)
     parser.add_argument("--torch-compile", action="store_true",)
     args = parser.parse_args()
     config = vars(args)
     config["_device"] = detect_device(config["device"])
     print(f"Using device: {config['_device']}", flush=True)
+
+    if config["deterministic"]:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True)
+        print("Determinism: torch.use_deterministic_algorithms(True), CUBLAS_WORKSPACE_CONFIG="
+              f"{os.environ.get('CUBLAS_WORKSPACE_CONFIG')!r}", flush=True)
 
     if "rsa" in config["variants"] and config["task"] != "geometric":
         raise ValueError("'rsa' is scoped to --task geometric only")
