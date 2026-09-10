@@ -1,23 +1,12 @@
 from __future__ import annotations
 
-import math
-
 import torch
 import torch.nn as nn
 
-from stage_1.attention import MasterNodeAttention
 from stage_1.experiments.neurreps.lr_sr.rsa_attention import RSAAttention
-from stage_1.model import masked_mean, masked_weighted_com
-from utils.se3_utils import EquivariantRMSNorm, init_sequential_, scalar_ffn
-
-class _LearnableRescale(nn.Module):
-    def __init__(self, num_channels: int, init_scale: float = 500.0):
-        super().__init__()
-        self.log_scale = nn.Parameter(torch.full((num_channels,), math.log(init_scale)))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x * self.log_scale.exp()
-
+from stage_1.model import EnergyModel, masked_mean
+from utils.calc_props import mol_props_from_atom_counts
+from utils.se3_utils import EquivariantNormReadout, RadialNetwork
 
 class _ChargeEmbedding(nn.Module):
     def __init__(self, feature_dim: int, hidden_dim: int):
@@ -50,61 +39,67 @@ class _Decoder(nn.Module):
 class EqFSAEncoder(nn.Module):
     def __init__(
         self, num_master_nodes: int, feature_dim: int, hidden_dim: int, n_max: int, num_outputs: int,
-        use_scale_feat: bool = True, use_per_node_com: bool = True, rescale_init_scale: float = 500.0,
-        alpha_floor: float = 1e-4, use_input_dependent_g_a: bool = True,
+        num_layers: int = 4, edge_cutoff: float = 5.0,
+        use_scale_feat: bool = True, use_per_node_com: bool = True,
+        alpha_floor: float = 1e-4,
         use_node_conditioned_k: bool = True, use_linear_decoder: bool = False,
         use_normalize_z_by_n_real: bool = True,
     ):
         super().__init__()
-        self.num_master_nodes = num_master_nodes
         self.use_scale_feat = use_scale_feat
-        self.use_per_node_com = use_per_node_com
-        self.use_input_dependent_g_a = use_input_dependent_g_a
-        self.use_node_conditioned_k = use_node_conditioned_k
-        self.use_normalize_z_by_n_real = use_normalize_z_by_n_real
-        self.embed = _ChargeEmbedding(feature_dim, hidden_dim)
-        if use_input_dependent_g_a:
-            self.dist_to_com_embed = nn.Linear(1, feature_dim)
-            self.master_pool_ffn = scalar_ffn(feature_dim, hidden_dim)
-            self.master_expand = nn.Sequential(
-                nn.RMSNorm(feature_dim), nn.LeakyReLU(),
-                nn.Linear(feature_dim, num_master_nodes * feature_dim),
-            )
-            init_sequential_(self.master_expand, "leaky_relu")
-            self.master_expand_norm = EquivariantRMSNorm(feature_dim, degree=0)
-        else:
-            self.g_a_init = nn.Parameter(torch.randn(num_master_nodes, feature_dim) * 0.1)
-        self.master_attn = MasterNodeAttention(feature_dim, n_max, hidden_dim=hidden_dim, alpha_floor=alpha_floor)
-        self.master_attn_norm = _LearnableRescale(feature_dim, init_scale=rescale_init_scale)
+        self.charge_embed = _ChargeEmbedding(feature_dim, hidden_dim)
+        self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
+        self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
+        self.energy_model = EnergyModel(
+            radial_net=RadialNetwork, num_atom_types=1, max_degree=2, num_layers=num_layers,
+            feature_dim=feature_dim, hidden_dim=hidden_dim, edge_cutoff=edge_cutoff, n_max=n_max,
+            n_master_nodes=num_master_nodes, edge_feat_dim=1,
+            normalize_z_by_n_real=use_normalize_z_by_n_real,
+            per_node_com=use_per_node_com, node_conditioned_k=use_node_conditioned_k,
+            alpha_floor=alpha_floor,
+            decouple_ri_norm=False, imaginary_only_ri=False, deterministic_pool_agg=True,
+            attention_pool=True, skip_master_expand_norm=True, content_weighted_com=False,
+            per_layer_fusion=True, reduce_norms=True,
+        )
         self.decoder = _Decoder(
             feature_dim, hidden_dim, num_outputs, extra_input_dim=1 if use_scale_feat else 0,
             linear_only=use_linear_decoder,
         )
 
+    @property
+    def master_attn(self):
+        return self.energy_model.layers[-1].master_attn if len(self.energy_model.layers) > 0 else None
+
     def forward(self, charges, positions, mask, V, return_features: bool = False):
-        B = charges.shape[0]
-        f_in0 = self.embed(charges)
+        B, N = charges.shape
+        input_features = self.charge_embed(charges).squeeze(-1) 
+        node_types = torch.zeros(B, N, dtype=torch.long, device=charges.device)
         masses = mask.float()
-        x_com, _ = masked_weighted_com(positions, masses, mask)
-        if self.use_input_dependent_g_a:
-            dist_to_com = (positions - x_com.unsqueeze(1)).norm(dim=-1, keepdim=True)
-            pool_in_feat = f_in0.squeeze(-1) + self.dist_to_com_embed(dist_to_com)
-            pooled_in = self.master_pool_ffn(masked_mean(pool_in_feat, mask))
-            g_a = self.master_expand(pooled_in).view(B, self.num_master_nodes, -1).unsqueeze(-1)
-            g_a = self.master_expand_norm(g_a)
-        else:
-            g_a = self.g_a_init.unsqueeze(0).expand(B, -1, -1).unsqueeze(-1).contiguous()
-        out = self.master_attn(
-            g_a, f_in0, positions, x_com, mask, V,
-            return_scale_feat=self.use_scale_feat, per_node_com=self.use_per_node_com,
-            node_conditioned_k=self.use_node_conditioned_k,
-            normalize_z_by_n_real=self.use_normalize_z_by_n_real,
+        n_h = ((charges > 0) & mask).sum(dim=1)
+        n_o = ((charges < 0) & mask).sum(dim=1)  
+        mol_props = mol_props_from_atom_counts(n_h, n_o).to(device=charges.device, dtype=positions.dtype)
+        edge_feats = torch.zeros(B, N, N, 1, device=charges.device, dtype=positions.dtype)
+
+        out = self.energy_model(
+            positions, node_types, masses, mask, V, mol_props, edge_feats,
+            input_features=input_features,
+            collect_scale_feats=self.use_scale_feat,
         )
-        lr_master, scale_feat = out if self.use_scale_feat else (out, None)
-        master_out = self.master_attn_norm(lr_master.squeeze(-1))
-        g_a_out = g_a.squeeze(-1) + master_out
-        pooled = g_a_out.mean(dim=1)
-        decoder_in = torch.cat([pooled, scale_feat.mean(dim=1, keepdim=True)], dim=-1) if self.use_scale_feat else pooled
+        f, scale_feats = out if self.use_scale_feat else (out, None)
+
+        u_vec = self.norm_readout1(f[1]) 
+        u_ten = self.norm_readout2(f[2]) 
+        full_vec = f[0].squeeze(-1) + u_vec + u_ten
+        pooled = masked_mean(full_vec, mask)  
+
+        if self.use_scale_feat:
+            if scale_feats:
+                scale = torch.stack(scale_feats, dim=0).mean(dim=(0, 2))  
+            else:
+                scale = torch.zeros(f[0].shape[0], device=f[0].device, dtype=f[0].dtype)
+            decoder_in = torch.cat([pooled, scale.unsqueeze(-1)], dim=-1)
+        else:
+            decoder_in = pooled
         pred = self.decoder(decoder_in)
         return (pred, decoder_in) if return_features else pred
 
