@@ -547,13 +547,15 @@ class EnergyModel(nn.Module):
                     kvecs=kvecs, mode_mask=mode_mask, V=V,
                 )
             if self.per_layer_fusion:
-                layer_fusion = self.master_fusion(f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com_geom, V=V)
+                layer_fusion = self.master_fusion(
+                    f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com, x_com_dir=x_com_geom, V=V,
+                )
                 fusion_accum = {l: fusion_accum[l] + layer_fusion[l] for l in fusion_accum}
             if return_layer_states:
                 layer_states.append(f)
 
         fusion_out = fusion_accum if self.per_layer_fusion else self.master_fusion(
-            f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com_geom, V=V,
+            f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com, x_com_dir=x_com_geom, V=V,
         )
         if self.ablate_max_degree is not None:
             fusion_out = {

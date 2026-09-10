@@ -442,16 +442,21 @@ class MasterFusionAttention(nn.Module):
         x:       torch.Tensor,
         x_com:   torch.Tensor,
         V:       Optional[torch.Tensor] = None,
+        x_com_dir: Optional[torch.Tensor] = None,
     ) -> Dict[int, torch.Tensor]:
         B, N, C, _ = f_atoms[0].shape
         N_a = g_a.shape[1]
         H, Ch = self.num_heads, self.head_dim
-
+        
         x_rel = x - x_com.unsqueeze(1)
         if V is not None:
             x_rel = minimum_image(x_rel, V)
+        x_rel_dir = x_rel if x_com_dir is None else x - x_com_dir.unsqueeze(1)
+        if x_com_dir is not None and V is not None:
+            x_rel_dir = minimum_image(x_rel_dir, V)
         x_rel_flat = x_rel.reshape(B * N, 3)
-        has_dir = (x_rel.norm(dim=-1) > 1e-7).to(x.dtype).view(B, N, 1, 1)
+        x_rel_dir_flat = x_rel_dir.reshape(B * N, 3)
+        has_dir = (x_rel_dir.norm(dim=-1) > 1e-7).to(x.dtype).view(B, N, 1, 1)
 
         Q = {l: self.W_Q[str(l)](f_atoms[l]) for l in range(self.max_degree + 1)}
 
@@ -468,7 +473,7 @@ class MasterFusionAttention(nn.Module):
                 phi_kv = self.radial_KV[str(l)](r)
                 cg = clebsch_gordan_matrix(l, 0, dtype=x.dtype, device=x.device)
                 Q_J = cg[l]
-                Y_J = get_spherical_harmonics(l, x_rel_flat)
+                Y_J = get_spherical_harmonics(l, x_rel_dir_flat)
                 QTY = torch.einsum("ji,ni->nj", Q_J, Y_J)
                 W_K = (phi_kv[0] * QTY).view(B, N, 2 * l + 1, 1)
                 W_V = (phi_kv[1] * QTY).view(B, N, 2 * l + 1, 1)
