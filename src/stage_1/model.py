@@ -138,6 +138,7 @@ class EnergyLayer(nn.Module):
         dist_rbf_min: float = 0.3,
         dist_rbf_cutoff: float = 25.0,
         use_norms: bool = True,
+        qk_pre_elu_scale: float = 1.0,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -173,6 +174,7 @@ class EnergyLayer(nn.Module):
             feature_dim, n_max, pw_e_cutoff, hidden_dim, alpha_floor=alpha_floor,
             dist_weighted_content=dist_weighted_content, dist_rbf_num_basis=dist_rbf_num_basis,
             dist_rbf_min=dist_rbf_min, dist_rbf_cutoff=dist_rbf_cutoff, use_norms=use_norms,
+            qk_pre_elu_scale=qk_pre_elu_scale,
         )
         self.master_ln = nn.Identity() if no_norms else EquivariantRMSNorm(feature_dim, degree=0)
 
@@ -323,6 +325,7 @@ class EnergyModel(nn.Module):
         dist_rbf_cutoff: float = 25.0,
         linear_com: bool = False,
         use_norms: bool = True,
+        qk_pre_elu_scale: float = 1.0,
     ):
         super().__init__()
         no_norms = reduce_norms or not use_norms
@@ -406,6 +409,7 @@ class EnergyModel(nn.Module):
                 dist_rbf_min=dist_rbf_min,
                 dist_rbf_cutoff=dist_rbf_cutoff,
                 use_norms=use_norms,
+                qk_pre_elu_scale=qk_pre_elu_scale,
             )
             for m in range(num_layers)
         ])

@@ -100,6 +100,7 @@ def build_model_for_variant(
             dist_rbf_cutoff=config.get("eqfsa_dist_rbf_cutoff", 25.0),
             linear_com=config.get("eqfsa_linear_com", False),
             use_norms=not config.get("eqfsa_no_norms_except_z", False),
+            qk_pre_elu_scale=config.get("eqfsa_qk_pre_elu_scale", 1.0),
         )
     if variant in ("mean_pool", "attn_pool"):
         from stage_1.experiments.neurreps.oversquashing.trivial_pool_classifier import TrivialPoolClassifier
@@ -333,6 +334,7 @@ def main():
     parser.add_argument("--eqfsa-dist-rbf-min", type=float, default=0.3)
     parser.add_argument("--eqfsa-dist-rbf-cutoff", type=float, default=25.0)
     parser.add_argument("--eqfsa-linear-com", action="store_true",)
+    parser.add_argument("--eqfsa-qk-pre-elu-scale", type=float, default=1.0,)
     parser.add_argument("--eqfsa-no-norms-except-z", action="store_true",)
     parser.add_argument("--qk-gamma-wd", type=float, default=0.0,)
     parser.add_argument("--cutoff", type=float, default=5.0)

@@ -178,7 +178,7 @@ class MasterNodeAttention(nn.Module):
         self, feature_dim: int, n_max: int, pw_e_cutoff: Optional[float] = None, hidden_dim: int = 128,
         alpha_floor: float = 1e-4, dist_weighted_content: bool = False,
         dist_rbf_num_basis: int = 12, dist_rbf_min: float = 0.3, dist_rbf_cutoff: float = 25.0,
-        use_norms: bool = True,
+        use_norms: bool = True, qk_pre_elu_scale: float = 1.0,
     ):
         super().__init__()
         self.feature_dim = feature_dim
@@ -188,12 +188,9 @@ class MasterNodeAttention(nn.Module):
         self.dist_weighted_content = dist_weighted_content
         self.dist_rbf_num_basis = dist_rbf_num_basis
         self.use_norms = use_norms
+        self.qk_pre_elu_scale = qk_pre_elu_scale
 
         kv_in_dim = feature_dim + dist_rbf_num_basis if dist_weighted_content else None
-        # W_QK's internal FFN norms are gated by use_norms; w_vq_norm/w_vk_norm below are NOT --
-        # they're the sole bound on Z (the elu(x)+1 linear-attention normalizer), deliberately
-        # kept unconditional regardless of use_norms (see stage_1/CLAUDE.md Rounds 1-4: removing
-        # this bound without a replacement caused gradient norms up to 3.6e9).
         self.W_QK = BatchedHighOrdFFN(
             feature_dim, hidden_dim, degree=1, n_copies=2, in_dim=kv_in_dim, use_norms=use_norms,
         )
@@ -287,8 +284,8 @@ class MasterNodeAttention(nn.Module):
         Q_pre_norm, K_pre_norm = self.qk_pre_norm(g_a_kv, f_in0_kv)
         Q = self.w_vq_norm(Q_pre_norm).squeeze(-1)
         K = self.w_vk_norm(K_pre_norm).squeeze(-1)
-        phi_Q = F.elu(Q) + 1
-        phi_K = (F.elu(K) + 1) * m.unsqueeze(-1)
+        phi_Q = F.elu(Q * self.qk_pre_elu_scale) + 1
+        phi_K = (F.elu(K * self.qk_pre_elu_scale) + 1) * m.unsqueeze(-1)
 
         if node_conditioned_k:
             node_gate = torch.sigmoid(self.node_k_gate(g_a.squeeze(-1)))
