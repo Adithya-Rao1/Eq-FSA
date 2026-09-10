@@ -318,6 +318,7 @@ class EnergyModel(nn.Module):
         dist_rbf_num_basis: int = 12,
         dist_rbf_min: float = 0.3,
         dist_rbf_cutoff: float = 25.0,
+        linear_com: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -330,6 +331,7 @@ class EnergyModel(nn.Module):
         self._cached_mode_mask: Optional[torch.Tensor] = None
         self.content_weighted_com = content_weighted_com
         self.com_weighting = ContentWeightedCOM(feature_dim, hidden_dim) if content_weighted_com else None
+        self.linear_com = linear_com
 
         self.max_degree = max_degree
         self.task       = task
@@ -475,7 +477,7 @@ class EnergyModel(nn.Module):
         if self.content_weighted_com:
             x_com = self.com_weighting(f0_raw, x_wrapped, node_mask, exclude_idx=target_idx)
         else:
-            x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask, V=V)
+            x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask, V=None if self.linear_com else V)
 
         effective_cutoff, kvecs, mode_mask = self._box_derived_quantities(V, B)
         

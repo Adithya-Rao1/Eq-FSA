@@ -98,6 +98,7 @@ def build_model_for_variant(
             dist_rbf_num_basis=config.get("eqfsa_dist_rbf_num_basis", 12),
             dist_rbf_min=config.get("eqfsa_dist_rbf_min", 0.3),
             dist_rbf_cutoff=config.get("eqfsa_dist_rbf_cutoff", 25.0),
+            linear_com=config.get("eqfsa_linear_com", False),
         )
     if variant in ("mean_pool", "attn_pool"):
         from stage_1.experiments.neurreps.oversquashing.trivial_pool_classifier import TrivialPoolClassifier
@@ -350,6 +351,7 @@ def main():
     parser.add_argument("--eqfsa-dist-rbf-num-basis", type=int, default=12)
     parser.add_argument("--eqfsa-dist-rbf-min", type=float, default=0.3)
     parser.add_argument("--eqfsa-dist-rbf-cutoff", type=float, default=25.0)
+    parser.add_argument("--eqfsa-linear-com", action="store_true",)
     parser.add_argument("--qk-gamma-wd", type=float, default=0.0,)
     parser.add_argument("--cutoff", type=float, default=5.0)
     parser.add_argument("--epochs", type=int, default=60)
