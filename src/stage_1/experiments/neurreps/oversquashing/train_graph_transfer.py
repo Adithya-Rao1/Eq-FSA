@@ -106,8 +106,8 @@ def build_model_for_variant(
             direction_aware_readout=config.get("eqfsa_direction_aware_readout", False),
             max_g_a_degree=config.get("eqfsa_max_g_a_degree", 0),
             g_a_additive_lift=config.get("eqfsa_g_a_additive_lift", False),
-            g_a_init_master_residual=config.get("eqfsa_g_a_master_residual", False),
-            g_a_init_layer_residual=config.get("eqfsa_g_a_layer_residual", False),
+            g_a_init_master_residual=config.get("eqfsa_g_a_init_master_residual", False),
+            g_a_init_layer_residual=config.get("eqfsa_g_a_init_layer_residual", False),
         )
     if variant in ("mean_pool", "attn_pool"):
         from stage_1.experiments.neurreps.oversquashing.trivial_pool_classifier import TrivialPoolClassifier
