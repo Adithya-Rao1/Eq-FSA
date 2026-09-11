@@ -3,7 +3,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from utils.se3_utils import *
 from utils.pw_bases import make_wavevectors, minimum_image, minimum_image_like
@@ -179,6 +179,9 @@ class MasterNodeAttention(nn.Module):
         alpha_floor: float = 1e-4, dist_weighted_content: bool = False,
         dist_rbf_num_basis: int = 12, dist_rbf_min: float = 0.3, dist_rbf_cutoff: float = 25.0,
         use_norms: bool = True, qk_pre_elu_scale: float = 1.0, max_g_a_degree: int = 0,
+        scale_feat_alphas: Optional[List[float]] = None,
+        simplified_qk: bool = False,
+        fixed_alpha: Optional[float] = None,
     ):
         super().__init__()
         self.feature_dim = feature_dim
@@ -190,13 +193,41 @@ class MasterNodeAttention(nn.Module):
         self.use_norms = use_norms
         self.qk_pre_elu_scale = qk_pre_elu_scale
         self.max_g_a_degree = max_g_a_degree
+        # Capacity-ablation flags: DimeNet and RSA both win their respective benchmarks with a
+        # FIXED (non-learned) basis/bandwidth and a thin learned layer on top; this module instead
+        # learns nearly everything (Q/K via a multi-layer high_ord_ffn with its own internal norms,
+        # plus a learned bandwidth alpha) before ever reaching the decoder. `simplified_qk` replaces
+        # that multi-stage Q/K construction with a single plain Linear, no post-norm; `fixed_alpha`
+        # replaces the learned softplus-bounded bandwidth with a literal constant. Both default to
+        # the original behavior (off) -- this is meant to be tested AGAINST the existing path, not
+        # to replace it outright.
+        self.simplified_qk = simplified_qk
+        self.fixed_alpha = fixed_alpha
+        # Fixed (non-learned) damping bandwidths, in addition to the model's own learned `alpha`,
+        # used only by the `return_scale_feat` side-channel: `alpha` is a single value shared by
+        # every consumer of this module's output, so a decoder reading only the learned-alpha scale
+        # feature can never resolve targets at multiple, very different lengthscales at once (the
+        # learned alpha can only compromise on one bandwidth). Exposing the same magnitude computed
+        # at several fixed bandwidths lets a downstream per-target linear/MLP readout pick its own
+        # effective lengthscale directly, the same role a fixed multi-center RBF basis plays
+        # elsewhere in this codebase's radial networks -- general-purpose, not specific to any one
+        # benchmark's target set. Default `None` preserves the exact original single-scalar
+        # `scale_feat` shape/behavior.
+        self.scale_feat_alphas = scale_feat_alphas
 
         kv_in_dim = feature_dim + dist_rbf_num_basis if dist_weighted_content else None
-        self.W_QK = BatchedHighOrdFFN(
-            feature_dim, hidden_dim, degree=1, n_copies=2, in_dim=kv_in_dim, use_norms=use_norms,
-        )
-        self.w_vq_norm = EquivariantRMSNorm(feature_dim, 1)
-        self.w_vk_norm = EquivariantRMSNorm(feature_dim, 1)
+        if simplified_qk:
+            qk_in_dim = kv_in_dim if kv_in_dim is not None else feature_dim
+            self.W_Q_simple = nn.Linear(qk_in_dim, feature_dim)
+            self.W_K_simple = nn.Linear(qk_in_dim, feature_dim)
+            init_linear_(self.W_Q_simple, "linear")
+            init_linear_(self.W_K_simple, "linear")
+        else:
+            self.W_QK = BatchedHighOrdFFN(
+                feature_dim, hidden_dim, degree=1, n_copies=2, in_dim=kv_in_dim, use_norms=use_norms,
+            )
+            self.w_vq_norm = EquivariantRMSNorm(feature_dim, 1)
+            self.w_vk_norm = EquivariantRMSNorm(feature_dim, 1)
 
         self.W_V0 = nn.Sequential(
             scalar_ffn(feature_dim, hidden_dim, in_dim=kv_in_dim, use_norms=use_norms),
@@ -232,7 +263,10 @@ class MasterNodeAttention(nn.Module):
         self.node_k_gate = nn.Linear(feature_dim, feature_dim)
         init_linear_(self.node_k_gate, "linear")
 
-        self.alpha = nn.Parameter(torch.tensor(1.0))
+        if fixed_alpha is not None:
+            self.register_buffer("alpha", torch.tensor(float(fixed_alpha)))
+        else:
+            self.alpha = nn.Parameter(torch.tensor(1.0))
         self.diag_enabled = False
         self._diag_damping_sum_min: Optional[float] = None
         self._diag_Z_min: Optional[float] = None
@@ -282,9 +316,13 @@ class MasterNodeAttention(nn.Module):
             f_in0_kv = f_in0
             g_a_kv = g_a
 
-        Q_pre_norm, K_pre_norm = self.qk_pre_norm(g_a_kv, f_in0_kv)
-        Q = self.w_vq_norm(Q_pre_norm).squeeze(-1)
-        K = self.w_vk_norm(K_pre_norm).squeeze(-1)
+        if self.simplified_qk:
+            Q = self.W_Q_simple(g_a_kv.squeeze(-1))
+            K = self.W_K_simple(f_in0_kv.squeeze(-1))
+        else:
+            Q_pre_norm, K_pre_norm = self.qk_pre_norm(g_a_kv, f_in0_kv)
+            Q = self.w_vq_norm(Q_pre_norm).squeeze(-1)
+            K = self.w_vk_norm(K_pre_norm).squeeze(-1)
         phi_Q = F.elu(Q * self.qk_pre_elu_scale) + 1
         phi_K = (F.elu(K * self.qk_pre_elu_scale) + 1) * m.unsqueeze(-1)
 
@@ -331,7 +369,7 @@ class MasterNodeAttention(nn.Module):
         if mode_mask_f.dim() == 1:
             mode_mask_f = mode_mask_f.unsqueeze(0).expand(B, -1)
 
-        alpha = F.softplus(self.alpha) + self.alpha_floor
+        alpha = self.alpha if self.fixed_alpha is not None else (F.softplus(self.alpha) + self.alpha_floor)
         k2 = (kvecs ** 2).sum(dim=-1)
         damping = torch.exp(-k2 / (4.0 * alpha)) * mode_mask_f
         damping_sum = damping.sum(dim=-1) # min=1.0 for k=0
@@ -423,7 +461,20 @@ class MasterNodeAttention(nn.Module):
         mag_pooled = mag_pooled / Z.view(B, N_a, 1)
         mag_pooled = mag_pooled / damping_sum.view(B, 1, 1)
         scale_feat = torch.log1p(mag_pooled.squeeze(-1))
-        return g_a_out, scale_feat
+
+        if not self.scale_feat_alphas:
+            return g_a_out, scale_feat
+
+        extra_bands = [scale_feat]
+        for alpha_fixed in self.scale_feat_alphas:
+            damping_i = torch.exp(-k2 / (4.0 * alpha_fixed)) * mode_mask_f
+            damping_sum_i = damping_i.sum(dim=-1)
+            mag_pooled_i = torch.einsum("bamd,bm->bad", Q_mag, damping_i)
+            mag_pooled_i = mag_pooled_i / Z.view(B, N_a, 1)
+            mag_pooled_i = mag_pooled_i / damping_sum_i.clamp(min=1e-8).view(B, 1, 1)
+            extra_bands.append(torch.log1p(mag_pooled_i.squeeze(-1)))
+        scale_feat_multi = torch.stack(extra_bands, dim=-1)
+        return g_a_out, scale_feat_multi
 
 class EquivariantLinearRMSNorm(nn.Module):
     def __init__(self, feature_dim: int):

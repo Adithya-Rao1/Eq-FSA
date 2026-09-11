@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import List, Optional
+
 import torch
 import torch.nn as nn
 
@@ -48,9 +50,13 @@ class EqFSAEncoder(nn.Module):
         g_a_additive_lift: bool = False,
         g_a_init_master_residual: bool = False,
         g_a_init_layer_residual: bool = False,
+        simplified_qk: bool = False,
+        fixed_alpha: Optional[float] = None,
+        scale_feat_alphas: Optional[List[float]] = None,
     ):
         super().__init__()
         self.use_scale_feat = use_scale_feat
+        self.scale_feat_alphas = scale_feat_alphas
         self.charge_embed = _ChargeEmbedding(feature_dim, hidden_dim)
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
@@ -68,9 +74,13 @@ class EqFSAEncoder(nn.Module):
             g_a_additive_lift=g_a_additive_lift,
             g_a_init_master_residual=g_a_init_master_residual,
             g_a_init_layer_residual=g_a_init_layer_residual,
+            simplified_qk=simplified_qk,
+            fixed_alpha=fixed_alpha,
+            scale_feat_alphas=scale_feat_alphas,
         )
+        num_scale_bands = (1 + len(scale_feat_alphas)) if scale_feat_alphas else 1
         self.decoder = _Decoder(
-            feature_dim, hidden_dim, num_outputs, extra_input_dim=1 if use_scale_feat else 0,
+            feature_dim, hidden_dim, num_outputs, extra_input_dim=num_scale_bands if use_scale_feat else 0,
             linear_only=use_linear_decoder,
         )
 
@@ -101,11 +111,14 @@ class EqFSAEncoder(nn.Module):
         pooled = masked_mean(full_vec, mask)  
 
         if self.use_scale_feat:
+            num_scale_bands = (1 + len(self.scale_feat_alphas)) if self.scale_feat_alphas else 1
             if scale_feats:
-                scale = torch.stack(scale_feats, dim=0).mean(dim=(0, 2))  
+                scale = torch.stack(scale_feats, dim=0).mean(dim=(0, 2))
+                if scale.dim() == 1:
+                    scale = scale.unsqueeze(-1)
             else:
-                scale = torch.zeros(f[0].shape[0], device=f[0].device, dtype=f[0].dtype)
-            decoder_in = torch.cat([pooled, scale.unsqueeze(-1)], dim=-1)
+                scale = torch.zeros(f[0].shape[0], num_scale_bands, device=f[0].device, dtype=f[0].dtype)
+            decoder_in = torch.cat([pooled, scale], dim=-1)
         else:
             decoder_in = pooled
         pred = self.decoder(decoder_in)

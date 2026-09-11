@@ -4,7 +4,7 @@ import math
 import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from stage_1.attention import SRAttention, MasterNodeAttention, MasterFusionAttention, SRCrossAttention
 from utils.se3_utils import *
@@ -144,6 +144,9 @@ class EnergyLayer(nn.Module):
         g_a_max_degree: int = 0,
         model_max_g_a_degree: int = 0,
         g_a_init_layer_residual: bool = False,
+        scale_feat_alphas: Optional[List[float]] = None,
+        simplified_qk: bool = False,
+        fixed_alpha: Optional[float] = None,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -199,6 +202,9 @@ class EnergyLayer(nn.Module):
             dist_weighted_content=dist_weighted_content, dist_rbf_num_basis=dist_rbf_num_basis,
             dist_rbf_min=dist_rbf_min, dist_rbf_cutoff=dist_rbf_cutoff, use_norms=use_norms,
             qk_pre_elu_scale=qk_pre_elu_scale, max_g_a_degree=g_a_max_degree,
+            scale_feat_alphas=scale_feat_alphas,
+            simplified_qk=simplified_qk,
+            fixed_alpha=fixed_alpha,
         )
 
         norm_degrees = list(range(max_degree + 1))
@@ -383,6 +389,9 @@ class EnergyModel(nn.Module):
         g_a_additive_lift: bool = False,
         g_a_init_master_residual: bool = False,
         g_a_init_layer_residual: bool = False,
+        scale_feat_alphas: Optional[List[float]] = None,
+        simplified_qk: bool = False,
+        fixed_alpha: Optional[float] = None,
     ):
         super().__init__()
         self._diag_stats: Dict[str, float] = {}
@@ -486,6 +495,9 @@ class EnergyModel(nn.Module):
                 g_a_max_degree=min(_compute_g_a_max_degree(m, max_degree), max_g_a_degree),
                 model_max_g_a_degree=max_g_a_degree,
                 g_a_init_layer_residual=g_a_init_layer_residual,
+                scale_feat_alphas=scale_feat_alphas,
+                simplified_qk=simplified_qk,
+                fixed_alpha=fixed_alpha,
             )
             for m in range(num_layers)
         ])

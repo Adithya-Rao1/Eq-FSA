@@ -87,6 +87,9 @@ def build_model(encoder: str, num_outputs: int, config: dict) -> torch.nn.Module
             g_a_additive_lift=config.get("eqfsa_g_a_additive_lift", False),
             g_a_init_master_residual=config.get("eqfsa_g_a_init_master_residual", False),
             g_a_init_layer_residual=config.get("eqfsa_g_a_init_layer_residual", False),
+            simplified_qk=config.get("eqfsa_simplified_qk", False),
+            fixed_alpha=config.get("eqfsa_fixed_alpha", None),
+            scale_feat_alphas=config.get("eqfsa_scale_feat_alphas", None),
         )
     if encoder == "rsa":
         return RSAEncoder(
@@ -268,6 +271,9 @@ def main():
     parser.add_argument("--eqfsa-g-a-additive-lift", action="store_true")
     parser.add_argument("--eqfsa-g-a-init-master-residual", action="store_true")
     parser.add_argument("--eqfsa-g-a-init-layer-residual", action="store_true")
+    parser.add_argument("--eqfsa-simplified-qk", action="store_true",)
+    parser.add_argument("--eqfsa-fixed-alpha", type=float, default=None,)
+    parser.add_argument("--eqfsa-scale-feat-alphas", type=float, nargs="+", default=None,)
     parser.add_argument("--eqfsa-edge-cutoff", type=float, default=5.0,)
     parser.add_argument("--num-realizations", type=int, default=3)
     parser.add_argument("--log-every", type=int, default=0, help="Print training loss every N steps (0=silent)")
