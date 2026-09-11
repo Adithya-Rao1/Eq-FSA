@@ -141,6 +141,8 @@ class EnergyLayer(nn.Module):
         dist_rbf_cutoff: float = 25.0,
         use_norms: bool = True,
         qk_pre_elu_scale: float = 1.0,
+        g_a_max_degree: int = 0,
+        model_max_g_a_degree: int = 0,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -155,6 +157,13 @@ class EnergyLayer(nn.Module):
         self.imaginary_only_ri = imaginary_only_ri
         self.per_node_com = per_node_com
         self.node_conditioned_k = node_conditioned_k
+        self.g_a_max_degree = g_a_max_degree
+        # model_max_g_a_degree (the model-wide ceiling, not this layer's own g_a_max_degree) gates
+        # whether W_master_self/master_ln are built as single modules (today's exact structure,
+        # so construction-order/RNG-draw sequence is bit-identical when the feature is unused
+        # anywhere in the model) or per-degree ModuleDicts (only when some layer will actually use
+        # degree>0 g_a).
+        self.g_a_is_multi_degree = model_max_g_a_degree > 0
         no_norms = reduce_norms or not use_norms
         self.sr_attn = SRAttention(
             radial_net, max_degree, feature_dim, hidden_dim, k_max=k_max, edge_feat_dim=edge_feat_dim,
@@ -171,14 +180,23 @@ class EnergyLayer(nn.Module):
         )
         self.sigma_gate = BatchedGatedNonlinearity(feature_dim, degrees=list(range(max_degree + 1)))
 
-        self.W_master_self = IrrepLinear(feature_dim)
+        if self.g_a_is_multi_degree:
+            self.W_master_self = nn.ModuleDict({
+                str(l): IrrepLinear(feature_dim) for l in range(max_degree + 1)
+            })
+            self.master_ln = nn.ModuleDict({
+                str(l): (nn.Identity() if no_norms else EquivariantRMSNorm(feature_dim, degree=l))
+                for l in range(max_degree + 1)
+            })
+        else:
+            self.W_master_self = IrrepLinear(feature_dim)
+            self.master_ln = nn.Identity() if no_norms else EquivariantRMSNorm(feature_dim, degree=0)
         self.master_attn = MasterNodeAttention(
             feature_dim, n_max, pw_e_cutoff, hidden_dim, alpha_floor=alpha_floor,
             dist_weighted_content=dist_weighted_content, dist_rbf_num_basis=dist_rbf_num_basis,
             dist_rbf_min=dist_rbf_min, dist_rbf_cutoff=dist_rbf_cutoff, use_norms=use_norms,
-            qk_pre_elu_scale=qk_pre_elu_scale,
+            qk_pre_elu_scale=qk_pre_elu_scale, max_g_a_degree=g_a_max_degree,
         )
-        self.master_ln = nn.Identity() if no_norms else EquivariantRMSNorm(feature_dim, degree=0)
 
         norm_degrees = list(range(max_degree + 1))
         if no_norms:
@@ -251,8 +269,9 @@ class EnergyLayer(nn.Module):
         pre_out = {l: f[l] + f_out[l] for l in range(self.max_degree + 1)}
         f = self.layer_norm_out(pre_out)
 
+        g_a_query_input = g_a_in[0] if self.g_a_is_multi_degree else g_a_in
         master_attn_result = self.master_attn(
-            g_a_in, f_in[0], x_wrapped, x_com, node_mask,
+            g_a_query_input, f_in[0], x_wrapped, x_com, node_mask,
             normalize_z_by_n_real=self.normalize_z_by_n_real,
             return_scale_feat=return_scale_feat,
             decouple_ri_norm=self.decouple_ri_norm,
@@ -266,11 +285,27 @@ class EnergyLayer(nn.Module):
             master_attn_out, scale_feat = master_attn_result
         else:
             master_attn_out = master_attn_result
-        if self.ablate_lr:
-            master_attn_out = torch.zeros_like(master_attn_out)
-        g_a_out = self.master_ln(self.W_master_self(g_a_in) + master_attn_out)
-        if self.diag_enabled:
-            self._diag_g_a_norm = float(g_a_out.detach().norm())
+
+        if not self.g_a_is_multi_degree:
+            if self.ablate_lr:
+                master_attn_out = torch.zeros_like(master_attn_out)
+            g_a_out = self.master_ln(self.W_master_self(g_a_in) + master_attn_out)
+            if self.diag_enabled:
+                self._diag_g_a_norm = float(g_a_out.detach().norm())
+        else:
+            master_attn_out_dict = master_attn_out if isinstance(master_attn_out, dict) else {0: master_attn_out}
+            if self.ablate_lr:
+                master_attn_out_dict = {l: torch.zeros_like(v) for l, v in master_attn_out_dict.items()}
+            g_a_out = {}
+            for l in range(self.max_degree + 1):
+                if l <= self.g_a_max_degree:
+                    g_a_out[l] = self.master_ln[str(l)](
+                        self.W_master_self[str(l)](g_a_in[l]) + master_attn_out_dict[l]
+                    )
+                else:
+                    g_a_out[l] = g_a_in[l]  # not yet unlocked -- seeded value passes through unchanged
+            if self.diag_enabled:
+                self._diag_g_a_norm = float(g_a_out[0].detach().norm())
 
         if return_scale_feat:
             return f, g_a_out, scale_feat
@@ -288,6 +323,9 @@ def _run_energy_layer(
 
 def _compute_k_max(m: int, max_degree: int) -> int:
     return m if m <= max_degree else m % max_degree
+
+def _compute_g_a_max_degree(m: int, max_degree: int) -> int:
+    return min(m, max_degree)
 
 class EnergyModel(nn.Module):
     def __init__(
@@ -330,6 +368,8 @@ class EnergyModel(nn.Module):
         use_norms: bool = True,
         qk_pre_elu_scale: float = 1.0,
         boost_com_by_n_real: bool = False,
+        max_g_a_degree: int = 0,
+        g_a_additive_lift: bool = False,
     ):
         super().__init__()
         no_norms = reduce_norms or not use_norms
@@ -345,6 +385,7 @@ class EnergyModel(nn.Module):
         self.com_weighting = ContentWeightedCOM(feature_dim, hidden_dim) if content_weighted_com else None
         self.linear_com = linear_com
         self.boost_com_by_n_real = boost_com_by_n_real
+        self.max_g_a_degree = max_g_a_degree
 
         self.max_degree = max_degree
         self.task       = task
@@ -393,6 +434,19 @@ class EnergyModel(nn.Module):
                 nn.Linear(feature_dim, n_master_nodes * feature_dim)
             )
             init_sequential_(self.master_expand, "leaky_relu")
+        if max_g_a_degree > 0:
+            # g_a[1]/g_a[2] are built purely from geometry -- distance and direction from each
+            # master node's own attention-weighted "virtual position" (Sum_atoms alpha[a,n]*x[n])
+            # to every real atom -- not from pooling f0[1]/f0[2]'s content. Each master node gets
+            # its own vantage point (via its own attention weights), so different master nodes can
+            # encode genuinely different geometric structure, rather than all sharing the same
+            # global-COM-relative direction the way f0[1]/f0[2] do. num_heads=feature_dim so the
+            # radial profile can vary per channel (mirroring MasterNodeAttention's own per-channel
+            # degree-1/2 extraction), not just broadcast one scalar to every channel.
+            self.g_a_seed_radial = nn.ModuleDict({
+                str(l): radial_net(num_basis=8, hidden_dim=hidden_dim, num_heads=feature_dim, use_norms=use_norms)
+                for l in range(1, max_degree + 1)
+            })
         self.master_expand_norm = (
             nn.Identity() if skip_master_expand_norm or not use_norms
             else EquivariantRMSNorm(feature_dim, degree=0)
@@ -416,13 +470,16 @@ class EnergyModel(nn.Module):
                 dist_rbf_cutoff=dist_rbf_cutoff,
                 use_norms=use_norms,
                 qk_pre_elu_scale=qk_pre_elu_scale,
+                g_a_max_degree=min(_compute_g_a_max_degree(m, max_degree), max_g_a_degree),
+                model_max_g_a_degree=max_g_a_degree,
             )
             for m in range(num_layers)
         ])
 
         self.master_fusion = MasterFusionAttention(
             radial_net, max_degree, feature_dim, hidden_dim, num_heads=num_fusion_heads,
-            reduce_norms=reduce_norms, use_norms=use_norms,
+            reduce_norms=reduce_norms, use_norms=use_norms, max_g_a_degree=max_g_a_degree,
+            g_a_additive_lift=g_a_additive_lift,
         )
         self.layer_norm_fusion = nn.ModuleDict({
             str(l): (nn.Identity() if no_norms else EquivariantRMSNorm(feature_dim, degree=l))
@@ -522,12 +579,56 @@ class EnergyModel(nn.Module):
         else:
             x_rel_com = minimum_image(x_wrapped - x_com_geom.unsqueeze(1), V)
         agg_per_atom = self.master_pool_agg(f0[0], f0[1], f0[2], x_rel=x_rel_com).squeeze(-1)
-        if self.attention_pool:
+        g_a_degree_ceiling = min(self.max_g_a_degree, self.max_degree)
+        if g_a_degree_ceiling > 0:
+            if not self.attention_pool:
+                raise ValueError(
+                    "max_g_a_degree > 0 requires attention_pool=True -- degree-1/2 seeding reuses "
+                    "AttentionPoolExpand's own attention weights to give each master node its own "
+                    "virtual position, rather than a separate pooling mechanism."
+                )
+            # Seed ALL degrees (0..max_degree) whenever multi-degree g_a is active at all, not just
+            # up to this run's own g_a_degree_ceiling -- EnergyLayer's pass-through logic expects
+            # every degree to exist in the dict (mirroring how f0[1]/f0[2] always exist regardless
+            # of SRAttention's own per-layer k_max), with g_a_degree_ceiling instead controlling
+            # which degrees get ACTIVELY refined/injected via the progressive schedule.
+            #
+            # g_a[1]/g_a[2] are built purely from geometry, not by pooling f0[1]/f0[2]'s content:
+            # each master node gets its own "virtual position" (its attention-weighted centroid of
+            # real atom positions, using the SAME alpha weights used for degree-0 pooling), then
+            # distance+direction from THAT position to every atom feeds a dedicated radial network
+            # per degree. This gives each master node a genuinely distinct vantage point, rather
+            # than every master node sharing the same global-COM-relative direction f0[1]/f0[2]
+            # would carry.
+            pooled_0, alpha = self.pool_expand(agg_per_atom, node_mask, return_alpha=True)
+            g_a: Dict[int, torch.Tensor] = {0: self.master_expand_norm(pooled_0.unsqueeze(-1))}
+            if self.max_degree >= 1:
+                N_a = alpha.shape[1]
+                x_master_node = torch.einsum("ban,bni->bai", alpha, x_wrapped)  # (B, N_a, 3)
+                x_rel_master_raw = x_wrapped.unsqueeze(1) - x_master_node.unsqueeze(2)  # (B, N_a, N, 3)
+                x_rel_master = minimum_image(x_rel_master_raw.reshape(B, N_a * N, 3), V).reshape(B, N_a, N, 3)
+                dist_master = x_rel_master.norm(dim=-1, keepdim=True)  # (B, N_a, N, 1)
+                has_dir_master = (dist_master.squeeze(-1) > 1e-7).to(x.dtype)  # (B, N_a, N)
+
+                radial1 = self.g_a_seed_radial["1"](dist_master.reshape(-1, 1)).reshape(B, N_a, N, -1)
+                Y1 = get_spherical_harmonics(1, x_rel_master.reshape(-1, 3)).reshape(B, N_a, N, 3)
+                Y1 = Y1 * has_dir_master.unsqueeze(-1)
+                per_atom_deg1 = radial1.unsqueeze(-1) * Y1.unsqueeze(-2)  # (B, N_a, N, feature_dim, 3)
+                g_a[1] = torch.einsum("ban,banci->baci", alpha, per_atom_deg1)
+
+                if self.max_degree >= 2:
+                    radial2 = self.g_a_seed_radial["2"](dist_master.reshape(-1, 1)).reshape(B, N_a, N, -1)
+                    Y2 = get_spherical_harmonics(2, x_rel_master.reshape(-1, 3)).reshape(B, N_a, N, 5)
+                    Y2 = Y2 * has_dir_master.unsqueeze(-1)
+                    per_atom_deg2 = radial2.unsqueeze(-1) * Y2.unsqueeze(-2)  # (B, N_a, N, feature_dim, 5)
+                    g_a[2] = torch.einsum("ban,banci->baci", alpha, per_atom_deg2)
+        elif self.attention_pool:
             g_a = self.pool_expand(agg_per_atom, node_mask).unsqueeze(-1)
+            g_a = self.master_expand_norm(g_a)
         else:
             pooled = self.master_pool_ffn(masked_mean(agg_per_atom, node_mask))
             g_a = self.master_expand(pooled).view(B, self.n_master_nodes, -1).unsqueeze(-1)
-        g_a = self.master_expand_norm(g_a)
+            g_a = self.master_expand_norm(g_a)
 
         layer_states = [] if return_layer_states else None
         scale_feats = [] if collect_scale_feats else None
@@ -556,6 +657,7 @@ class EnergyModel(nn.Module):
             if self.per_layer_fusion:
                 layer_fusion = self.master_fusion(
                     f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com, x_com_dir=x_com_geom, V=V,
+                    active_direct_degree=layer.g_a_max_degree,
                 )
                 fusion_accum = {l: fusion_accum[l] + layer_fusion[l] for l in fusion_accum}
             if return_layer_states:
@@ -563,6 +665,7 @@ class EnergyModel(nn.Module):
 
         fusion_out = fusion_accum if self.per_layer_fusion else self.master_fusion(
             f_atoms=f, g_a=g_a, x=x_wrapped, x_com=x_com, x_com_dir=x_com_geom, V=V,
+            active_direct_degree=self.layers[-1].g_a_max_degree,
         )
         if self.ablate_max_degree is not None:
             fusion_out = {

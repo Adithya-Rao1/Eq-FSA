@@ -48,6 +48,8 @@ class EqFSAClassifier(nn.Module):
         qk_pre_elu_scale: float = 1.0,
         boost_com_by_n_real: bool = False,
         direction_aware_readout: bool = False,
+        max_g_a_degree: int = 0,
+        g_a_additive_lift: bool = False,
     ):
         super().__init__()
         self.multi_layer_readout = multi_layer_readout
@@ -86,6 +88,8 @@ class EqFSAClassifier(nn.Module):
             use_norms=use_norms,
             qk_pre_elu_scale=qk_pre_elu_scale,
             boost_com_by_n_real=boost_com_by_n_real,
+            max_g_a_degree=max_g_a_degree,
+            g_a_additive_lift=g_a_additive_lift,
         )
         if direction_aware_readout:
             self.norm_readout1 = DirectionAwareNormReadout(C=feature_dim, degree=1, hidden=hidden_dim, out_dim=feature_dim)

@@ -178,7 +178,7 @@ class MasterNodeAttention(nn.Module):
         self, feature_dim: int, n_max: int, pw_e_cutoff: Optional[float] = None, hidden_dim: int = 128,
         alpha_floor: float = 1e-4, dist_weighted_content: bool = False,
         dist_rbf_num_basis: int = 12, dist_rbf_min: float = 0.3, dist_rbf_cutoff: float = 25.0,
-        use_norms: bool = True, qk_pre_elu_scale: float = 1.0,
+        use_norms: bool = True, qk_pre_elu_scale: float = 1.0, max_g_a_degree: int = 0,
     ):
         super().__init__()
         self.feature_dim = feature_dim
@@ -189,6 +189,7 @@ class MasterNodeAttention(nn.Module):
         self.dist_rbf_num_basis = dist_rbf_num_basis
         self.use_norms = use_norms
         self.qk_pre_elu_scale = qk_pre_elu_scale
+        self.max_g_a_degree = max_g_a_degree
 
         kv_in_dim = feature_dim + dist_rbf_num_basis if dist_weighted_content else None
         self.W_QK = BatchedHighOrdFFN(
@@ -378,12 +379,41 @@ class MasterNodeAttention(nn.Module):
 
         cos_b = cos_com.unsqueeze(-1).unsqueeze(-1)
         sin_b = sin_com.unsqueeze(-1).unsqueeze(-1)
-        lr_master = (QS_re0 * cos_b - QS_im0 * sin_b).sum(dim=2)
-        lr_master = lr_master / Z.view(B, N_a, 1, 1)
-        lr_master = lr_master / damping_sum.view(B, 1, 1, 1)
+        g_a_0 = (QS_re0 * cos_b - QS_im0 * sin_b).sum(dim=2)
+        g_a_0 = g_a_0 / Z.view(B, N_a, 1, 1)
+        g_a_0 = g_a_0 / damping_sum.view(B, 1, 1, 1)
+
+        if self.max_g_a_degree >= 1:         
+            QS_re = QS_re0.squeeze(-1)  
+            QS_im = QS_im0.squeeze(-1)
+            cos_b1 = cos_com.unsqueeze(-1)  
+            sin_b1 = sin_com.unsqueeze(-1)
+
+            k_norm = kvecs.norm(dim=-1, keepdim=True) 
+            has_k = (k_norm > 1e-7).to(kvecs.dtype)  
+
+            ang1 = QS_re * sin_b1 + QS_im * cos_b1 
+            Y1_k = get_spherical_harmonics(1, kvecs) * has_k  
+            w1 = (k_norm * has_k) * Y1_k
+            g_a_1 = -torch.einsum("bamn,bmi->bani", ang1, w1)
+            g_a_1 = g_a_1 / Z.view(B, N_a, 1, 1) / damping_sum.view(B, 1, 1, 1)
+
+        if self.max_g_a_degree >= 2:
+            ang2 = QS_re * cos_b1 - QS_im * sin_b1  
+            Y2_k = get_spherical_harmonics(2, kvecs) * has_k  
+            w2 = ((k_norm ** 2) * has_k) * Y2_k
+            g_a_2 = -torch.einsum("bamn,bmj->banj", ang2, w2)
+            g_a_2 = g_a_2 / Z.view(B, N_a, 1, 1) / damping_sum.view(B, 1, 1, 1)
+
+        if self.max_g_a_degree == 0:
+            g_a_out: Union[torch.Tensor, Dict[int, torch.Tensor]] = g_a_0
+        elif self.max_g_a_degree == 1:
+            g_a_out = {0: g_a_0, 1: g_a_1}
+        else:
+            g_a_out = {0: g_a_0, 1: g_a_1, 2: g_a_2}
 
         if not return_scale_feat:
-            return lr_master
+            return g_a_out
 
         if node_conditioned_k:
             Q_mag = torch.einsum("bac,bamcd->bamd", phi_Q, raw_S_ri_mag)
@@ -393,7 +423,7 @@ class MasterNodeAttention(nn.Module):
         mag_pooled = mag_pooled / Z.view(B, N_a, 1)
         mag_pooled = mag_pooled / damping_sum.view(B, 1, 1)
         scale_feat = torch.log1p(mag_pooled.squeeze(-1))
-        return lr_master, scale_feat
+        return g_a_out, scale_feat
 
 class EquivariantLinearRMSNorm(nn.Module):
     def __init__(self, feature_dim: int):
@@ -408,7 +438,8 @@ class EquivariantLinearRMSNorm(nn.Module):
 class MasterFusionAttention(nn.Module):
     def __init__(
         self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int, num_heads: int,
-        reduce_norms: bool = False, use_norms: bool = True,
+        reduce_norms: bool = False, use_norms: bool = True, max_g_a_degree: int = 0,
+        g_a_additive_lift: bool = False,
     ):
         super().__init__()
         assert feature_dim % num_heads == 0, "feature_dim must be divisible by num_fusion_heads"
@@ -417,6 +448,8 @@ class MasterFusionAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = feature_dim // num_heads
         self.scale = self.head_dim ** 0.5
+        self.g_a_is_multi_degree = max_g_a_degree > 0
+        self.g_a_additive_lift = g_a_additive_lift
 
         self.W_Q = nn.ModuleDict({
             str(l): EquivariantLinear(feature_dim, feature_dim) for l in range(max_degree + 1)
@@ -425,6 +458,12 @@ class MasterFusionAttention(nn.Module):
             if reduce_norms or not use_norms:
                 return EquivariantLinear(feature_dim, feature_dim)
             return EquivariantLinearRMSNorm(feature_dim)
+        def _kv_readout_direct(l: int) -> nn.Module:
+            if reduce_norms or not use_norms:
+                return EquivariantLinear(feature_dim, feature_dim)
+            return nn.Sequential(
+                EquivariantLinear(feature_dim, feature_dim), EquivariantRMSNorm(feature_dim, degree=l),
+            )
         self.readout_K = nn.ModuleDict({str(l): _kv_readout() for l in range(max_degree + 1)})
         self.readout_V = nn.ModuleDict({str(l): _kv_readout() for l in range(max_degree + 1)})
         self.radial_KV = nn.ModuleDict({
@@ -434,20 +473,35 @@ class MasterFusionAttention(nn.Module):
             )
             for l in range(max_degree + 1)
         })
+        if self.g_a_is_multi_degree:
+            self.readout_K_direct = nn.ModuleDict({str(l): _kv_readout_direct(l) for l in range(1, max_degree + 1)})
+            self.readout_V_direct = nn.ModuleDict({str(l): _kv_readout_direct(l) for l in range(1, max_degree + 1)})
+            self.radial_KV_direct = nn.ModuleDict({
+                str(l): BatchedRadialNetwork(
+                    n_copies=2, num_basis=8, hidden_dim=hidden_dim, radial_net_cls=radial_net,
+                    use_norms=use_norms,
+                )
+                for l in range(1, max_degree + 1)
+            })
+            self.degree_score_weight = nn.ParameterDict({
+                str(l): nn.Parameter(torch.zeros(1)) for l in range(1, max_degree + 1)
+            })
 
     def forward(
         self,
         f_atoms: Dict[int, torch.Tensor],
-        g_a:     torch.Tensor,
+        g_a:     Union[torch.Tensor, Dict[int, torch.Tensor]],
         x:       torch.Tensor,
         x_com:   torch.Tensor,
         V:       Optional[torch.Tensor] = None,
         x_com_dir: Optional[torch.Tensor] = None,
+        active_direct_degree: int = 0,
     ) -> Dict[int, torch.Tensor]:
         B, N, C, _ = f_atoms[0].shape
-        N_a = g_a.shape[1]
+        g_a_dict = g_a if isinstance(g_a, dict) else {0: g_a}
+        N_a = g_a_dict[0].shape[1]
         H, Ch = self.num_heads, self.head_dim
-        
+
         x_rel_raw = x - x_com.unsqueeze(1)
         x_rel = minimum_image(x_rel_raw, V) if V is not None else x_rel_raw
         if x_com_dir is None:
@@ -467,8 +521,29 @@ class MasterFusionAttention(nn.Module):
         K_lifted: Dict[int, torch.Tensor] = {}
         V_lifted: Dict[int, torch.Tensor] = {}
         for l in range(self.max_degree + 1):
-            K_content = self.readout_K[str(l)](g_a)
-            V_content = self.readout_V[str(l)](g_a)
+            use_direct = self.g_a_is_multi_degree and l >= 1 and l <= active_direct_degree
+            compute_existing = (not use_direct) or self.g_a_additive_lift
+
+            if use_direct:
+                K_content_direct = self.readout_K_direct[str(l)](g_a_dict[l])  
+                V_content_direct = self.readout_V_direct[str(l)](g_a_dict[l])
+                if num_pos > 0:
+                    phi_direct = self.radial_KV_direct[str(l)](r)
+                    W_K_direct = phi_direct[0].view(B, N, 1, 1, 1)
+                    W_V_direct = phi_direct[1].view(B, N, 1, 1, 1)
+                else:
+                    W_K_direct = torch.zeros(B, N, 1, 1, 1, device=x.device, dtype=x.dtype)
+                    W_V_direct = torch.zeros(B, N, 1, 1, 1, device=x.device, dtype=x.dtype)
+                gate = self.degree_score_weight[str(l)]
+                W_K_direct = gate * W_K_direct
+                W_V_direct = gate * W_V_direct
+                K_lifted[l] = W_K_direct * K_content_direct.unsqueeze(1)
+                V_lifted[l] = W_V_direct * V_content_direct.unsqueeze(1)
+                if not compute_existing:
+                    continue
+
+            K_content = self.readout_K[str(l)](g_a_dict[0])
+            V_content = self.readout_V[str(l)](g_a_dict[0])
 
             if num_pos > 0:
                 phi_kv = self.radial_KV[str(l)](r)
@@ -485,8 +560,14 @@ class MasterFusionAttention(nn.Module):
                 W_K = W_K * has_dir
                 W_V = W_V * has_dir
 
-            K_lifted[l] = torch.einsum("bnij,bacj->bnaci", W_K, K_content)
-            V_lifted[l] = torch.einsum("bnij,bacj->bnaci", W_V, V_content)
+            K_existing = torch.einsum("bnij,bacj->bnaci", W_K, K_content)
+            V_existing = torch.einsum("bnij,bacj->bnaci", W_V, V_content)
+            if use_direct:  
+                K_lifted[l] = K_lifted[l] + K_existing
+                V_lifted[l] = V_lifted[l] + V_existing
+            else:
+                K_lifted[l] = K_existing
+                V_lifted[l] = V_existing
 
         Q_concat = torch.cat(
             [Q[l].view(B, N, H, Ch, 2 * l + 1) for l in range(self.max_degree + 1)], dim=-1,

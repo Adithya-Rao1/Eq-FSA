@@ -509,13 +509,18 @@ class AttentionPoolExpand(nn.Module):
         self.queries = nn.Parameter(torch.randn(n_master_nodes, feature_dim) * (feature_dim ** -0.5))
         self.scale = feature_dim ** 0.5
 
-    def forward(self, agg_per_atom: torch.Tensor, node_mask: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, agg_per_atom: torch.Tensor, node_mask: torch.Tensor, return_alpha: bool = False,
+    ) -> torch.Tensor:
         B = agg_per_atom.shape[0]
         Q = self.queries.unsqueeze(0).expand(B, -1, -1)
         scores = torch.einsum("bac,bnc->ban", Q, agg_per_atom) / self.scale
         scores = scores.masked_fill(~node_mask.unsqueeze(1), float("-inf"))
         alpha = torch.softmax(scores, dim=-1)
-        return torch.einsum("ban,bnc->bac", alpha, agg_per_atom)
+        pooled = torch.einsum("ban,bnc->bac", alpha, agg_per_atom)
+        if return_alpha:
+            return pooled, alpha
+        return pooled
 
 class ContentWeightedCOM(nn.Module):
     def __init__(self, feature_dim: int, hidden_dim: int):
