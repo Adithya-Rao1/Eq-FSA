@@ -392,6 +392,7 @@ class EnergyModel(nn.Module):
         scale_feat_alphas: Optional[List[float]] = None,
         simplified_qk: bool = False,
         fixed_alpha: Optional[float] = None,
+        pool_expand_learnable_gain: bool = False,
     ):
         super().__init__()
         self._diag_stats: Dict[str, float] = {}
@@ -451,7 +452,9 @@ class EnergyModel(nn.Module):
             AggregateFeatures(out_feat_dim=feature_dim, inp_feat_dim=feature_dim, hidden_dim=hidden_dim)
         )
         if attention_pool:
-            self.pool_expand = AttentionPoolExpand(feature_dim, n_master_nodes)
+            self.pool_expand = AttentionPoolExpand(
+                feature_dim, n_master_nodes, learnable_gain=pool_expand_learnable_gain,
+            )
         else:
             self.master_pool_ffn = scalar_ffn(feature_dim, hidden_dim, use_norms=use_norms)
             self.master_expand   = nn.Sequential(

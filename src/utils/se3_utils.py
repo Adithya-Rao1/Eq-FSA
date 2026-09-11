@@ -503,18 +503,25 @@ class DirectionAwareMeanAggregate(nn.Module):
         return ((f0_inv + f1_inv + f1_dot + f2_inv + f2_dot) / 5.0).unsqueeze(-1)
 
 class AttentionPoolExpand(nn.Module):
-    def __init__(self, feature_dim: int, n_master_nodes: int):
+    def __init__(self, feature_dim: int, n_master_nodes: int, learnable_gain: bool = False):
         super().__init__()
         self.n_master_nodes = n_master_nodes
         self.queries = nn.Parameter(torch.randn(n_master_nodes, feature_dim) * (feature_dim ** -0.5))
         self.scale = feature_dim ** 0.5
+        self.learnable_gain = learnable_gain
+        if learnable_gain:
+            self.log_gain = nn.Parameter(torch.tensor(math.log(20.0 * self.scale)))
 
     def forward(
         self, agg_per_atom: torch.Tensor, node_mask: torch.Tensor, return_alpha: bool = False,
     ) -> torch.Tensor:
         B = agg_per_atom.shape[0]
         Q = self.queries.unsqueeze(0).expand(B, -1, -1)
-        scores = torch.einsum("bac,bnc->ban", Q, agg_per_atom) / self.scale
+        raw_scores = torch.einsum("bac,bnc->ban", Q, agg_per_atom)
+        if self.learnable_gain:
+            scores = raw_scores * torch.exp(self.log_gain) / self.scale
+        else:
+            scores = raw_scores / self.scale
         scores = scores.masked_fill(~node_mask.unsqueeze(1), float("-inf"))
         alpha = torch.softmax(scores, dim=-1)
         pooled = torch.einsum("ban,bnc->bac", alpha, agg_per_atom)

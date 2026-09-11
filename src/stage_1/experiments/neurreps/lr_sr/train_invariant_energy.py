@@ -90,6 +90,8 @@ def build_model(encoder: str, num_outputs: int, config: dict) -> torch.nn.Module
             simplified_qk=config.get("eqfsa_simplified_qk", False),
             fixed_alpha=config.get("eqfsa_fixed_alpha", None),
             scale_feat_alphas=config.get("eqfsa_scale_feat_alphas", None),
+            use_direction_aware_pool_agg=config.get("eqfsa_direction_aware_pool_agg", False),
+            pool_expand_learnable_gain=config.get("eqfsa_pool_expand_learnable_gain", False),
         )
     if encoder == "rsa":
         return RSAEncoder(
@@ -274,6 +276,8 @@ def main():
     parser.add_argument("--eqfsa-simplified-qk", action="store_true",)
     parser.add_argument("--eqfsa-fixed-alpha", type=float, default=None,)
     parser.add_argument("--eqfsa-scale-feat-alphas", type=float, nargs="+", default=None,)
+    parser.add_argument("--eqfsa-direction-aware-pool-agg", action="store_true",)
+    parser.add_argument("--eqfsa-pool-expand-learnable-gain", action="store_true",)
     parser.add_argument("--eqfsa-edge-cutoff", type=float, default=5.0,)
     parser.add_argument("--num-realizations", type=int, default=3)
     parser.add_argument("--log-every", type=int, default=0, help="Print training loss every N steps (0=silent)")
