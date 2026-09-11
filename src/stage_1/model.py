@@ -143,6 +143,7 @@ class EnergyLayer(nn.Module):
         qk_pre_elu_scale: float = 1.0,
         g_a_max_degree: int = 0,
         model_max_g_a_degree: int = 0,
+        g_a_init_layer_residual: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -159,6 +160,8 @@ class EnergyLayer(nn.Module):
         self.node_conditioned_k = node_conditioned_k
         self.g_a_max_degree = g_a_max_degree
         self.g_a_is_multi_degree = model_max_g_a_degree > 0
+        self.g_a_init_layer_residual = g_a_init_layer_residual
+
         no_norms = reduce_norms or not use_norms
         self.sr_attn = SRAttention(
             radial_net, max_degree, feature_dim, hidden_dim, k_max=k_max, edge_feat_dim=edge_feat_dim,
@@ -174,6 +177,11 @@ class EnergyLayer(nn.Module):
             BatchedEquivariantRMSNorm(feature_dim, degrees=list(range(max_degree + 1)))
         )
         self.sigma_gate = BatchedGatedNonlinearity(feature_dim, degrees=list(range(max_degree + 1)))
+
+        if self.g_a_init_layer_residual:
+            self.g_a_residual_gate = nn.ParameterDict({
+                str(l): nn.Parameter(torch.ones(1)*0.05) for l in range(max_degree + 1)
+            })
 
         if self.g_a_is_multi_degree:
             self.W_master_self = nn.ModuleDict({
@@ -285,6 +293,10 @@ class EnergyLayer(nn.Module):
             if self.ablate_lr:
                 master_attn_out = torch.zeros_like(master_attn_out)
             g_a_out = self.master_ln(self.W_master_self(g_a_in) + master_attn_out)
+
+            if self.g_a_init_layer_residual:
+                g_a_out = g_a_out + (1.0 + self.g_a_residual_gate["0"]) * g_a_in
+
             if self.diag_enabled:
                 self._diag_g_a_norm = float(g_a_out.detach().norm())
         else:
@@ -297,8 +309,12 @@ class EnergyLayer(nn.Module):
                     g_a_out[l] = self.master_ln[str(l)](
                         self.W_master_self[str(l)](g_a_in[l]) + master_attn_out_dict[l]
                     )
+
+                    if self.g_a_init_layer_residual:
+                        g_a_out[l] = (g_a_out[l] + (1.0 + self.g_a_residual_gate[str(l)]) * g_a_in[l])
                 else:
                     g_a_out[l] = g_a_in[l]  
+            
             if self.diag_enabled:
                 self._diag_g_a_norm = float(g_a_out[0].detach().norm())
 
@@ -365,9 +381,12 @@ class EnergyModel(nn.Module):
         boost_com_by_n_real: bool = False,
         max_g_a_degree: int = 0,
         g_a_additive_lift: bool = False,
-        g_a_init_residual: bool = False,
+        g_a_init_master_residual: bool = False,
+        g_a_init_layer_residual: bool = False,
     ):
         super().__init__()
+        self._diag_stats: Dict[str, float] = {}
+
         no_norms = reduce_norms or not use_norms
         self.radial_net = radial_net
         self.edge_cutoff = edge_cutoff
@@ -382,7 +401,8 @@ class EnergyModel(nn.Module):
         self.linear_com = linear_com
         self.boost_com_by_n_real = boost_com_by_n_real
         self.max_g_a_degree = max_g_a_degree
-        self.g_a_init_residual = g_a_init_residual
+        self.g_a_init_master_residual = g_a_init_master_residual
+        self.g_a_init_layer_residual = g_a_init_layer_residual
 
         self.max_degree = max_degree
         self.task       = task
@@ -440,9 +460,9 @@ class EnergyModel(nn.Module):
             nn.Identity() if skip_master_expand_norm or not use_norms
             else EquivariantRMSNorm(feature_dim, degree=0)
         )
-        if g_a_init_residual:
+        if g_a_init_master_residual:
             self.g_a_residual_gate = nn.ParameterDict({
-                str(l): nn.Parameter(torch.zeros(1)) for l in range(max_degree + 1)
+                str(l): nn.Parameter(torch.ones(1)*(0.05)) for l in range(max_degree + 1)
             })
 
         self.layers = nn.ModuleList([
@@ -465,6 +485,7 @@ class EnergyModel(nn.Module):
                 qk_pre_elu_scale=qk_pre_elu_scale,
                 g_a_max_degree=min(_compute_g_a_max_degree(m, max_degree), max_g_a_degree),
                 model_max_g_a_degree=max_g_a_degree,
+                g_a_init_layer_residual=g_a_init_layer_residual,
             )
             for m in range(num_layers)
         ])
@@ -501,18 +522,18 @@ class EnergyModel(nn.Module):
         effective_cutoff = self._cached_effective_cutoff.expand(B, 1, 1)
         kvecs = self._cached_kvecs.expand(B, -1, -1)
         mode_mask = self._cached_mode_mask.expand(B, -1)
+
         return effective_cutoff, kvecs, mode_mask
-        self._diag_stats: Dict[str, float] = {}
 
     def _add_g_a_residual(self, g_a, g_a_seed):
-        if not self.g_a_init_residual:
+        if not self.g_a_init_master_residual:
             return g_a
         if isinstance(g_a, dict):
             return {
-                l: g_a[l] + self.g_a_residual_gate[str(l)] * g_a_seed[l]
+                l: g_a[l] + (1.0 + self.g_a_residual_gate[str(l)]) * g_a_seed[l]
                 for l in g_a
             }
-        return g_a + self.g_a_residual_gate["0"] * g_a_seed
+        return g_a + (1.0 + self.g_a_residual_gate["0"]) * g_a_seed
 
     def forward(
         self,
@@ -524,6 +545,7 @@ class EnergyModel(nn.Module):
         target_idx: torch.Tensor = None,
         input_features: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        
         node_mask = node_mask.bool()
         atomic_masses = atomic_masses * node_mask.to(atomic_masses.dtype)
         seed_masses = atomic_masses if seed_masses is None else seed_masses * node_mask.to(seed_masses.dtype)
