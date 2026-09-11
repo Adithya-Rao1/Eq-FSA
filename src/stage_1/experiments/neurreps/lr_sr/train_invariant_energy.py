@@ -83,6 +83,10 @@ def build_model(encoder: str, num_outputs: int, config: dict) -> torch.nn.Module
             use_node_conditioned_k=config.get("eqfsa_node_conditioned_k", True),
             use_linear_decoder=config.get("eqfsa_linear_decoder", False),
             use_normalize_z_by_n_real=config.get("eqfsa_normalize_z_by_n_real", True),
+            max_g_a_degree=config.get("eqfsa_max_g_a_degree", 0),
+            g_a_additive_lift=config.get("eqfsa_g_a_additive_lift", False),
+            g_a_init_master_residual=config.get("eqfsa_g_a_init_master_residual", False),
+            g_a_init_layer_residual=config.get("eqfsa_g_a_init_layer_residual", False),
         )
     if encoder == "rsa":
         return RSAEncoder(
@@ -260,6 +264,10 @@ def main():
     parser.add_argument("--eqfsa-linear-decoder", action="store_true")
     parser.add_argument("--eqfsa-alpha-floor", type=float, default=1e-4)
     parser.add_argument("--eqfsa-num-layers", type=int, default=4)
+    parser.add_argument("--eqfsa-max-g-a-degree", type=int, default=0, choices=[0, 1, 2])
+    parser.add_argument("--eqfsa-g-a-additive-lift", action="store_true")
+    parser.add_argument("--eqfsa-g-a-init-master-residual", action="store_true")
+    parser.add_argument("--eqfsa-g-a-init-layer-residual", action="store_true")
     parser.add_argument("--eqfsa-edge-cutoff", type=float, default=5.0,)
     parser.add_argument("--num-realizations", type=int, default=3)
     parser.add_argument("--log-every", type=int, default=0, help="Print training loss every N steps (0=silent)")

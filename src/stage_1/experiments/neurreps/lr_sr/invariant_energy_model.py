@@ -44,6 +44,10 @@ class EqFSAEncoder(nn.Module):
         alpha_floor: float = 1e-4,
         use_node_conditioned_k: bool = True, use_linear_decoder: bool = False,
         use_normalize_z_by_n_real: bool = True,
+        max_g_a_degree: int = 0,
+        g_a_additive_lift: bool = False,
+        g_a_init_master_residual: bool = False,
+        g_a_init_layer_residual: bool = False,
     ):
         super().__init__()
         self.use_scale_feat = use_scale_feat
@@ -60,6 +64,10 @@ class EqFSAEncoder(nn.Module):
             decouple_ri_norm=False, imaginary_only_ri=False, deterministic_pool_agg=True,
             attention_pool=True, skip_master_expand_norm=True, content_weighted_com=False,
             per_layer_fusion=True, reduce_norms=True,
+            max_g_a_degree=max_g_a_degree,
+            g_a_additive_lift=g_a_additive_lift,
+            g_a_init_master_residual=g_a_init_master_residual,
+            g_a_init_layer_residual=g_a_init_layer_residual,
         )
         self.decoder = _Decoder(
             feature_dim, hidden_dim, num_outputs, extra_input_dim=1 if use_scale_feat else 0,
