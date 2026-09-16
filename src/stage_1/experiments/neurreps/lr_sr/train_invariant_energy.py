@@ -92,6 +92,7 @@ def build_model(encoder: str, num_outputs: int, config: dict) -> torch.nn.Module
             scale_feat_alphas=config.get("eqfsa_scale_feat_alphas", None),
             use_direction_aware_pool_agg=config.get("eqfsa_direction_aware_pool_agg", False),
             pool_expand_learnable_gain=config.get("eqfsa_pool_expand_learnable_gain", False),
+            ablate_lr=config.get("eqfsa_ablate_lr", False),
         )
     if encoder == "rsa":
         return RSAEncoder(
@@ -277,6 +278,7 @@ def main():
     parser.add_argument("--eqfsa-fixed-alpha", type=float, default=None,)
     parser.add_argument("--eqfsa-scale-feat-alphas", type=float, nargs="+", default=None,)
     parser.add_argument("--eqfsa-direction-aware-pool-agg", action="store_true",)
+    parser.add_argument("--eqfsa-ablate-lr", action="store_true",)
     parser.add_argument("--eqfsa-pool-expand-learnable-gain", action="store_true",)
     parser.add_argument("--eqfsa-edge-cutoff", type=float, default=5.0,)
     parser.add_argument("--num-realizations", type=int, default=3)

@@ -55,6 +55,7 @@ class EqFSAEncoder(nn.Module):
         scale_feat_alphas: Optional[List[float]] = None,
         use_direction_aware_pool_agg: bool = False,
         pool_expand_learnable_gain: bool = False,
+        ablate_lr: bool = False,
     ):
         super().__init__()
         self.use_scale_feat = use_scale_feat
@@ -82,6 +83,7 @@ class EqFSAEncoder(nn.Module):
             fixed_alpha=fixed_alpha,
             scale_feat_alphas=scale_feat_alphas,
             pool_expand_learnable_gain=pool_expand_learnable_gain,
+            ablate_lr=ablate_lr,
         )
         num_scale_bands = (1 + len(scale_feat_alphas)) if scale_feat_alphas else 1
         self.decoder = _Decoder(
