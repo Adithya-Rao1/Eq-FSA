@@ -182,6 +182,7 @@ class MasterNodeAttention(nn.Module):
         scale_feat_alphas: Optional[List[float]] = None,
         simplified_qk: bool = False,
         fixed_alpha: Optional[float] = None,
+        include_coulomb_prefactor: bool = False,
     ):
         super().__init__()
         self.feature_dim = feature_dim
@@ -193,26 +194,9 @@ class MasterNodeAttention(nn.Module):
         self.use_norms = use_norms
         self.qk_pre_elu_scale = qk_pre_elu_scale
         self.max_g_a_degree = max_g_a_degree
-        # Capacity-ablation flags: DimeNet and RSA both win their respective benchmarks with a
-        # FIXED (non-learned) basis/bandwidth and a thin learned layer on top; this module instead
-        # learns nearly everything (Q/K via a multi-layer high_ord_ffn with its own internal norms,
-        # plus a learned bandwidth alpha) before ever reaching the decoder. `simplified_qk` replaces
-        # that multi-stage Q/K construction with a single plain Linear, no post-norm; `fixed_alpha`
-        # replaces the learned softplus-bounded bandwidth with a literal constant. Both default to
-        # the original behavior (off) -- this is meant to be tested AGAINST the existing path, not
-        # to replace it outright.
         self.simplified_qk = simplified_qk
         self.fixed_alpha = fixed_alpha
-        # Fixed (non-learned) damping bandwidths, in addition to the model's own learned `alpha`,
-        # used only by the `return_scale_feat` side-channel: `alpha` is a single value shared by
-        # every consumer of this module's output, so a decoder reading only the learned-alpha scale
-        # feature can never resolve targets at multiple, very different lengthscales at once (the
-        # learned alpha can only compromise on one bandwidth). Exposing the same magnitude computed
-        # at several fixed bandwidths lets a downstream per-target linear/MLP readout pick its own
-        # effective lengthscale directly, the same role a fixed multi-center RBF basis plays
-        # elsewhere in this codebase's radial networks -- general-purpose, not specific to any one
-        # benchmark's target set. Default `None` preserves the exact original single-scalar
-        # `scale_feat` shape/behavior.
+        self.include_coulomb_prefactor = include_coulomb_prefactor  
         self.scale_feat_alphas = scale_feat_alphas
 
         kv_in_dim = feature_dim + dist_rbf_num_basis if dist_weighted_content else None
@@ -371,8 +355,13 @@ class MasterNodeAttention(nn.Module):
 
         alpha = self.alpha if self.fixed_alpha is not None else (F.softplus(self.alpha) + self.alpha_floor)
         k2 = (kvecs ** 2).sum(dim=-1)
-        damping = torch.exp(-k2 / (4.0 * alpha)) * mode_mask_f
-        damping_sum = damping.sum(dim=-1) # min=1.0 for k=0
+        if self.include_coulomb_prefactor:
+            has_k = (k2 > 1e-12).to(k2.dtype)
+            coulomb = has_k / k2.clamp(min=1e-12)
+            damping = torch.exp(-k2 / (4.0 * alpha)) * coulomb * mode_mask_f
+        else:
+            damping = torch.exp(-k2 / (4.0 * alpha)) * mode_mask_f
+        damping_sum = damping.sum(dim=-1) # min=1.0 for k=0 if not include_coulomb_prefactor else exclude
         if self.diag_enabled:
             self._diag_damping_sum_min = float(damping_sum.detach().min())
 

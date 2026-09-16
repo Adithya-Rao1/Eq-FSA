@@ -56,10 +56,13 @@ class EqFSAEncoder(nn.Module):
         use_direction_aware_pool_agg: bool = False,
         pool_expand_learnable_gain: bool = False,
         ablate_lr: bool = False,
+        sigma: Optional[float] = None,
     ):
         super().__init__()
         self.use_scale_feat = use_scale_feat
         self.scale_feat_alphas = scale_feat_alphas
+        physical_fixed_alpha = None if sigma is None else 1.0 / (2.0 * sigma ** 2)
+        physical_coulomb = sigma is not None
         self.charge_embed = _ChargeEmbedding(feature_dim, hidden_dim)
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim, out_dim=feature_dim)
@@ -80,7 +83,8 @@ class EqFSAEncoder(nn.Module):
             g_a_init_master_residual=g_a_init_master_residual,
             g_a_init_layer_residual=g_a_init_layer_residual,
             simplified_qk=simplified_qk,
-            fixed_alpha=fixed_alpha,
+            fixed_alpha=physical_fixed_alpha if sigma is not None else fixed_alpha,
+            include_coulomb_prefactor=physical_coulomb,
             scale_feat_alphas=scale_feat_alphas,
             pool_expand_learnable_gain=pool_expand_learnable_gain,
             ablate_lr=ablate_lr,

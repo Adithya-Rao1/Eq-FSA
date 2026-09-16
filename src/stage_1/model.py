@@ -147,6 +147,7 @@ class EnergyLayer(nn.Module):
         scale_feat_alphas: Optional[List[float]] = None,
         simplified_qk: bool = False,
         fixed_alpha: Optional[float] = None,
+        include_coulomb_prefactor: bool = False,
     ):
         super().__init__()
         self.radial_net = radial_net
@@ -205,6 +206,7 @@ class EnergyLayer(nn.Module):
             scale_feat_alphas=scale_feat_alphas,
             simplified_qk=simplified_qk,
             fixed_alpha=fixed_alpha,
+            include_coulomb_prefactor=include_coulomb_prefactor,
         )
 
         norm_degrees = list(range(max_degree + 1))
@@ -393,6 +395,7 @@ class EnergyModel(nn.Module):
         simplified_qk: bool = False,
         fixed_alpha: Optional[float] = None,
         pool_expand_learnable_gain: bool = False,
+        include_coulomb_prefactor: bool = False,
     ):
         super().__init__()
         self._diag_stats: Dict[str, float] = {}
@@ -501,6 +504,7 @@ class EnergyModel(nn.Module):
                 scale_feat_alphas=scale_feat_alphas,
                 simplified_qk=simplified_qk,
                 fixed_alpha=fixed_alpha,
+                include_coulomb_prefactor=include_coulomb_prefactor,
             )
             for m in range(num_layers)
         ])

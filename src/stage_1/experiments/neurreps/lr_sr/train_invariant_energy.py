@@ -72,6 +72,13 @@ def build_optimizer(model: torch.nn.Module, lr: float, qk_gamma_wd: float) -> to
 
 def build_model(encoder: str, num_outputs: int, config: dict) -> torch.nn.Module:
     if encoder == "eqfsa":
+        use_physical_damping = config.get("eqfsa_use_physical_damping", False)
+        sigma = None
+        if use_physical_damping:
+            sigmas = config["sigmas"]
+            if len(sigmas) != 1:
+                raise ValueError
+            sigma = sigmas[0]
         return EqFSAEncoder(
             num_master_nodes=config["num_master_nodes"], feature_dim=config["feature_dim"],
             hidden_dim=config["hidden_dim"], n_max=config["n_max"], num_outputs=num_outputs,
@@ -93,6 +100,7 @@ def build_model(encoder: str, num_outputs: int, config: dict) -> torch.nn.Module
             use_direction_aware_pool_agg=config.get("eqfsa_direction_aware_pool_agg", False),
             pool_expand_learnable_gain=config.get("eqfsa_pool_expand_learnable_gain", False),
             ablate_lr=config.get("eqfsa_ablate_lr", False),
+            sigma=sigma,
         )
     if encoder == "rsa":
         return RSAEncoder(
@@ -257,9 +265,7 @@ def main():
     parser.add_argument("--eval-batches", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--lr-schedule", type=str, default="constant", choices=["constant", "warmup_cosine"])
-    parser.add_argument("--lr-warmup-frac", type=float, default=0.05,
-                         help="Fraction of train_steps used for linear LR warmup (only used when "
-                              "--lr-schedule warmup_cosine).")
+    parser.add_argument("--lr-warmup-frac", type=float, default=0.05,)
     parser.add_argument("--freeze-encoder-frac", type=float, default=0.0)
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
     parser.add_argument("--qk-gamma-wd", type=float, default=0.0)
@@ -279,7 +285,7 @@ def main():
     parser.add_argument("--eqfsa-scale-feat-alphas", type=float, nargs="+", default=None,)
     parser.add_argument("--eqfsa-direction-aware-pool-agg", action="store_true",)
     parser.add_argument("--eqfsa-ablate-lr", action="store_true",)
-    parser.add_argument("--eqfsa-pool-expand-learnable-gain", action="store_true",)
+    parser.add_argument("--eqfsa-use-physical-damping", action="store_true",)
     parser.add_argument("--eqfsa-edge-cutoff", type=float, default=5.0,)
     parser.add_argument("--num-realizations", type=int, default=3)
     parser.add_argument("--log-every", type=int, default=0, help="Print training loss every N steps (0=silent)")
