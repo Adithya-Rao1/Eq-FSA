@@ -24,11 +24,19 @@ class MasterBroadcastAttention(nn.Module):
         self.scale = self.head_dim ** 0.5
 
         degrees = list(range(max_degree + 1))
-        self.W_Q = nn.ModuleDict({str(l): EquivariantLinear(feature_dim, feature_dim) for l in degrees})
-        self.B_K_self = nn.ModuleDict({str(l): EquivariantLinear(feature_dim, feature_dim) for l in degrees})
-        self.B_V_self = nn.ModuleDict({str(l): EquivariantLinear(feature_dim, feature_dim) for l in degrees})
-        self.readout_K = nn.ModuleDict({str(l): EquivariantLinear(feature_dim, feature_dim) for l in degrees})
-        self.readout_V = nn.ModuleDict({str(l): EquivariantLinear(feature_dim, feature_dim) for l in degrees})
+
+        self.qkv_self_w = nn.ParameterDict()
+        for l in degrees:
+            templates = [EquivariantLinear(feature_dim, feature_dim) for _ in range(3)]
+            self.qkv_self_w[str(l)] = nn.Parameter(
+                torch.stack([t.weight.weight.detach().clone() for t in templates])
+            )
+
+        k_templates = [EquivariantLinear(feature_dim, feature_dim) for _ in degrees]
+        v_templates = [EquivariantLinear(feature_dim, feature_dim) for _ in degrees]
+        self.readout_K_w = nn.Parameter(torch.stack([t.weight.weight.detach().clone() for t in k_templates]))
+        self.readout_V_w = nn.Parameter(torch.stack([t.weight.weight.detach().clone() for t in v_templates]))
+
         self.radial_KV = nn.ModuleDict({
             str(l): BatchedRadialNetwork(
                 n_copies=2, num_basis=2 * l + 1, hidden_dim=hidden_dim,
@@ -60,9 +68,12 @@ class MasterBroadcastAttention(nn.Module):
         N_a = X_a.shape[1]
         H, Ch = self.num_heads, self.head_dim
 
-        Q = {l: self.W_Q[str(l)](f_tilde[l]) for l in range(self.max_degree + 1)}
-        K_self = {l: self.B_K_self[str(l)](f_tilde[l]) for l in range(self.max_degree + 1)}
-        V_self = {l: self.B_V_self[str(l)](f_tilde[l]) for l in range(self.max_degree + 1)}
+        Q: Dict[int, torch.Tensor] = {}
+        K_self: Dict[int, torch.Tensor] = {}
+        V_self: Dict[int, torch.Tensor] = {}
+        for l in range(self.max_degree + 1):
+            qkv = torch.einsum("toc,bnck->bntok", self.qkv_self_w[str(l)], f_tilde[l])
+            Q[l], K_self[l], V_self[l] = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
 
         x_rel_raw = x.unsqueeze(2) - X_a.unsqueeze(1)                         
         x_rel = minimum_image(x_rel_raw.reshape(B, N * N_a, 3), V).reshape(B, N, N_a, 3)
@@ -70,11 +81,15 @@ class MasterBroadcastAttention(nn.Module):
         x_rel_flat = x_rel.reshape(B * N * N_a, 3)
         r = x_rel_flat.norm(dim=-1, keepdim=True)
 
+        g_a_sq = g_a.squeeze(-1)                                            
+        K_content_all = torch.einsum("loc,bac->balo", self.readout_K_w, g_a_sq)  
+        V_content_all = torch.einsum("loc,bac->balo", self.readout_V_w, g_a_sq)
+
         K_lifted: Dict[int, torch.Tensor] = {}
         V_lifted: Dict[int, torch.Tensor] = {}
         for l in range(self.max_degree + 1):
-            K_content = self.readout_K[str(l)](g_a)
-            V_content = self.readout_V[str(l)](g_a)
+            K_content = K_content_all[:, :, l, :].unsqueeze(-1)
+            V_content = V_content_all[:, :, l, :].unsqueeze(-1)
 
             phi_kv = self.radial_KV[str(l)](r)
             cg = clebsch_gordan_matrix(l, 0, dtype=x.dtype, device=x.device)
@@ -105,10 +120,10 @@ class MasterBroadcastAttention(nn.Module):
 
         scores_all = torch.cat(
             [score_self.unsqueeze(-1), score_master.permute(0, 1, 3, 2)], dim=-1,
-        )                                                      
+        )                                                        
         beta_all = softmax_over_neighbors(scores_all)
-        beta_self = beta_all[..., 0]                                
-        beta_master = beta_all[..., 1:].permute(0, 1, 3, 2)      
+        beta_self = beta_all[..., 0]                               
+        beta_master = beta_all[..., 1:].permute(0, 1, 3, 2)        
 
         Vself_concat = torch.cat(
             [V_self[l].view(B, N, H, Ch, 2 * l + 1) for l in range(self.max_degree + 1)], dim=-1,
