@@ -24,15 +24,33 @@ class _PerNodeHead(nn.Module):
         init_linear_(self.u, "linear")
         init_linear_(self.h_gain, "linear")
 
-    def score(self, g_a: torch.Tensor, f_n: torch.Tensor, e: torch.Tensor) -> torch.Tensor:
-        h = F.leaky_relu(self.A_Q(g_a).unsqueeze(1) + self.A_K(f_n) + self.A_E(e))
-        return self.u(h).squeeze(-1)
 
-    def value(self, f_n: torch.Tensor) -> torch.Tensor:
-        return self.A_V(f_n)
+class _BatchedPerNodeHeads(nn.Module):
+    def __init__(self, feature_dim: int, n_master_nodes: int, hidden_dim: int, num_rbf: int):
+        super().__init__()
+        templates = [_PerNodeHead(feature_dim, hidden_dim, num_rbf) for _ in range(n_master_nodes)]
+        self.A_Q_w = nn.Parameter(torch.stack([t.A_Q.weight.detach().clone() for t in templates]))
+        self.A_Q_b = nn.Parameter(torch.stack([t.A_Q.bias.detach().clone() for t in templates]))
+        self.A_K_w = nn.Parameter(torch.stack([t.A_K.weight.detach().clone() for t in templates]))
+        self.A_K_b = nn.Parameter(torch.stack([t.A_K.bias.detach().clone() for t in templates]))
+        self.A_E_w = nn.Parameter(torch.stack([t.A_E.weight.detach().clone() for t in templates]))
+        self.A_E_b = nn.Parameter(torch.stack([t.A_E.bias.detach().clone() for t in templates]))
+        self.u_w = nn.Parameter(torch.stack([t.u.weight.detach().clone() for t in templates]))
+        self.A_V_w = nn.Parameter(torch.stack([t.A_V.weight.detach().clone() for t in templates]))
+        self.A_V_b = nn.Parameter(torch.stack([t.A_V.bias.detach().clone() for t in templates]))
+        self.h_gain_w = nn.Parameter(torch.stack([t.h_gain.weight.detach().clone() for t in templates]))
 
-    def radial_gain(self, e: torch.Tensor) -> torch.Tensor:
-        return self.h_gain(e).squeeze(-1)
+    def forward(
+        self, g_a: torch.Tensor, f_n: torch.Tensor, e: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        q = torch.einsum("ahc,bac->bah", self.A_Q_w, g_a) + self.A_Q_b
+        k = torch.einsum("ahc,bnc->banh", self.A_K_w, f_n) + self.A_K_b.unsqueeze(1)
+        ee = torch.einsum("ahk,bank->banh", self.A_E_w, e) + self.A_E_b.unsqueeze(1)
+        h = F.leaky_relu(q.unsqueeze(2) + k + ee)
+        s = torch.einsum("aoh,banh->bano", self.u_w, h).squeeze(-1)
+        v = torch.einsum("aoc,bnc->bano", self.A_V_w, f_n) + self.A_V_b.unsqueeze(1)
+        gain = torch.einsum("aok,bank->bano", self.h_gain_w, e).squeeze(-1)
+        return s, v, gain
 
 
 class MasterNodeAggregator(nn.Module):
@@ -43,24 +61,23 @@ class MasterNodeAggregator(nn.Module):
         super().__init__()
         self.n_master_nodes = n_master_nodes
         self.rbf = LogSpacedRBF(rbf_num_basis, rbf_min, rbf_cutoff)
-        self.heads = nn.ModuleList([
-            _PerNodeHead(feature_dim, hidden_dim, rbf_num_basis) for _ in range(n_master_nodes)
-        ])
+        self.heads = _BatchedPerNodeHeads(feature_dim, n_master_nodes, hidden_dim, rbf_num_basis)
 
     def forward(
         self, g_a: torch.Tensor, f_n: torch.Tensor, x: torch.Tensor, X_a: torch.Tensor,
         node_mask: torch.Tensor, V: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        pooled_list, x_new_list = [], []
-        for a, head in enumerate(self.heads):
-            rel = minimum_image(x - X_a[:, a:a + 1, :], V)      
-            d = rel.norm(dim=-1)                                
-            e = self.rbf(d)                                      
-            s = head.score(g_a[:, a, :], f_n, e)                
-            w = softmax_over_neighbors(s, mask=node_mask)       
-            pooled_list.append(torch.einsum("bn,bnc->bc", w, head.value(f_n)))
-            gain = head.radial_gain(e)                         
-            x_new_list.append(X_a[:, a, :] + torch.einsum("bn,bn,bni->bi", w, gain, rel))
-        pooled = torch.stack(pooled_list, dim=1)   
-        X_new = torch.stack(x_new_list, dim=1)     
+        B, N_a, _ = X_a.shape
+        N = x.shape[1]
+        rel_raw = x.unsqueeze(1) - X_a.unsqueeze(2)                  
+        rel = minimum_image(rel_raw.reshape(B, N_a * N, 3), V).reshape(B, N_a, N, 3)
+        d = rel.norm(dim=-1)                                            
+        e = self.rbf(d)                                              
+
+        s, v, gain = self.heads(g_a, f_n, e)                            
+        mask3 = node_mask.unsqueeze(1).expand(-1, N_a, -1)
+        w = softmax_over_neighbors(s, mask=mask3)                      
+
+        pooled = torch.einsum("ban,banc->bac", w, v)                   
+        X_new = X_a + torch.einsum("ban,ban,bani->bai", w, gain, rel)  
         return F.silu(pooled), X_new

@@ -79,42 +79,48 @@ class LRLayer(nn.Module):
         V: torch.Tensor,
     ) -> Tuple[Dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
         B, N, _ = x_wrapped.shape
-        f_in = self.layer_norm_in(f_in)
 
-        f_in_i_e = {k: f_in[k][edge_b, edge_i] for k in range(self.k_max + 1)}
-        f0_j_e = {k: f0[k][edge_b, edge_j] for k in range(self.k_max + 1)}
-        alpha_e, Wv_j_sr_flat = self.sr_attn(
-            f_in_i_e, f0_j_e, x_rel_e, edge_feat_e, edge_b, edge_i, batch_size=B, num_atoms=N,
-        )
-        receiver_flat = edge_b * N + edge_i
+        with torch.profiler.record_function("lr_local_sr"):
+            f_in = self.layer_norm_in(f_in)
 
-        self_terms_raw = {l: self.W_V_self_linear[str(l)](f_in[l]) for l in range(self.max_degree + 1)}
-        self_terms = self.W_V_self_norm(self_terms_raw)
+            f_in_i_e = {k: f_in[k][edge_b, edge_i] for k in range(self.k_max + 1)}
+            f0_j_e = {k: f0[k][edge_b, edge_j] for k in range(self.k_max + 1)}
+            alpha_e, Wv_j_sr_flat = self.sr_attn(
+                f_in_i_e, f0_j_e, x_rel_e, edge_feat_e, edge_b, edge_i, batch_size=B, num_atoms=N,
+            )
+            receiver_flat = edge_b * N + edge_i
 
-        neighbor_raws: Dict[int, torch.Tensor] = {}
-        for l in range(self.max_degree + 1):
-            C = f_in[l].shape[2]
-            contrib_e = alpha_e.view(-1, 1, 1) * Wv_j_sr_flat[l]
-            neighbor_raws[l] = torch.zeros(
-                B * N, C, 2 * l + 1, device=x_wrapped.device, dtype=x_wrapped.dtype,
-            ).scatter_add(
-                0, receiver_flat.view(-1, 1, 1).expand(-1, C, 2 * l + 1), contrib_e,
-            ).view(B, N, C, 2 * l + 1)
-        neighbor_terms = self.sigma_gate(neighbor_raws)
+            self_terms_raw = {l: self.W_V_self_linear[str(l)](f_in[l]) for l in range(self.max_degree + 1)}
+            self_terms = self.W_V_self_norm(self_terms_raw)
 
-        pre_mid = {l: f_in[l] + self_terms[l] + neighbor_terms[l] for l in range(self.max_degree + 1)}
-        f_out = self.layer_norm_mid(pre_mid)
+            neighbor_raws: Dict[int, torch.Tensor] = {}
+            for l in range(self.max_degree + 1):
+                C = f_in[l].shape[2]
+                contrib_e = alpha_e.view(-1, 1, 1) * Wv_j_sr_flat[l]
+                neighbor_raws[l] = torch.zeros(
+                    B * N, C, 2 * l + 1, device=x_wrapped.device, dtype=x_wrapped.dtype,
+                ).scatter_add(
+                    0, receiver_flat.view(-1, 1, 1).expand(-1, C, 2 * l + 1), contrib_e,
+                ).view(B, N, C, 2 * l + 1)
+            neighbor_terms = self.sigma_gate(neighbor_raws)
 
-        f_readout = self.readout(f_out)
-        pre_out = {l: f_readout[l] + f_out[l] for l in range(self.max_degree + 1)}
-        f_tilde = self.layer_norm_out(pre_out) 
+            pre_mid = {l: f_in[l] + self_terms[l] + neighbor_terms[l] for l in range(self.max_degree + 1)}
+            f_out = self.layer_norm_mid(pre_mid)
 
-        pooled, X_a_new = self.aggregator(
-            g_a_in.squeeze(-1), f_in[0].squeeze(-1), x_wrapped, X_a_in, node_mask, V,
-        )
-        g_a_new = self.update(pooled, X_a_new, V, kvecs, mode_mask)
-        g_a_out = self.master_ln(self.W_master_self(g_a_in) + g_a_new.unsqueeze(-1))
+            f_readout = self.readout(f_out)
+            pre_out = {l: f_readout[l] + f_out[l] for l in range(self.max_degree + 1)}
+            f_tilde = self.layer_norm_out(pre_out)
 
-        f_next = self.broadcast(f_tilde, g_a_out, X_a_new, x_wrapped, node_mask, V)
+        with torch.profiler.record_function("lr_aggregation"):
+            pooled, X_a_new = self.aggregator(
+                g_a_in.squeeze(-1), f_in[0].squeeze(-1), x_wrapped, X_a_in, node_mask, V,
+            )
+
+        with torch.profiler.record_function("lr_update"):
+            g_a_new = self.update(pooled, X_a_new, V, kvecs, mode_mask)
+            g_a_out = self.master_ln(self.W_master_self(g_a_in) + g_a_new.unsqueeze(-1))
+
+        with torch.profiler.record_function("lr_broadcast"):
+            f_next = self.broadcast(f_tilde, g_a_out, X_a_new, x_wrapped, node_mask, V)
 
         return f_next, g_a_out, X_a_new
