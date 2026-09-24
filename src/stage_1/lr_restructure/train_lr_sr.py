@@ -22,6 +22,9 @@ def train_one(n_atoms: int, sigma: float, config: dict, device: torch.device) ->
         build_lr_scheduler(opt, config["train_steps"], config["lr_warmup_frac"])
         if config["lr_schedule"] == "warmup_cosine" else None
     )
+    train_model = model
+    if config.get("torch_compile"):
+        train_model = torch.compile(model, dynamic=True)
     kvecs = make_wavevector_grid(config["n_max"], box=config["box"]).to(device)
     sigmas = torch.tensor([sigma], device=device)
     gen = torch.Generator().manual_seed(config["seed"])
@@ -44,7 +47,7 @@ def train_one(n_atoms: int, sigma: float, config: dict, device: torch.device) ->
             charges.to(device), positions.to(device), V.to(device), mask.to(device), E_LR.to(device),
         )
         opt.zero_grad()
-        pred = model(charges, positions, mask, V)
+        pred = train_model(charges, positions, mask, V)
         loss = F.mse_loss((pred - target_mean) / target_std, (E_LR - target_mean) / target_std)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), config["grad_clip_norm"])
@@ -64,7 +67,7 @@ def train_one(n_atoms: int, sigma: float, config: dict, device: torch.device) ->
             charges, positions, V, mask, E_LR = (
                 charges.to(device), positions.to(device), V.to(device), mask.to(device), E_LR.to(device),
             )
-            pred = model(charges, positions, mask, V)
+            pred = train_model(charges, positions, mask, V)
             nmse = F.mse_loss(pred, E_LR) / E_LR.var().clamp(min=1e-12)
             eval_nmse.append(nmse.item())
     return sum(eval_nmse) / len(eval_nmse)
@@ -94,6 +97,7 @@ def main():
     parser.add_argument("--outdir", type=str, default="stage_1/lr_restructure/results_lr_sr")
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--smoke-test", action="store_true")
+    parser.add_argument("--torch-compile", action="store_true")
     args = parser.parse_args()
 
     if args.smoke_test:

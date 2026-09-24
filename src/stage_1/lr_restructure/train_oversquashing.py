@@ -71,12 +71,16 @@ def train_one(topology, r, config: dict, device: torch.device) -> float:
     ).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=config["lr"])
 
+    train_model = model
+    if config.get("torch_compile"):
+        train_model = torch.compile(model, dynamic=True)
+
     loss = None
     for epoch in range(config["epochs"]):
         model.train()
         for batch in train_loader:
             opt.zero_grad()
-            logits = _run_batch(model, batch, device)
+            logits = _run_batch(train_model, batch, device)
             loss = F.cross_entropy(logits, batch["labels"].to(device))
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), config["clip_grad_norm"])
@@ -88,7 +92,7 @@ def train_one(topology, r, config: dict, device: torch.device) -> float:
     correct, total = 0, 0
     with torch.no_grad():
         for batch in val_loader:
-            logits = _run_batch(model, batch, device)
+            logits = _run_batch(train_model, batch, device)
             pred = logits.argmax(dim=-1)
             correct += (pred == batch["labels"].to(device)).sum().item()
             total += pred.shape[0]
@@ -119,6 +123,7 @@ def main():
     parser.add_argument("--outdir", type=str, default="stage_1/lr_restructure/results_oversquashing")
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--smoke-test", action="store_true")
+    parser.add_argument("--torch-compile", action="store_true")
     args = parser.parse_args()
 
     if args.smoke_test:
