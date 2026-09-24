@@ -3,7 +3,6 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 
-from stage_1.attention import SRAttention
 from utils.se3_utils import (
     EquivariantLinear, EquivariantRMSNorm, IrrepLinear, BatchedEquivariantRMSNorm,
     BatchedGatedNonlinearity,
@@ -13,6 +12,7 @@ from stage_1.model import Readout
 from stage_1.lr_restructure.aggregation import MasterNodeAggregator
 from stage_1.lr_restructure.update import MasterNodeUpdate
 from stage_1.lr_restructure.broadcast import MasterBroadcastAttention
+from stage_1.lr_restructure.sr_attention import SRAttention
 
 
 class LRLayer(nn.Module):
