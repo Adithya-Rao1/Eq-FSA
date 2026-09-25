@@ -77,6 +77,7 @@ class LRLayer(nn.Module):
         kvecs: torch.Tensor,
         mode_mask: torch.Tensor,
         V: torch.Tensor,
+        V_inv: Optional[torch.Tensor] = None,
     ) -> Tuple[Dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
         B, N, _ = x_wrapped.shape
 
@@ -114,7 +115,7 @@ class LRLayer(nn.Module):
 
         with torch.profiler.record_function("lr_aggregation"):
             pooled, X_a_new = self.aggregator(
-                g_a_in.squeeze(-1), f_in[0].squeeze(-1), x_wrapped, X_a_in, node_mask, V,
+                g_a_in.squeeze(-1), f_in[0].squeeze(-1), x_wrapped, X_a_in, node_mask, V, V_inv,
             )
 
         with torch.profiler.record_function("lr_update"):
@@ -122,6 +123,6 @@ class LRLayer(nn.Module):
             g_a_out = self.master_ln(self.W_master_self(g_a_in) + g_a_new.unsqueeze(-1))
 
         with torch.profiler.record_function("lr_broadcast"):
-            f_next = self.broadcast(f_tilde, g_a_out, X_a_new, x_wrapped, node_mask, V)
+            f_next = self.broadcast(f_tilde, g_a_out, X_a_new, x_wrapped, node_mask, V, V_inv)
 
         return f_next, g_a_out, X_a_new

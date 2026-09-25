@@ -30,6 +30,7 @@ def masked_weighted_com(
     mass: torch.Tensor,
     mask: torch.Tensor,
     V:    Optional[torch.Tensor] = None,
+    V_inv: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     w = mass * mask.to(mass.dtype)
     has_atoms = mask.any(dim=1)
@@ -39,7 +40,7 @@ def masked_weighted_com(
         com = (w.unsqueeze(-1) * x).sum(dim=1) / w_sum
         return com, has_atoms
 
-    s = to_fractional(x, V)
+    s = to_fractional(x, V, V_inv)
     theta = 2 * math.pi * s
     w3 = w.unsqueeze(-1)
     sin_mean = (w3 * torch.sin(theta)).sum(dim=1)
@@ -77,12 +78,13 @@ def seed_equivariant_features(
     V:             torch.Tensor,
     diag_sink:     Optional[dict] = None,
     x_wrapped:     Optional[torch.Tensor] = None,
+    V_inv:         Optional[torch.Tensor] = None,
 ) -> Dict[int, torch.Tensor]:
     if x_wrapped is None:
-        x_wrapped = minimum_image(x, V)
-    center, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask, V=V)
+        x_wrapped = minimum_image(x, V, V_inv)
+    center, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask, V=V, V_inv=V_inv)
 
-    x_rel   = minimum_image(x_wrapped - center.unsqueeze(1), V)
+    x_rel   = minimum_image(x_wrapped - center.unsqueeze(1), V, V_inv)
     r_true  = x_rel.norm(dim=-1)
     r       = r_true.clamp(min=1e-8)
     has_dir = (r_true > 1e-7).unsqueeze(-1)

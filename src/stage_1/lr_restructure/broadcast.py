@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -74,6 +74,7 @@ class MasterBroadcastAttention(nn.Module):
         x: torch.Tensor,
         node_mask: torch.Tensor,
         V: torch.Tensor,
+        V_inv: Optional[torch.Tensor] = None,
     ) -> Dict[int, torch.Tensor]:
         B, N, C, _ = f_tilde[0].shape
         N_a = X_a.shape[1]
@@ -81,14 +82,14 @@ class MasterBroadcastAttention(nn.Module):
         L, W = len(self.degrees), self.max_width
         device, dtype = x.device, x.dtype
 
-        f_tilde_stack = torch.stack([F.pad(f_tilde[l], (0, W - (2 * l + 1))) for l in self.degrees], dim=0,)  
-        qkv_stack = torch.einsum("ltoc,lbnck->lbntok", self.qkv_self_w, f_tilde_stack)  
+        f_tilde_stack = torch.stack([F.pad(f_tilde[l], (0, W - (2 * l + 1))) for l in self.degrees], dim=0,)
+        qkv_stack = torch.einsum("ltoc,lbnck->lbntok", self.qkv_self_w, f_tilde_stack)
         Q = {l: qkv_stack[l, :, :, 0, :, :2 * l + 1] for l in self.degrees}
         K_self = {l: qkv_stack[l, :, :, 1, :, :2 * l + 1] for l in self.degrees}
         V_self = {l: qkv_stack[l, :, :, 2, :, :2 * l + 1] for l in self.degrees}
 
-        x_rel_raw = x.unsqueeze(2) - X_a.unsqueeze(1)                         
-        x_rel = minimum_image(x_rel_raw.reshape(B, N * N_a, 3), V).reshape(B, N, N_a, 3)
+        x_rel_raw = x.unsqueeze(2) - X_a.unsqueeze(1)
+        x_rel = minimum_image(x_rel_raw.reshape(B, N * N_a, 3), V, V_inv).reshape(B, N, N_a, 3)
         has_dir = (x_rel.norm(dim=-1) > 1e-7).to(dtype).view(B, N, N_a, 1, 1)
         x_rel_flat = x_rel.reshape(B * N * N_a, 3)
         r = x_rel_flat.norm(dim=-1, keepdim=True)

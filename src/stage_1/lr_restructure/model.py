@@ -6,8 +6,9 @@ import torch.nn as nn
 from stage_1.model import (
     Readout, masked_weighted_com, safe_minimum_image_cutoff, seed_equivariant_features,
 )
-from utils.pw_bases import minimum_image, make_wavevectors
+from utils.pw_bases import minimum_image, make_wavevectors, safe_inv
 from utils.se3_utils import scalar_ffn, init_sequential_, init_linear_
+from utils.spherical_harm import warm_spherical_harmonics_cache
 from utils.calc_props import _MOL_FEAT_DIM
 
 from stage_1.lr_restructure.layer import LRLayer
@@ -41,6 +42,8 @@ class LREnergyModel(nn.Module):
         self.edge_cutoff = edge_cutoff
         self.n_max = n_max
         self.pw_e_cutoff = pw_e_cutoff
+        
+        warm_spherical_harmonics_cache(range(2 * max_degree + 1))
 
         self.input_embedding = nn.Embedding(num_atom_types, feature_dim)
         self.ln1 = nn.Identity() if not use_norms else nn.RMSNorm(feature_dim)
@@ -94,6 +97,8 @@ class LREnergyModel(nn.Module):
         seed_masses = atomic_masses if seed_masses is None else seed_masses * node_mask.to(seed_masses.dtype)
         B, N = node_mask.shape
 
+        V_inv = safe_inv(V)
+
         f0_raw = input_features if input_features is not None else self.input_embedding(node_types)
         f0_ffn_out = self.f0_ffn(self.ln1(f0_raw))
         mol_ctx = self.mol_prop_emb(mol_props).unsqueeze(1).expand(-1, N, -1)
@@ -101,21 +106,21 @@ class LREnergyModel(nn.Module):
         combined_scalar = self.seed_proj(torch.cat([f0_ffn_out, mol_ffn_out], dim=-1))
         combined_scalar = self.seed_proj_norm(self.seed_proj_out(combined_scalar))
 
-        x_wrapped = minimum_image(x, V)
+        x_wrapped = minimum_image(x, V, V_inv)
         seeded = seed_equivariant_features(
             combined_scalar, self.seed_radial_net, x, seed_masses, node_mask, V,
-            x_wrapped=x_wrapped,
+            x_wrapped=x_wrapped, V_inv=V_inv,
         )
         f0: Dict[int, torch.Tensor] = {0: f0_raw.unsqueeze(-1), 1: seeded[1], 2: seeded[2]}
         f: Dict[int, torch.Tensor] = dict(f0)
 
-        x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask, V=V)
+        x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask, V=V, V_inv=V_inv)
 
-        kvecs, _, mode_mask = make_wavevectors(V, self.n_max, self.pw_e_cutoff)
+        kvecs, _, mode_mask = make_wavevectors(V, self.n_max, self.pw_e_cutoff, V_inv=V_inv)
 
         effective_cutoff = safe_minimum_image_cutoff(V, self.edge_cutoff).view(B, 1, 1)
         x_diff_raw = x_wrapped.unsqueeze(1) - x_wrapped.unsqueeze(2)
-        x_diff = minimum_image(x_diff_raw.reshape(B, N * N, 3), V).reshape(B, N, N, 3)
+        x_diff = minimum_image(x_diff_raw.reshape(B, N * N, 3), V, V_inv).reshape(B, N, N, 3)
         dist = x_diff.norm(dim=-1)
         self_mask = ~torch.eye(N, dtype=torch.bool, device=x.device).unsqueeze(0)
         pair_mask = node_mask.unsqueeze(2) & node_mask.unsqueeze(1) & (dist <= effective_cutoff) & self_mask
@@ -131,7 +136,7 @@ class LREnergyModel(nn.Module):
             f, g_a, X_a = layer(
                 f_in=f, f0=f0, g_a_in=g_a, X_a_in=X_a, x_wrapped=x_wrapped, node_mask=node_mask,
                 edge_b=edge_b, edge_i=edge_i, edge_j=edge_j, x_rel_e=x_rel_e,
-                edge_feat_e=edge_feat_e, kvecs=kvecs, mode_mask=mode_mask, V=V,
+                edge_feat_e=edge_feat_e, kvecs=kvecs, mode_mask=mode_mask, V=V, V_inv=V_inv,
             )
             if return_layer_states:
                 layer_states.append(f)

@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -65,12 +65,12 @@ class MasterNodeAggregator(nn.Module):
 
     def forward(
         self, g_a: torch.Tensor, f_n: torch.Tensor, x: torch.Tensor, X_a: torch.Tensor,
-        node_mask: torch.Tensor, V: torch.Tensor,
+        node_mask: torch.Tensor, V: torch.Tensor, V_inv: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         B, N_a, _ = X_a.shape
         N = x.shape[1]
-        rel_raw = x.unsqueeze(1) - X_a.unsqueeze(2)                  
-        rel = minimum_image(rel_raw.reshape(B, N_a * N, 3), V).reshape(B, N_a, N, 3)
+        rel_raw = x.unsqueeze(1) - X_a.unsqueeze(2)
+        rel = minimum_image(rel_raw.reshape(B, N_a * N, 3), V, V_inv).reshape(B, N_a, N, 3)
         d = rel.norm(dim=-1)                                            
         e = self.rbf(d)                                              
 

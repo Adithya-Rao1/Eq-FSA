@@ -52,47 +52,38 @@ def safe_inv(V: torch.Tensor, jitter: float = 1e-6, max_tries: int = 5,
     S_safe = S.clamp(min=min_singular_value)
     return (Vh.mT @ torch.diag_embed(1.0 / S_safe) @ U.mT).to(orig_dtype)
 
-def to_fractional(x: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-    V_inv = safe_inv(V)                    
-    s = torch.matmul(V_inv, x.mT).mT 
-        
+def to_fractional(x: torch.Tensor, V: torch.Tensor, V_inv: torch.Tensor | None = None) -> torch.Tensor:
+    V_inv = safe_inv(V) if V_inv is None else V_inv
+    s = torch.matmul(V_inv, x.mT).mT
+
     return s
 
 def wrap_fractional(s: torch.Tensor) -> torch.Tensor:
     return s - torch.floor(s)
 
 def to_cartesian(s: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-    return (V.unsqueeze(-3) @ s.unsqueeze(-1)).squeeze(-1)  
+    return (V.unsqueeze(-3) @ s.unsqueeze(-1)).squeeze(-1)
 
-def wrap_positions(x: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-    s = to_fractional(x, V)
+def wrap_positions(x: torch.Tensor, V: torch.Tensor, V_inv: torch.Tensor | None = None) -> torch.Tensor:
+    s = to_fractional(x, V, V_inv)
     s_wrapped = wrap_fractional(s)
     return s_wrapped
 
-def minimum_image(dx: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-    ds = to_fractional(dx, V)
+def minimum_image(dx: torch.Tensor, V: torch.Tensor, V_inv: torch.Tensor | None = None) -> torch.Tensor:
+    ds = to_fractional(dx, V, V_inv)
     ds_mic = ds - torch.round(ds)
     return to_cartesian(ds_mic, V)
 
-def minimum_image_like(dx: torch.Tensor, dx_reference: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
-    """Wraps dx into the periodic image chosen by dx_reference, instead of wrapping dx on its own.
-
-    Needed whenever dx has been rescaled in a way that changes its magnitude without changing the
-    underlying physical position it represents (e.g. an artificially inflated COM reference).
-    Wrapping such a dx independently can flip to a different periodic image purely because the
-    rescaling happened to land its fractional coordinate near a rounding boundary (round() has a
-    hard discontinuity there) -- producing a spurious, discontinuous jump uncorrelated with any
-    real geometric signal. Tying the image choice to a reference with the true physical magnitude
-    avoids this: confirmed directly to eliminate a case where an inflated COM's fractional
-    coordinate sat at 7.4988-7.5064 across 5 classes, crossing the round-to-nearest boundary
-    between two of them and producing a fake, non-generalizable "signal".
-    """
-    shift = torch.round(to_fractional(dx_reference, V))
-    ds = to_fractional(dx, V) - shift
+def minimum_image_like(
+    dx: torch.Tensor, dx_reference: torch.Tensor, V: torch.Tensor, V_inv: torch.Tensor | None = None,
+) -> torch.Tensor:
+    shift = torch.round(to_fractional(dx_reference, V, V_inv))
+    ds = to_fractional(dx, V, V_inv) - shift
     return to_cartesian(ds, V)
 
-def reciprocal_lattice(V: torch.Tensor) -> torch.Tensor:
-    return 2 * math.pi * safe_inv(V).mT
+def reciprocal_lattice(V: torch.Tensor, V_inv: torch.Tensor | None = None) -> torch.Tensor:
+    V_inv = safe_inv(V) if V_inv is None else V_inv
+    return 2 * math.pi * V_inv.mT
 
 _MILLER_INDICES_CACHE: dict = {}
 
@@ -119,21 +110,21 @@ def make_miller_indices(
     _MILLER_INDICES_CACHE[key] = result
     return result
 
-def make_wavevectors(V, n_max, e_cutoff=None):
-    indices = make_miller_indices(n_max, device=V.device, dtype=V.dtype)  
+def make_wavevectors(V, n_max, e_cutoff=None, V_inv: torch.Tensor | None = None):
+    indices = make_miller_indices(n_max, device=V.device, dtype=V.dtype)
 
     if V.ndim == 2:
-        Brec = reciprocal_lattice(V)
+        Brec = reciprocal_lattice(V, V_inv)
         kvecs = (Brec @ indices.T).T
         if e_cutoff is not None:
             k2 = (kvecs ** 2).sum(dim=-1)
             mode_mask = k2 / 2 <= e_cutoff
-            kvecs = kvecs * mode_mask.unsqueeze(-1).to(kvecs.dtype)  
+            kvecs = kvecs * mode_mask.unsqueeze(-1).to(kvecs.dtype)
         else:
             mode_mask = torch.ones(indices.shape[0], dtype=torch.bool, device=V.device)
         return kvecs, indices, mode_mask
 
-    brec = reciprocal_lattice(V)
+    brec = reciprocal_lattice(V, V_inv)
     with torch.autocast(device_type="cuda", enabled=False):
         kvecs = torch.einsum("bij,mj->bmi", brec, indices)
 
