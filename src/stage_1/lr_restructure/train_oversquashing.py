@@ -154,7 +154,16 @@ def main():
                     seed = args.seed + real
                     config = dict(vars(args))
                     config["seed"] = seed
-                    val_error = train_one(topology, r, config, device)
+                    try:
+                        val_error = train_one(topology, r, config, device)
+                    except RuntimeError as e:
+                        writer.writerow([topology, r, real, seed, "skipped"])
+                        fcsv.flush()
+                        print(
+                            f"{topology} r={r} realization={real} seed={seed} SKIPPED: {e}",
+                            flush=True,
+                        )
+                        continue
                     writer.writerow([topology, r, real, seed, val_error])
                     fcsv.flush()
                     print(
