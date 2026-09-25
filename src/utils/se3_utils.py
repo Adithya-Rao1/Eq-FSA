@@ -720,8 +720,11 @@ class BatchedEquivariantRMSNorm(nn.Module):
     def forward(self, x: Dict[int, torch.Tensor]) -> Dict[int, torch.Tensor]:
         norms, dirs = [], []
         for d in self.degrees:
-            floor_d = 0.0 if d == 0 else self.floor
-            norm_d, dir_d = straight_through_norm_and_direction(x[d], dim=-1, floor=floor_d)
+            if d == 0:
+                norm_d = x[d].squeeze(-1)
+                dir_d = torch.ones_like(x[d])
+            else:
+                norm_d, dir_d = straight_through_norm_and_direction(x[d], dim=-1, floor=self.floor)
             norms.append(norm_d)
             dirs.append(dir_d)
 
