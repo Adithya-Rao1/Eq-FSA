@@ -6,7 +6,7 @@ import torch.nn as nn
 from stage_1.model import (
     Readout, masked_weighted_com, safe_minimum_image_cutoff, seed_equivariant_features,
 )
-from utils.pw_bases import minimum_image, make_wavevectors, safe_inv
+from utils.pw_bases import minimum_image, make_wavevectors, make_miller_indices, safe_inv
 from utils.se3_utils import scalar_ffn, init_sequential_, init_linear_
 from utils.spherical_harm import warm_spherical_harmonics_cache
 from utils.calc_props import _MOL_FEAT_DIM
@@ -44,6 +44,8 @@ class LREnergyModel(nn.Module):
         self.pw_e_cutoff = pw_e_cutoff
         
         warm_spherical_harmonics_cache(range(2 * max_degree + 1))
+
+        self.register_buffer("miller_indices", make_miller_indices(n_max, dtype=torch.get_default_dtype()),)
 
         self.input_embedding = nn.Embedding(num_atom_types, feature_dim)
         self.ln1 = nn.Identity() if not use_norms else nn.RMSNorm(feature_dim)
@@ -116,7 +118,7 @@ class LREnergyModel(nn.Module):
 
         x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask, V=V, V_inv=V_inv)
 
-        kvecs, _, mode_mask = make_wavevectors(V, self.n_max, self.pw_e_cutoff, V_inv=V_inv)
+        kvecs, _, mode_mask = make_wavevectors(V, self.n_max, self.pw_e_cutoff, V_inv=V_inv, indices=self.miller_indices)
 
         effective_cutoff = safe_minimum_image_cutoff(V, self.edge_cutoff).view(B, 1, 1)
         x_diff_raw = x_wrapped.unsqueeze(1) - x_wrapped.unsqueeze(2)

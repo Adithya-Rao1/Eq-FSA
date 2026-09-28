@@ -110,8 +110,9 @@ def make_miller_indices(
     _MILLER_INDICES_CACHE[key] = result
     return result
 
-def make_wavevectors(V, n_max, e_cutoff=None, V_inv: torch.Tensor | None = None):
-    indices = make_miller_indices(n_max, device=V.device, dtype=V.dtype)
+def make_wavevectors(V, n_max, e_cutoff=None, V_inv: torch.Tensor | None = None, indices: torch.Tensor | None = None,):
+    if indices is None:
+        indices = make_miller_indices(n_max, device=V.device, dtype=V.dtype)
 
     if V.ndim == 2:
         Brec = reciprocal_lattice(V, V_inv)
