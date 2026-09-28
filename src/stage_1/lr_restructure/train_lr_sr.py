@@ -122,6 +122,8 @@ def main():
         torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     )
     print(f"Using device: {device}", flush=True)
+    if device.type == "cuda":
+        torch.set_float32_matmul_precision("high")
     os.makedirs(args.outdir, exist_ok=True)
     csv_path = os.path.join(args.outdir, "results.csv")
 

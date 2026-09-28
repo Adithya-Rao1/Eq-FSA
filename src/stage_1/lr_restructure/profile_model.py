@@ -37,6 +37,9 @@ def main():
     )
     print(f"Using device: {device}", flush=True)
 
+    if device.type == "cuda":
+        torch.set_float32_matmul_precision("high")
+
     torch.manual_seed(0)
     model = LRRestructureEncoder(
         num_master_nodes=args.num_master_nodes, feature_dim=args.feature_dim,
