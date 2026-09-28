@@ -11,6 +11,9 @@ from stage_1.experiments.neurreps.oversquashing.synthetic_dataset import (
     GraphTransferDataset, GeometricGraphTransferDataset, graph_transfer_collate_fn,
 )
 from stage_1.experiments.neurreps.oversquashing.train_graph_transfer import _avg_num_neighbors
+from stage_1.experiments.neurreps.oversquashing.metrics import (
+    EmbeddingCapture, jacobian_sensitivity, mi_lower_bound,
+)
 from stage_1.lr_restructure.oversquashing_classifier import LRRestructureClassifier
 
 
@@ -71,7 +74,7 @@ def call_model(model, variant: str, batch: dict, device: torch.device):
     )
 
 
-def train_one(topology, r, variant, config: dict, device: torch.device) -> float:
+def train_one(topology, r, variant, config: dict, device: torch.device) -> dict:
     seed = config["seed"]
     weight_seed = config.get("weight_seed")
     torch.manual_seed(seed if weight_seed is None else weight_seed)
@@ -79,6 +82,8 @@ def train_one(topology, r, variant, config: dict, device: torch.device) -> float
         config["task"], topology, r, config["classes"], config["samples_per_config"], seed,
         config["cutoff"], config["geometric_class_spacing"],
     )
+    label_idx = dataset.label_idx
+    classes = config["classes"]
     n_val = max(1, int(len(dataset) * config["val_fraction"]))
     n_train = len(dataset) - n_val
     train_set, val_set = random_split(
@@ -117,14 +122,27 @@ def train_one(topology, r, variant, config: dict, device: torch.device) -> float
             print(f"[{variant} {topology} r={r}] epoch={epoch} loss={loss.item():.4f}", flush=True)
 
     model.eval()
-    correct, total = 0, 0
-    with torch.no_grad():
-        for batch in val_loader:
-            logits = call_model(train_model, variant, batch, device)
-            pred = logits.argmax(dim=-1)
-            correct += (pred == batch["labels"].to(device)).sum().item()
-            total += pred.shape[0]
-    return 1.0 - correct / max(total, 1)
+    embedding_module = model.input_embedding_module
+    total_ce, correct, total = 0.0, 0, 0
+    sens_values = []
+    for batch in val_loader:
+        batch_dev = _to_device(batch, device)
+        B = batch_dev["labels"].shape[0]
+        label_idx_t = torch.full((B,), label_idx, dtype=torch.long, device=device)
+        with EmbeddingCapture(embedding_module) as cap:
+            logits = call_model(model, variant, batch, device)
+            sens_values.append(jacobian_sensitivity(logits, cap.captured, label_idx_t))
+        logits_d = logits.detach()
+        total_ce += F.cross_entropy(logits_d, batch_dev["labels"], reduction="sum").item()
+        correct += (logits_d.argmax(dim=-1) == batch_dev["labels"]).sum().item()
+        total += B
+
+    val_ce = total_ce / max(1, total)
+    return {
+        "val_error": 1.0 - correct / max(total, 1),
+        "jacobian_sensitivity": sum(sens_values) / max(1, len(sens_values)),
+        "mi_lower_bound": mi_lower_bound(classes, val_ce),
+    }
 
 
 def main():
@@ -182,7 +200,10 @@ def main():
 
     with open(csv_path, "w", newline="") as fcsv:
         writer = csv.writer(fcsv)
-        writer.writerow(["variant", "topology", "r", "realization", "seed", "weight_seed", "val_error"])
+        writer.writerow([
+            "variant", "topology", "r", "realization", "seed", "weight_seed",
+            "val_error", "jacobian_sensitivity", "mi_lower_bound",
+        ])
         seeds = list(args.seeds) if args.seeds else [
             args.seed + i * 7919 for i in range(args.num_realizations)
         ]
@@ -203,9 +224,12 @@ def main():
                         config["weight_seed"] = weight_seed
                         logged_weight_seed = seed if weight_seed is None else weight_seed
                         try:
-                            val_error = train_one(topology, r, variant, config, device)
+                            result = train_one(topology, r, variant, config, device)
                         except RuntimeError as e:
-                            writer.writerow([variant, topology, r, real, seed, logged_weight_seed, "skipped"])
+                            writer.writerow([
+                                variant, topology, r, real, seed, logged_weight_seed,
+                                "skipped", "skipped", "skipped",
+                            ])
                             fcsv.flush()
                             print(
                                 f"variant={variant} {topology} r={r} realization={real} seed={seed} "
@@ -213,11 +237,16 @@ def main():
                                 flush=True,
                             )
                             continue
-                        writer.writerow([variant, topology, r, real, seed, logged_weight_seed, val_error])
+                        writer.writerow([
+                            variant, topology, r, real, seed, logged_weight_seed,
+                            result["val_error"], result["jacobian_sensitivity"], result["mi_lower_bound"],
+                        ])
                         fcsv.flush()
                         print(
                             f"variant={variant} {topology} r={r} realization={real} seed={seed} "
-                            f"weight_seed={logged_weight_seed} val_error={val_error:.4f}",
+                            f"weight_seed={logged_weight_seed} val_error={result['val_error']:.4f} "
+                            f"jacobian={result['jacobian_sensitivity']:.4g} "
+                            f"mi={result['mi_lower_bound']:.4f}",
                             flush=True,
                         )
 
