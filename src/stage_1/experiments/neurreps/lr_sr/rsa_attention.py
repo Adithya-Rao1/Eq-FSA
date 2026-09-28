@@ -5,7 +5,7 @@ import math
 import torch
 import torch.nn as nn
 
-from utils.pw_bases import make_wavevectors
+from utils.pw_bases import make_miller_indices, make_wavevectors
 
 class RSAAttention(nn.Module):
     def __init__(self, feature_dim: int, n_max: int, sigma: float = 5.0, hidden_dim: int = 128):
@@ -14,6 +14,7 @@ class RSAAttention(nn.Module):
         self.feature_dim = feature_dim
         self.n_max = n_max
         self.sigma = sigma
+        self.register_buffer("miller_indices", make_miller_indices(n_max, dtype=torch.get_default_dtype()))
 
         self.qkv = nn.Linear(feature_dim, 3 * feature_dim, bias=False)
         self.act = nn.SiLU()
@@ -42,7 +43,7 @@ class RSAAttention(nn.Module):
         q = self.act(q) * m.unsqueeze(-1)
         k = self.act(k) * m.unsqueeze(-1)
 
-        kvecs, indices, mode_mask = make_wavevectors(V, self.n_max, e_cutoff=None)
+        kvecs, indices, mode_mask = make_wavevectors(V, self.n_max, e_cutoff=None, indices=self.miller_indices)
         mode_mask_f = mode_mask.to(x.dtype)
         if mode_mask_f.dim() == 1:
             mode_mask_f = mode_mask_f.unsqueeze(0).expand(B, -1)
@@ -50,7 +51,7 @@ class RSAAttention(nn.Module):
         active = (nonzero.expand(B, -1) & mode_mask_f.bool()).to(x.dtype)
 
         k2 = (kvecs ** 2).sum(dim=-1)
-        w_k = torch.exp(-k2 * (self.sigma ** 2) / 2.0) / k2.clamp(min=1e-12) * active  # (B, M)
+        w_k = torch.exp(-k2 * (self.sigma ** 2) / 2.0) / k2.clamp(min=1e-12) * active 
         w_k = w_k / w_k.sum(dim=-1, keepdim=True).clamp(min=1e-12)
 
         phase = torch.einsum("bni,bmi->bnm", x, kvecs)  
