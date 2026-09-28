@@ -17,7 +17,7 @@ def train_one(n_atoms: int, sigma: float, config: dict, device: torch.device) ->
         hidden_dim=config["hidden_dim"], n_max=config["n_max"], num_outputs=1,
         num_layers=config["num_layers"], edge_cutoff=config["edge_cutoff"], sigma=sigma,
     ).to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=config["lr"])
+    opt = torch.optim.Adam(model.parameters(), lr=config["lr"], fused=(device.type == "cuda"))
     scheduler = (
         build_lr_scheduler(opt, config["train_steps"], config["lr_warmup_frac"])
         if config["lr_schedule"] == "warmup_cosine" else None

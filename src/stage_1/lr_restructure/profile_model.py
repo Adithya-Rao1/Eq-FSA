@@ -43,19 +43,13 @@ def main():
         hidden_dim=args.hidden_dim, n_max=args.n_max, num_outputs=1,
         num_layers=args.num_layers, edge_cutoff=5.0, sigma=args.sigma,
     ).to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3, fused=(device.type == "cuda"))
 
     train_model = model
     if args.torch_compile:
-        # The remaining recurring graph break in this model is pair_mask.nonzero(as_tuple=True)
-        # (model.py, building the edge list) -- its output shape is genuinely data-dependent, so
-        # ask Dynamo to trace it symbolically instead of hard-breaking the graph there.
         torch._dynamo.config.capture_dynamic_output_shape_ops = True
         compile_kwargs = {}
         if args.compile_mode == "reduce-overhead":
-            # CUDA graph capture wants a fixed shape per graph, not symbolic dims -- dynamic=True
-            # (used for the other modes so a fixed --n-atoms/--batch-size doesn't recompile across
-            # runs) actively works against that, so leave shape specialization on here.
             compile_kwargs["mode"] = args.compile_mode
         else:
             compile_kwargs["dynamic"] = True

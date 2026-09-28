@@ -69,7 +69,7 @@ def train_one(topology, r, config: dict, device: torch.device) -> float:
         hidden_dim=config["hidden_dim"], edge_cutoff=config["cutoff"], n_max=1,
         classes=config["classes"], n_master_nodes=config["num_master_nodes"],
     ).to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=config["lr"])
+    opt = torch.optim.Adam(model.parameters(), lr=config["lr"], fused=(device.type == "cuda"))
 
     train_model = model
     if config.get("torch_compile"):
