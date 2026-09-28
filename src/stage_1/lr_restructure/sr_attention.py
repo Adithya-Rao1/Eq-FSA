@@ -110,12 +110,11 @@ class BatchedNormedPairReadout(nn.Module):
         self.W_out = nn.Parameter(torch.stack([t.weight.detach().clone() for t in out_templates]))
 
     def forward(self, cats: List[torch.Tensor]) -> torch.Tensor:
-        K = self.k_max + 1
-        W = 2 * self.k_max + 1
-        equiv_proj_w = torch.stack([lin.weight for lin in self.equiv_proj], dim=0) 
-        x_padded = torch.stack([F.pad(cats[k], (0, W - (2 * k + 1))) for k in range(K)], dim=0,) 
-        v = torch.einsum("koc,kecw->keow", equiv_proj_w, x_padded)  
-        h0 = straight_through_norm(v, dim=-1, floor=self.floor) 
+        norms = []
+        for k, x in enumerate(cats):
+            v = self.equiv_proj[k](x.transpose(-1, -2)).transpose(-1, -2)
+            norms.append(straight_through_norm(v, dim=-1, floor=self.floor))
+        h0 = torch.stack(norms, dim=0)
         h1 = torch.einsum("keh,kgh->keg", h0, self.W_h1)
         if self.use_norms:
             h1 = F.rms_norm(h1, (h1.shape[-1],), None, None) * self.g_h1.unsqueeze(1)
