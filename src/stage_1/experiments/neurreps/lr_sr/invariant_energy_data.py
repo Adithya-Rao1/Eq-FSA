@@ -45,8 +45,9 @@ def generate_batch(
         S_k2 = S_re**2 + S_im**2  
 
         k2 = (kvecs_b**2).sum(dim=-1)
-        weights = torch.exp(-k2.unsqueeze(1) * (sigmas.view(1, -1, 1) ** 2) / 2.0)  
-        E_LR = torch.einsum("bkm,bm->bk", weights, S_k2)  
+        # w_k(sigma) = exp(-k^2 sigma^2 / 2) / k^2, matching RSAAttention's own (pre-normalization)
+        weights = torch.exp(-k2.unsqueeze(1) * (sigmas.view(1, -1, 1) ** 2) / 2.0) / k2.clamp(min=1e-12).unsqueeze(1)
+        E_LR = torch.einsum("bkm,bm->bk", weights, S_k2)
         return charges, positions, V, mask, E_LR
 
     positions = torch.rand(batch_size, n_atoms, 3, generator=generator) * box
@@ -58,8 +59,7 @@ def generate_batch(
     S_k2 = S_re**2 + S_im**2  
 
     k2 = (kvecs**2).sum(dim=-1)
-    # w_k(sigma) = exp(-k^2 sigma^2 / 2), summed over modes
-    weights = torch.exp(-k2.unsqueeze(0) * (sigmas.unsqueeze(1) ** 2) / 2.0) 
-    E_LR = torch.einsum("km,bm->bk", weights, S_k2)  
+    weights = torch.exp(-k2.unsqueeze(0) * (sigmas.unsqueeze(1) ** 2) / 2.0) / k2.clamp(min=1e-12).unsqueeze(0)
+    E_LR = torch.einsum("km,bm->bk", weights, S_k2)
 
     return charges, positions, V, mask, E_LR
