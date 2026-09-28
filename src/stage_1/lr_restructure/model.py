@@ -14,6 +14,41 @@ from utils.calc_props import _MOL_FEAT_DIM
 from stage_1.lr_restructure.layer import LRLayer
 
 
+def _next_pow2(n: int) -> int:
+    return 1 if n <= 1 else 1 << (n - 1).bit_length()
+
+
+@torch._dynamo.disable()
+def _build_padded_edges(pair_mask: torch.Tensor, x_diff: torch.Tensor, edge_feats: torch.Tensor):
+    edge_b, edge_i, edge_j = pair_mask.nonzero(as_tuple=True)
+    x_rel_e = x_diff[edge_b, edge_i, edge_j]
+    edge_feat_e = edge_feats[edge_b, edge_i, edge_j]
+
+    E = int(edge_b.shape[0])
+    device = edge_b.device
+
+    if E == 0:
+        edge_b = torch.zeros(1, dtype=edge_b.dtype, device=device)
+        edge_i = torch.zeros(1, dtype=edge_i.dtype, device=device)
+        edge_j = torch.zeros(1, dtype=edge_j.dtype, device=device)
+        x_rel_e = torch.zeros(1, 3, dtype=x_diff.dtype, device=device)
+        x_rel_e[:, 0] = 1.0
+        edge_feat_e = torch.zeros(1, edge_feats.shape[-1], dtype=edge_feats.dtype, device=device)
+        edge_valid = torch.zeros(1, dtype=torch.bool, device=device)
+        return edge_b, edge_i, edge_j, x_rel_e, edge_feat_e, edge_valid
+
+    bucket = min(pair_mask.numel(), _next_pow2(E))
+    pad = bucket - E
+    if pad > 0:
+        edge_b = torch.cat([edge_b, edge_b[-1].repeat(pad)])
+        edge_i = torch.cat([edge_i, edge_i[-1].repeat(pad)])
+        edge_j = torch.cat([edge_j, edge_j[-1].repeat(pad)])
+        x_rel_e = torch.cat([x_rel_e, x_rel_e[-1:].repeat(pad, 1)])
+        edge_feat_e = torch.cat([edge_feat_e, edge_feat_e[-1:].repeat(pad, 1)])
+    edge_valid = torch.arange(bucket, device=device) < E
+    return edge_b, edge_i, edge_j, x_rel_e, edge_feat_e, edge_valid
+
+
 class LREnergyModel(nn.Module):
     def __init__(
         self,
@@ -126,9 +161,9 @@ class LREnergyModel(nn.Module):
         dist = x_diff.norm(dim=-1)
         self_mask = ~torch.eye(N, dtype=torch.bool, device=x.device).unsqueeze(0)
         pair_mask = node_mask.unsqueeze(2) & node_mask.unsqueeze(1) & (dist <= effective_cutoff) & self_mask
-        edge_b, edge_i, edge_j = pair_mask.nonzero(as_tuple=True)
-        x_rel_e = x_diff[edge_b, edge_i, edge_j]
-        edge_feat_e = edge_feats[edge_b, edge_i, edge_j]
+        edge_b, edge_i, edge_j, x_rel_e, edge_feat_e, edge_valid = _build_padded_edges(
+            pair_mask, x_diff, edge_feats,
+        )
 
         g_a = self.g_a_init.unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, -1).clone()
         X_a = x_com.unsqueeze(1).expand(B, self.n_master_nodes, -1).clone()
@@ -138,7 +173,8 @@ class LREnergyModel(nn.Module):
             f, g_a, X_a = layer(
                 f_in=f, f0=f0, g_a_in=g_a, X_a_in=X_a, x_wrapped=x_wrapped, node_mask=node_mask,
                 edge_b=edge_b, edge_i=edge_i, edge_j=edge_j, x_rel_e=x_rel_e,
-                edge_feat_e=edge_feat_e, kvecs=kvecs, mode_mask=mode_mask, V=V, V_inv=V_inv,
+                edge_feat_e=edge_feat_e, edge_valid=edge_valid,
+                kvecs=kvecs, mode_mask=mode_mask, V=V, V_inv=V_inv,
             )
             if return_layer_states:
                 layer_states.append(f)

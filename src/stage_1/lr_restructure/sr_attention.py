@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -162,6 +162,7 @@ class SRAttention(nn.Module):
         edge_i: torch.Tensor,
         batch_size: int,
         num_atoms: int,
+        edge_valid: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[int, torch.Tensor]]:
         cats = [torch.cat([f_in_i_e[k], f0_j_e[k]], dim=-2) for k in range(self.k_max + 1)]
         score = self.pair_readout(cats)
@@ -172,9 +173,14 @@ class SRAttention(nn.Module):
 
         scores_e = psi * score
 
-        receiver_flat = edge_b * num_atoms + edge_i
         num_receivers = batch_size * num_atoms
-        alpha_e = scatter_softmax(scores_e, receiver_flat, num_receivers)
+        if edge_valid is None:
+            receiver_flat = edge_b * num_atoms + edge_i
+            alpha_e = scatter_softmax(scores_e, receiver_flat, num_receivers)
+        else:
+            receiver_flat = torch.where(edge_valid, edge_b * num_atoms + edge_i, torch.full_like(edge_b, num_receivers),)
+            alpha_e = scatter_softmax(scores_e, receiver_flat, num_receivers + 1)
+            alpha_e = alpha_e * edge_valid.to(alpha_e.dtype)
 
         Wv_j_sr_flat = self.direct_sum_w(f0_j_e, x_rel_e)
 

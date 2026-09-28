@@ -74,6 +74,7 @@ class LRLayer(nn.Module):
         edge_j: torch.Tensor,
         x_rel_e: torch.Tensor,
         edge_feat_e: torch.Tensor,
+        edge_valid: Optional[torch.Tensor],
         kvecs: torch.Tensor,
         mode_mask: torch.Tensor,
         V: torch.Tensor,
@@ -89,6 +90,7 @@ class LRLayer(nn.Module):
             with torch.profiler.record_function("lr_sr_attn_only"):
                 alpha_e, Wv_j_sr_flat = self.sr_attn(
                     f_in_i_e, f0_j_e, x_rel_e, edge_feat_e, edge_b, edge_i, batch_size=B, num_atoms=N,
+                    edge_valid=edge_valid,
                 )
             receiver_flat = edge_b * N + edge_i
 
