@@ -101,10 +101,11 @@ class LRLayer(nn.Module):
             for l in range(self.max_degree + 1):
                 C = f_in[l].shape[2]
                 contrib_e = alpha_e.view(-1, 1, 1) * Wv_j_sr_flat[l]
+                scatter_idx = receiver_flat.view(-1, 1, 1).expand(-1, C, 2 * l + 1).contiguous()
                 neighbor_raws[l] = torch.zeros(
                     B * N, C, 2 * l + 1, device=x_wrapped.device, dtype=x_wrapped.dtype,
                 ).scatter_add(
-                    0, receiver_flat.view(-1, 1, 1).expand(-1, C, 2 * l + 1), contrib_e,
+                    0, scatter_idx, contrib_e,
                 ).view(B, N, C, 2 * l + 1)
             neighbor_terms = self.sigma_gate(neighbor_raws)
 

@@ -83,7 +83,7 @@ class MasterNodeAggregator(nn.Module):
         e = self.rbf(d)                                              
 
         s, v, gain = self.heads(g_a, f_n, e)                            
-        mask3 = node_mask.unsqueeze(1).expand(-1, N_a, -1)
+        mask3 = node_mask.unsqueeze(1).expand(-1, N_a, -1).contiguous()
         w = softmax_over_neighbors(s, mask=mask3)                      
 
         pooled = torch.einsum("ban,banc->bac", w, v)                   

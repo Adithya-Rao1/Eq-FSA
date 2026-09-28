@@ -138,7 +138,7 @@ class LREnergyModel(nn.Module):
 
         f0_raw = input_features if input_features is not None else self.input_embedding(node_types)
         f0_ffn_out = self.f0_ffn(self.ln1(f0_raw))
-        mol_ctx = self.mol_prop_emb(mol_props).unsqueeze(1).expand(-1, N, -1)
+        mol_ctx = self.mol_prop_emb(mol_props).unsqueeze(1).expand(-1, N, -1).contiguous()
         mol_ffn_out = self.mol_ffn(self.ln2(mol_ctx))
         combined_scalar = self.seed_proj(torch.cat([f0_ffn_out, mol_ffn_out], dim=-1))
         combined_scalar = self.seed_proj_norm(self.seed_proj_out(combined_scalar))
