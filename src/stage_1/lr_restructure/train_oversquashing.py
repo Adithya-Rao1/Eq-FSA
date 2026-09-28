@@ -2,6 +2,8 @@ import argparse
 import csv
 import os
 
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, random_split
@@ -133,6 +135,7 @@ def main():
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--torch-compile", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--compile-mode", type=str, default="reduce-overhead",choices=[None, "default", "reduce-overhead", "max-autotune"],)
+    parser.add_argument("--no-deterministic", dest="deterministic", action="store_false")
     args = parser.parse_args()
 
     if args.smoke_test:
@@ -153,6 +156,13 @@ def main():
     print(f"Using device: {device}", flush=True)
     if device.type == "cuda":
         torch.set_float32_matmul_precision("high")
+    if args.deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.use_deterministic_algorithms(True)
+        print(
+            "Determinism: torch.use_deterministic_algorithms(True), CUBLAS_WORKSPACE_CONFIG="
+            f"{os.environ.get('CUBLAS_WORKSPACE_CONFIG')!r}", flush=True,
+        )
     os.makedirs(args.outdir, exist_ok=True)
     csv_path = os.path.join(args.outdir, "results.csv")
 
