@@ -132,7 +132,7 @@ def main():
         writer.writerow(["n_atoms", "sigma", "realization", "seed", "nmse"])
         for n_atoms in args.n_values:
             for r in range(args.num_realizations):
-                seed = args.seed + r
+                seed = args.seed + r * 7919
                 config = dict(vars(args))
                 config["seed"] = seed
                 nmse = train_one(n_atoms, args.sigma, config, device)

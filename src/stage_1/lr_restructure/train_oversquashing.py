@@ -124,6 +124,7 @@ def main():
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--num-realizations", type=int, default=3)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seeds", type=int, nargs="+", default=None)
     parser.add_argument("--log-every", type=int, default=0)
     parser.add_argument("--outdir", type=str, default="stage_1/lr_restructure/results_oversquashing")
     parser.add_argument("--device", type=str, default=None)
@@ -156,10 +157,12 @@ def main():
     with open(csv_path, "w", newline="") as fcsv:
         writer = csv.writer(fcsv)
         writer.writerow(["topology", "r", "realization", "seed", "val_error"])
+        seeds = list(args.seeds) if args.seeds else [
+            args.seed + i * 7919 for i in range(args.num_realizations)
+        ]
         for topology in args.topologies:
             for r in args.r_values:
-                for real in range(args.num_realizations):
-                    seed = args.seed + real
+                for real, seed in enumerate(seeds):
                     config = dict(vars(args))
                     config["seed"] = seed
                     try:
