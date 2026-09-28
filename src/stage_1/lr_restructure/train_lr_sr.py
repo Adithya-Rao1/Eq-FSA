@@ -102,8 +102,8 @@ def main():
     parser.add_argument("--outdir", type=str, default="stage_1/lr_restructure/results_lr_sr")
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--smoke-test", action="store_true")
-    parser.add_argument("--torch-compile", action="store_true")
-    parser.add_argument("--compile-mode", type=str, default=None,choices=[None, "default", "reduce-overhead", "max-autotune"],)
+    parser.add_argument("--torch-compile", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--compile-mode", type=str, default="reduce-overhead",choices=[None, "default", "reduce-overhead", "max-autotune"],)
     args = parser.parse_args()
 
     if args.smoke_test:
