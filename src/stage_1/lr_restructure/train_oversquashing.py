@@ -10,6 +10,7 @@ from utils.se3_utils import RadialNetwork
 from stage_1.experiments.neurreps.oversquashing.synthetic_dataset import (
     GraphTransferDataset, GeometricGraphTransferDataset, graph_transfer_collate_fn,
 )
+from stage_1.experiments.neurreps.oversquashing.train_graph_transfer import _avg_num_neighbors
 from stage_1.lr_restructure.oversquashing_classifier import LRRestructureClassifier
 
 
@@ -28,6 +29,30 @@ def build_dataset(task, topology, r, classes, samples, seed, cutoff, class_spaci
     raise last_err
 
 
+def build_model(variant: str, dataset, config: dict):
+    if variant == "dimenet":
+        from stage_1.experiments.neurreps.oversquashing.dimenet_baseline import DimeNetPlusPlusClassifier
+        num_layers = max(1, dataset.realized_r + config["baseline_layer_margin"])
+        return DimeNetPlusPlusClassifier(
+            num_node_types=dataset.num_atom_types, classes=config["classes"], num_layers=num_layers,
+            cutoff=config["cutoff"],
+        )
+    if variant == "nequip_allegro":
+        from stage_1.experiments.neurreps.oversquashing.nequip_allegro_baseline import NequIPAllegroClassifier
+        num_layers = max(1, dataset.realized_r + config["baseline_layer_margin"])
+        avg_num_neighbors = _avg_num_neighbors(dataset.positions, config["cutoff"])
+        return NequIPAllegroClassifier(
+            num_node_types=dataset.num_atom_types, classes=config["classes"], num_layers=num_layers,
+            cutoff=config["cutoff"], avg_num_neighbors=avg_num_neighbors,
+        )
+    return LRRestructureClassifier(
+        radial_net=RadialNetwork, num_atom_types=dataset.num_atom_types, max_degree=2,
+        num_layers=config["num_layers"], feature_dim=config["feature_dim"],
+        hidden_dim=config["hidden_dim"], edge_cutoff=config["cutoff"], n_max=1,
+        classes=config["classes"], n_master_nodes=config["num_master_nodes"],
+    )
+
+
 def _to_device(batch: dict, device: torch.device) -> dict:
     out = {}
     for k, v in batch.items():
@@ -35,8 +60,10 @@ def _to_device(batch: dict, device: torch.device) -> dict:
     return out
 
 
-def _run_batch(model, batch, device):
+def call_model(model, variant: str, batch: dict, device: torch.device):
     batch = _to_device(batch, device)
+    if variant in ("dimenet", "nequip_allegro"):
+        return model(batch["x"], batch["types"], batch["mask"], batch["target_idx"], edge_feats=batch["edge_feats"])
     return model(
         batch["x"], batch["types"], batch["masses"], batch["mask"], batch["V"],
         batch["mol_props"], batch["edge_feats"], batch["target_idx"],
@@ -44,7 +71,7 @@ def _run_batch(model, batch, device):
     )
 
 
-def train_one(topology, r, config: dict, device: torch.device) -> float:
+def train_one(topology, r, variant, config: dict, device: torch.device) -> float:
     seed = config["seed"]
     weight_seed = config.get("weight_seed")
     torch.manual_seed(seed if weight_seed is None else weight_seed)
@@ -64,16 +91,11 @@ def train_one(topology, r, config: dict, device: torch.device) -> float:
         val_set, batch_size=config["batch_size"], shuffle=False, collate_fn=graph_transfer_collate_fn,
     )
 
-    model = LRRestructureClassifier(
-        radial_net=RadialNetwork, num_atom_types=dataset.num_atom_types, max_degree=2,
-        num_layers=config["num_layers"], feature_dim=config["feature_dim"],
-        hidden_dim=config["hidden_dim"], edge_cutoff=config["cutoff"], n_max=1,
-        classes=config["classes"], n_master_nodes=config["num_master_nodes"],
-    ).to(device)
+    model = build_model(variant, dataset, config).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=config["lr"], fused=(device.type == "cuda"))
 
     train_model = model
-    if config.get("torch_compile"):
+    if config.get("torch_compile") and variant not in ("dimenet", "nequip_allegro"):
         torch._dynamo.config.capture_dynamic_output_shape_ops = True
         compile_mode = config.get("compile_mode")
         if compile_mode == "reduce-overhead":
@@ -86,19 +108,19 @@ def train_one(topology, r, config: dict, device: torch.device) -> float:
         model.train()
         for batch in train_loader:
             opt.zero_grad()
-            logits = _run_batch(train_model, batch, device)
+            logits = call_model(train_model, variant, batch, device)
             loss = F.cross_entropy(logits, batch["labels"].to(device))
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), config["clip_grad_norm"])
             opt.step()
         if config["log_every"] and epoch % config["log_every"] == 0 and loss is not None:
-            print(f"[{topology} r={r}] epoch={epoch} loss={loss.item():.4f}", flush=True)
+            print(f"[{variant} {topology} r={r}] epoch={epoch} loss={loss.item():.4f}", flush=True)
 
     model.eval()
     correct, total = 0, 0
     with torch.no_grad():
         for batch in val_loader:
-            logits = _run_batch(train_model, batch, device)
+            logits = call_model(train_model, variant, batch, device)
             pred = logits.argmax(dim=-1)
             correct += (pred == batch["labels"].to(device)).sum().item()
             total += pred.shape[0]
@@ -110,6 +132,8 @@ def main():
     parser.add_argument("--task", type=str, default="geometric", choices=["type", "geometric"])
     parser.add_argument("--topologies", type=str, nargs="+", default=["chain"])
     parser.add_argument("--r-values", type=int, nargs="+", default=[2, 6, 8])
+    parser.add_argument("--variants", type=str, nargs="+", default=["eqfsa"],choices=["eqfsa", "dimenet", "nequip_allegro"],)
+    parser.add_argument("--baseline-layer-margin", type=int, default=4)
     parser.add_argument("--classes", type=int, default=5)
     parser.add_argument("--samples-per-config", type=int, default=240)
     parser.add_argument("--cutoff", type=float, default=5.0)
@@ -158,7 +182,7 @@ def main():
 
     with open(csv_path, "w", newline="") as fcsv:
         writer = csv.writer(fcsv)
-        writer.writerow(["topology", "r", "realization", "seed", "weight_seed", "val_error"])
+        writer.writerow(["variant", "topology", "r", "realization", "seed", "weight_seed", "val_error"])
         seeds = list(args.seeds) if args.seeds else [
             args.seed + i * 7919 for i in range(args.num_realizations)
         ]
@@ -170,31 +194,32 @@ def main():
             weight_seeds = list(args.weight_seeds)
         else:
             weight_seeds = [None] * len(seeds)
-        for topology in args.topologies:
-            for r in args.r_values:
-                for real, (seed, weight_seed) in enumerate(zip(seeds, weight_seeds)):
-                    config = dict(vars(args))
-                    config["seed"] = seed
-                    config["weight_seed"] = weight_seed
-                    logged_weight_seed = seed if weight_seed is None else weight_seed
-                    try:
-                        val_error = train_one(topology, r, config, device)
-                    except RuntimeError as e:
-                        writer.writerow([topology, r, real, seed, logged_weight_seed, "skipped"])
+        for variant in args.variants:
+            for topology in args.topologies:
+                for r in args.r_values:
+                    for real, (seed, weight_seed) in enumerate(zip(seeds, weight_seeds)):
+                        config = dict(vars(args))
+                        config["seed"] = seed
+                        config["weight_seed"] = weight_seed
+                        logged_weight_seed = seed if weight_seed is None else weight_seed
+                        try:
+                            val_error = train_one(topology, r, variant, config, device)
+                        except RuntimeError as e:
+                            writer.writerow([variant, topology, r, real, seed, logged_weight_seed, "skipped"])
+                            fcsv.flush()
+                            print(
+                                f"variant={variant} {topology} r={r} realization={real} seed={seed} "
+                                f"weight_seed={logged_weight_seed} SKIPPED: {e}",
+                                flush=True,
+                            )
+                            continue
+                        writer.writerow([variant, topology, r, real, seed, logged_weight_seed, val_error])
                         fcsv.flush()
                         print(
-                            f"{topology} r={r} realization={real} seed={seed} "
-                            f"weight_seed={logged_weight_seed} SKIPPED: {e}",
+                            f"variant={variant} {topology} r={r} realization={real} seed={seed} "
+                            f"weight_seed={logged_weight_seed} val_error={val_error:.4f}",
                             flush=True,
                         )
-                        continue
-                    writer.writerow([topology, r, real, seed, logged_weight_seed, val_error])
-                    fcsv.flush()
-                    print(
-                        f"{topology} r={r} realization={real} seed={seed} "
-                        f"weight_seed={logged_weight_seed} val_error={val_error:.4f}",
-                        flush=True,
-                    )
 
 
 if __name__ == "__main__":
