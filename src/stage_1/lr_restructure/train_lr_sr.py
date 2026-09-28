@@ -5,7 +5,9 @@ import os
 import torch
 import torch.nn.functional as F
 
-from stage_1.experiments.neurreps.lr_sr.invariant_energy_data import generate_batch, make_wavevector_grid
+from stage_1.experiments.neurreps.lr_sr.invariant_energy_data import (
+    DEFAULT_BOX, generate_batch, make_wavevector_grid,
+)
 from stage_1.experiments.neurreps.lr_sr.train_invariant_energy import build_lr_scheduler
 from stage_1.lr_restructure.lr_sr_encoder import LRRestructureEncoder
 
@@ -30,13 +32,19 @@ def train_one(n_atoms: int, sigma: float, config: dict, device: torch.device) ->
             train_model = torch.compile(model, mode=compile_mode)
         else:
             train_model = torch.compile(model, dynamic=True, **({"mode": compile_mode} if compile_mode else {}))
-    kvecs = make_wavevector_grid(config["n_max"], box=config["box"]).to(device)
+    box_range = None if config.get("box") is not None else (config["box_min"], config["box_max"])
+    kvecs = (
+        None if box_range is not None
+        else make_wavevector_grid(config["n_max"], box=config["box"]).to(device)
+    )
+    kvecs_cpu = kvecs.cpu() if kvecs is not None else None
     sigmas = torch.tensor([sigma], device=device)
     gen = torch.Generator().manual_seed(config["seed"])
+    gen_kwargs = dict(box=config["box"] or DEFAULT_BOX, box_range=box_range, n_max=config["n_max"])
 
     with torch.no_grad():
         _, _, _, _, E_probe = generate_batch(
-            320, n_atoms, kvecs.cpu(), sigmas.cpu(), box=config["box"],
+            320, n_atoms, kvecs_cpu, sigmas.cpu(), **gen_kwargs,
             generator=torch.Generator().manual_seed(config["seed"] + 999),
         )
         target_mean = E_probe.mean(dim=0).to(device)
@@ -46,7 +54,7 @@ def train_one(n_atoms: int, sigma: float, config: dict, device: torch.device) ->
 
     for step in range(config["train_steps"]):
         charges, positions, V, mask, E_LR = generate_batch(
-            config["batch_size"], n_atoms, kvecs.cpu(), sigmas.cpu(), box=config["box"], generator=gen,
+            config["batch_size"], n_atoms, kvecs_cpu, sigmas.cpu(), **gen_kwargs, generator=gen,
         )
         charges, positions, V, mask, E_LR = (
             charges.to(device), positions.to(device), V.to(device), mask.to(device), E_LR.to(device),
@@ -67,7 +75,7 @@ def train_one(n_atoms: int, sigma: float, config: dict, device: torch.device) ->
     with torch.no_grad():
         for _ in range(config["eval_batches"]):
             charges, positions, V, mask, E_LR = generate_batch(
-                config["batch_size"], n_atoms, kvecs.cpu(), sigmas.cpu(), box=config["box"], generator=gen,
+                config["batch_size"], n_atoms, kvecs_cpu, sigmas.cpu(), **gen_kwargs, generator=gen,
             )
             charges, positions, V, mask, E_LR = (
                 charges.to(device), positions.to(device), V.to(device), mask.to(device), E_LR.to(device),
@@ -83,7 +91,9 @@ def main():
     parser.add_argument("--n-values", type=int, nargs="+", default=[32, 64, 128, 256, 512])
     parser.add_argument("--sigma", type=float, required=True)
     parser.add_argument("--n-max", type=int, default=2)
-    parser.add_argument("--box", type=float, default=20.0)
+    parser.add_argument("--box", type=float, default=None, help="Fixed box for every sample if set.",)
+    parser.add_argument("--box-min", type=float, default=16.0)
+    parser.add_argument("--box-max", type=float, default=20.0)
     parser.add_argument("--feature-dim", type=int, default=32)
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--num-layers", type=int, default=4)
