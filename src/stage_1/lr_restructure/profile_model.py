@@ -23,6 +23,13 @@ def main():
     parser.add_argument("--row-limit", type=int, default=30)
     parser.add_argument("--trace-out", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--torch-compile", action="store_true")
+    parser.add_argument(
+        "--compile-mode", type=str, default=None,
+        choices=[None, "default", "reduce-overhead", "max-autotune"],
+        help="reduce-overhead captures a CUDA graph to eliminate per-kernel launch overhead -- "
+             "the mode that actually targets the symptom this script measures.",
+    )
     args = parser.parse_args()
 
     device = torch.device(args.device) if args.device else (
@@ -38,6 +45,24 @@ def main():
     ).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
 
+    train_model = model
+    if args.torch_compile:
+        # The remaining recurring graph break in this model is pair_mask.nonzero(as_tuple=True)
+        # (model.py, building the edge list) -- its output shape is genuinely data-dependent, so
+        # ask Dynamo to trace it symbolically instead of hard-breaking the graph there.
+        torch._dynamo.config.capture_dynamic_output_shape_ops = True
+        compile_kwargs = {}
+        if args.compile_mode == "reduce-overhead":
+            # CUDA graph capture wants a fixed shape per graph, not symbolic dims -- dynamic=True
+            # (used for the other modes so a fixed --n-atoms/--batch-size doesn't recompile across
+            # runs) actively works against that, so leave shape specialization on here.
+            compile_kwargs["mode"] = args.compile_mode
+        else:
+            compile_kwargs["dynamic"] = True
+            if args.compile_mode:
+                compile_kwargs["mode"] = args.compile_mode
+        train_model = torch.compile(model, **compile_kwargs)
+
     B, N = args.batch_size, args.n_atoms
     charges = torch.sign(torch.randn(B, N, device=device))
     positions = torch.rand(B, N, 3, device=device) * args.box
@@ -48,7 +73,7 @@ def main():
     def step():
         opt.zero_grad()
         with record_function("lr_forward"):
-            pred = model(charges, positions, mask, V)
+            pred = train_model(charges, positions, mask, V)
         with record_function("lr_loss_backward"):
             loss = F.mse_loss(pred, target)
             loss.backward()

@@ -44,6 +44,14 @@ class LRDirectSumW(nn.Module):
         self.total_rows, self.total_cols, self.max_width = total_rows, total_cols, max_width
         self.row_starts, self.row_sizes = row_starts, row_sizes
 
+        distinct_Js = sorted({J for _, J in copies})
+        j_to_pos = {J: i for i, J in enumerate(distinct_Js)}
+        self.distinct_Js = distinct_Js
+        self.register_buffer(
+            "copy_to_j_idx", torch.tensor([j_to_pos[J] for _, J in copies], dtype=torch.long),
+            persistent=False,
+        )
+
     def forward(self, f: Dict[int, torch.Tensor], x: torch.Tensor) -> Dict[int, torch.Tensor]:
         device, dtype = x.device, x.dtype
         N = x.shape[0]
@@ -60,15 +68,12 @@ class LRDirectSumW(nn.Module):
             [self.radial_nets[str(l)](r) for l in range(self.max_degree + 1)], dim=0,
         )  # (n_total, N, 1)
 
-        Y_cache: Dict[int, torch.Tensor] = {}
-        def get_Y(J: int) -> torch.Tensor:
-            if J not in Y_cache:
-                Y_cache[J] = get_spherical_harmonics(J, x)
-            return Y_cache[J]
-
-        Y_global = torch.zeros(len(self.copies), N, self.max_width, device=device, dtype=dtype)
-        for c, (l, J) in enumerate(self.copies):
-            Y_global[c, :, :2 * J + 1] = get_Y(J)
+        Y_by_j = torch.stack(
+            [F.pad(get_spherical_harmonics(J, x), (0, self.max_width - (2 * J + 1)))
+             for J in self.distinct_Js],
+            dim=0,
+        )  # (n_distinct_J, N, max_width)
+        Y_global = Y_by_j[self.copy_to_j_idx]  # (n_total, N, max_width)
 
         Q_GLOBAL = self.Q_GLOBAL.to(device=device, dtype=dtype)
         QTY_global = torch.einsum("crqi,cni->cnrq", Q_GLOBAL, Y_global)          
@@ -105,11 +110,12 @@ class BatchedNormedPairReadout(nn.Module):
         self.W_out = nn.Parameter(torch.stack([t.weight.detach().clone() for t in out_templates]))
 
     def forward(self, cats: List[torch.Tensor]) -> torch.Tensor:
-        norms = []
-        for k, x in enumerate(cats):
-            v = self.equiv_proj[k](x.transpose(-1, -2)).transpose(-1, -2)
-            norms.append(straight_through_norm(v, dim=-1, floor=self.floor))
-        h0 = torch.stack(norms, dim=0)
+        K = self.k_max + 1
+        W = 2 * self.k_max + 1
+        equiv_proj_w = torch.stack([lin.weight for lin in self.equiv_proj], dim=0) 
+        x_padded = torch.stack([F.pad(cats[k], (0, W - (2 * k + 1))) for k in range(K)], dim=0,) 
+        v = torch.einsum("koc,kecw->keow", equiv_proj_w, x_padded)  
+        h0 = straight_through_norm(v, dim=-1, floor=self.floor) 
         h1 = torch.einsum("keh,kgh->keg", h0, self.W_h1)
         if self.use_norms:
             h1 = F.rms_norm(h1, (h1.shape[-1],), None, None) * self.g_h1.unsqueeze(1)

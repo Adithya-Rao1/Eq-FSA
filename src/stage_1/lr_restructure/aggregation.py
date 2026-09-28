@@ -43,13 +43,21 @@ class _BatchedPerNodeHeads(nn.Module):
     def forward(
         self, g_a: torch.Tensor, f_n: torch.Tensor, e: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        hidden_dim = self.A_K_w.shape[1]
         q = torch.einsum("ahc,bac->bah", self.A_Q_w, g_a) + self.A_Q_b
-        k = torch.einsum("ahc,bnc->banh", self.A_K_w, f_n) + self.A_K_b.unsqueeze(1)
-        ee = torch.einsum("ahk,bank->banh", self.A_E_w, e) + self.A_E_b.unsqueeze(1)
+
+        KV_w = torch.cat([self.A_K_w, self.A_V_w], dim=1)
+        kv = torch.einsum("ahc,bnc->banh", KV_w, f_n)
+        k = kv[..., :hidden_dim] + self.A_K_b.unsqueeze(1)
+        v = kv[..., hidden_dim:] + self.A_V_b.unsqueeze(1)
+
+        EG_w = torch.cat([self.A_E_w, self.h_gain_w], dim=1)
+        eg = torch.einsum("ahk,bank->banh", EG_w, e)
+        ee = eg[..., :hidden_dim] + self.A_E_b.unsqueeze(1)
+        gain = eg[..., hidden_dim:].squeeze(-1)
+
         h = F.leaky_relu(q.unsqueeze(2) + k + ee)
         s = torch.einsum("aoh,banh->bano", self.u_w, h).squeeze(-1)
-        v = torch.einsum("aoc,bnc->bano", self.A_V_w, f_n) + self.A_V_b.unsqueeze(1)
-        gain = torch.einsum("aok,bank->bano", self.h_gain_w, e).squeeze(-1)
         return s, v, gain
 
 

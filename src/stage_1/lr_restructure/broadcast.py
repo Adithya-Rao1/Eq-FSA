@@ -84,9 +84,8 @@ class MasterBroadcastAttention(nn.Module):
 
         f_tilde_stack = torch.stack([F.pad(f_tilde[l], (0, W - (2 * l + 1))) for l in self.degrees], dim=0,)
         qkv_stack = torch.einsum("ltoc,lbnck->lbntok", self.qkv_self_w, f_tilde_stack)
-        Q = {l: qkv_stack[l, :, :, 0, :, :2 * l + 1] for l in self.degrees}
-        K_self = {l: qkv_stack[l, :, :, 1, :, :2 * l + 1] for l in self.degrees}
-        V_self = {l: qkv_stack[l, :, :, 2, :, :2 * l + 1] for l in self.degrees}
+        qkv_full = qkv_stack.view(L, B, N, 3, H, Ch, W)
+        Q_full, Kself_full, Vself_full = qkv_full[:, :, :, 0], qkv_full[:, :, :, 1], qkv_full[:, :, :, 2]
 
         x_rel_raw = x.unsqueeze(2) - X_a.unsqueeze(1)
         x_rel = minimum_image(x_rel_raw.reshape(B, N * N_a, 3), V, V_inv).reshape(B, N, N_a, 3)
@@ -94,44 +93,48 @@ class MasterBroadcastAttention(nn.Module):
         x_rel_flat = x_rel.reshape(B * N * N_a, 3)
         r = x_rel_flat.norm(dim=-1, keepdim=True)
 
-        g_a_sq = g_a.squeeze(-1)                                               
-        K_content_all = torch.einsum("loc,bac->balo", self.readout_K_w, g_a_sq)  
-        V_content_all = torch.einsum("loc,bac->balo", self.readout_V_w, g_a_sq)
-        K_content_perm = K_content_all.permute(2, 0, 1, 3).unsqueeze(-1)        
-        V_content_perm = V_content_all.permute(2, 0, 1, 3).unsqueeze(-1)
+        g_a_sq = g_a.squeeze(-1)
+        readout_KV_w = torch.stack([self.readout_K_w, self.readout_V_w], dim=0)
+        content_all = torch.einsum("kloc,bac->kbalo", readout_KV_w, g_a_sq)
+        content_perm = content_all.permute(3, 0, 1, 2, 4).unsqueeze(-1)
 
-        phi_stack = torch.stack([self.radial_KV[str(l)](r) for l in self.degrees], dim=0,)  
+        phi_stack = torch.stack([self.radial_KV[str(l)](r) for l in self.degrees], dim=0,)
         Y_stack = torch.zeros(L, x_rel_flat.shape[0], W, device=device, dtype=dtype)
         for l in self.degrees:
             Y_stack[l, :, :2 * l + 1] = get_spherical_harmonics(l, x_rel_flat)
         Q_lift = self.Q_lift.to(device=device, dtype=dtype)
         QTY_stack = torch.einsum("lqi,lni->lnq", Q_lift, Y_stack).view(L, B, N, N_a, W, 1)
 
-        degree_mask = torch.stack([torch.ones_like(has_dir) if l == 0 else has_dir for l in self.degrees], dim=0,)  
-        W_K_stack = phi_stack[:, 0].view(L, B, N, N_a, 1, 1) * QTY_stack * degree_mask
-        W_V_stack = phi_stack[:, 1].view(L, B, N, N_a, 1, 1) * QTY_stack * degree_mask
+        degree_mask = torch.stack([torch.ones_like(has_dir) if l == 0 else has_dir for l in self.degrees], dim=0,)
+        phi_kv = phi_stack.view(L, 2, B, N, N_a, 1, 1)
+        W_KV_stack = phi_kv * QTY_stack.unsqueeze(1) * degree_mask.unsqueeze(1)
 
-        K_lifted_stack = torch.einsum("lbnaij,lbacj->lbnaci", W_K_stack, K_content_perm) 
-        V_lifted_stack = torch.einsum("lbnaij,lbacj->lbnaci", W_V_stack, V_content_perm)
-        K_lifted = {l: K_lifted_stack[l][..., :2 * l + 1] for l in self.degrees}
-        V_lifted = {l: V_lifted_stack[l][..., :2 * l + 1] for l in self.degrees}
+        KV_lifted_stack = torch.einsum("lkbnaij,lkbacj->lkbnaci", W_KV_stack, content_perm)
+        Kmaster_full = KV_lifted_stack[:, 0].view(L, B, N, N_a, H, Ch, W)
+        Vmaster_full = KV_lifted_stack[:, 1].view(L, B, N, N_a, H, Ch, W)
 
-        Q_concat = torch.cat([Q[l].view(B, N, H, Ch, 2 * l + 1) for l in self.degrees], dim=-1)
-        Kself_concat = torch.cat([K_self[l].view(B, N, H, Ch, 2 * l + 1) for l in self.degrees], dim=-1)
-        Kmaster_concat = torch.cat([K_lifted[l].view(B, N, N_a, H, Ch, 2 * l + 1) for l in self.degrees], dim=-1,)
+        Q = {l: Q_full[l, ..., :2 * l + 1] for l in self.degrees}
+        K_self = {l: Kself_full[l, ..., :2 * l + 1] for l in self.degrees}
+        V_self = {l: Vself_full[l, ..., :2 * l + 1] for l in self.degrees}
+        K_lifted = {l: Kmaster_full[l, ..., :2 * l + 1] for l in self.degrees}
+        V_lifted = {l: Vmaster_full[l, ..., :2 * l + 1] for l in self.degrees}
+
+        Q_concat = torch.cat([Q[l] for l in self.degrees], dim=-1)
+        Kself_concat = torch.cat([K_self[l] for l in self.degrees], dim=-1)
+        Kmaster_concat = torch.cat([K_lifted[l] for l in self.degrees], dim=-1)
 
         score_self = torch.einsum("bnhcd,bnhcd->bnh", Q_concat, Kself_concat) / self.scale
         score_master = torch.einsum("bnhcd,bnahcd->bnah", Q_concat, Kmaster_concat) / self.scale
 
         scores_all = torch.cat(
             [score_self.unsqueeze(-1), score_master.permute(0, 1, 3, 2)], dim=-1,
-        )                                                        
+        )
         beta_all = softmax_over_neighbors(scores_all)
-        beta_self = beta_all[..., 0]                                
-        beta_master = beta_all[..., 1:].permute(0, 1, 3, 2)    
+        beta_self = beta_all[..., 0]
+        beta_master = beta_all[..., 1:].permute(0, 1, 3, 2)
 
-        Vself_concat = torch.cat([V_self[l].view(B, N, H, Ch, 2 * l + 1) for l in self.degrees], dim=-1)
-        Vmaster_concat = torch.cat([V_lifted[l].view(B, N, N_a, H, Ch, 2 * l + 1) for l in self.degrees], dim=-1,)
+        Vself_concat = torch.cat([V_self[l] for l in self.degrees], dim=-1)
+        Vmaster_concat = torch.cat([V_lifted[l] for l in self.degrees], dim=-1)
 
         o = beta_self.view(B, N, H, 1, 1) * Vself_concat
         o = o + torch.einsum("bnah,bnahcd->bnhcd", beta_master, Vmaster_concat)
@@ -148,7 +151,7 @@ class MasterBroadcastAttention(nn.Module):
 
         hi_degrees = [l for l in self.degrees if l > 0]
         if hi_degrees:
-            o_hi_stack = torch.stack([F.pad(o_by_l[l], (0, W - (2 * l + 1))) for l in hi_degrees], dim=0,)  
+            o_hi_stack = torch.stack([F.pad(o_by_l[l], (0, W - (2 * l + 1))) for l in hi_degrees], dim=0)
             mixed_hi_stack = torch.einsum("loc,lbnck->lbnok", self.mlp_hi_w, o_hi_stack)
             mixed_hi_padded = self.gate_hi({l: mixed_hi_stack[i] for i, l in enumerate(hi_degrees)})
             for l in hi_degrees:

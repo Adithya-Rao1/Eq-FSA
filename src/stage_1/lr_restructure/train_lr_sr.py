@@ -24,7 +24,12 @@ def train_one(n_atoms: int, sigma: float, config: dict, device: torch.device) ->
     )
     train_model = model
     if config.get("torch_compile"):
-        train_model = torch.compile(model, dynamic=True)
+        torch._dynamo.config.capture_dynamic_output_shape_ops = True
+        compile_mode = config.get("compile_mode")
+        if compile_mode == "reduce-overhead":
+            train_model = torch.compile(model, mode=compile_mode)
+        else:
+            train_model = torch.compile(model, dynamic=True, **({"mode": compile_mode} if compile_mode else {}))
     kvecs = make_wavevector_grid(config["n_max"], box=config["box"]).to(device)
     sigmas = torch.tensor([sigma], device=device)
     gen = torch.Generator().manual_seed(config["seed"])
@@ -98,6 +103,7 @@ def main():
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--torch-compile", action="store_true")
+    parser.add_argument("--compile-mode", type=str, default=None,choices=[None, "default", "reduce-overhead", "max-autotune"],)
     args = parser.parse_args()
 
     if args.smoke_test:
