@@ -8,17 +8,27 @@ import torch.nn.functional as F
 from stage_1.experiments.neurreps.lr_sr.invariant_energy_data import (
     DEFAULT_BOX, generate_batch, make_wavevector_grid,
 )
+from stage_1.experiments.neurreps.lr_sr.invariant_energy_model import RSAEncoder
 from stage_1.experiments.neurreps.lr_sr.train_invariant_energy import build_lr_scheduler
 from stage_1.lr_restructure.lr_sr_encoder import LRRestructureEncoder
 
 
-def train_one(n_atoms: int, sigma: float, config: dict, device: torch.device) -> float:
-    torch.manual_seed(config["seed"])
-    model = LRRestructureEncoder(
+def build_model(variant: str, config: dict, sigma: float):
+    if variant == "rsa":
+        return RSAEncoder(
+            feature_dim=config["feature_dim"], hidden_dim=config["hidden_dim"],
+            n_max=config["n_max"], sigma=sigma, num_outputs=1,
+        )
+    return LRRestructureEncoder(
         num_master_nodes=config["num_master_nodes"], feature_dim=config["feature_dim"],
         hidden_dim=config["hidden_dim"], n_max=config["n_max"], num_outputs=1,
         num_layers=config["num_layers"], edge_cutoff=config["edge_cutoff"], sigma=sigma,
-    ).to(device)
+    )
+
+
+def train_one(n_atoms: int, sigma: float, config: dict, device: torch.device) -> float:
+    torch.manual_seed(config["seed"])
+    model = build_model(config["variant"], config, sigma).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=config["lr"], fused=(device.type == "cuda"))
     scheduler = (
         build_lr_scheduler(opt, config["train_steps"], config["lr_warmup_frac"])
@@ -90,6 +100,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--n-values", type=int, nargs="+", default=[32, 64, 128, 256, 512])
     parser.add_argument("--sigma", type=float, required=True)
+    parser.add_argument("--variants", type=str, nargs="+", default=["eqfsa"], choices=["eqfsa", "rsa"])
     parser.add_argument("--n-max", type=int, default=2)
     parser.add_argument("--box", type=float, default=None, help="Fixed box for every sample if set.",)
     parser.add_argument("--box-min", type=float, default=16.0)
@@ -139,19 +150,22 @@ def main():
 
     with open(csv_path, "w", newline="") as fcsv:
         writer = csv.writer(fcsv)
-        writer.writerow(["n_atoms", "sigma", "realization", "seed", "nmse"])
-        for n_atoms in args.n_values:
-            for r in range(args.num_realizations):
-                seed = args.seed + r * 7919
-                config = dict(vars(args))
-                config["seed"] = seed
-                nmse = train_one(n_atoms, args.sigma, config, device)
-                writer.writerow([n_atoms, args.sigma, r, seed, nmse])
-                fcsv.flush()
-                print(
-                    f"n={n_atoms} sigma={args.sigma} realization={r} seed={seed} nmse={nmse:.4f}",
-                    flush=True,
-                )
+        writer.writerow(["variant", "n_atoms", "sigma", "realization", "seed", "nmse"])
+        for variant in args.variants:
+            for n_atoms in args.n_values:
+                for r in range(args.num_realizations):
+                    seed = args.seed + r * 7919
+                    config = dict(vars(args))
+                    config["seed"] = seed
+                    config["variant"] = variant
+                    nmse = train_one(n_atoms, args.sigma, config, device)
+                    writer.writerow([variant, n_atoms, args.sigma, r, seed, nmse])
+                    fcsv.flush()
+                    print(
+                        f"variant={variant} n={n_atoms} sigma={args.sigma} realization={r} "
+                        f"seed={seed} nmse={nmse:.4f}",
+                        flush=True,
+                    )
 
 
 if __name__ == "__main__":
