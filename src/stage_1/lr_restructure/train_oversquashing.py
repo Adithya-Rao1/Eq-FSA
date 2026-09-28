@@ -46,7 +46,8 @@ def _run_batch(model, batch, device):
 
 def train_one(topology, r, config: dict, device: torch.device) -> float:
     seed = config["seed"]
-    torch.manual_seed(seed)
+    weight_seed = config.get("weight_seed")
+    torch.manual_seed(seed if weight_seed is None else weight_seed)
     dataset = build_dataset(
         config["task"], topology, r, config["classes"], config["samples_per_config"], seed,
         config["cutoff"], config["geometric_class_spacing"],
@@ -125,6 +126,7 @@ def main():
     parser.add_argument("--num-realizations", type=int, default=3)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--seeds", type=int, nargs="+", default=None)
+    parser.add_argument("--weight-seeds", type=int, nargs="+", default=None)
     parser.add_argument("--log-every", type=int, default=0)
     parser.add_argument("--outdir", type=str, default="stage_1/lr_restructure/results_oversquashing")
     parser.add_argument("--device", type=str, default=None)
@@ -156,29 +158,41 @@ def main():
 
     with open(csv_path, "w", newline="") as fcsv:
         writer = csv.writer(fcsv)
-        writer.writerow(["topology", "r", "realization", "seed", "val_error"])
+        writer.writerow(["topology", "r", "realization", "seed", "weight_seed", "val_error"])
         seeds = list(args.seeds) if args.seeds else [
             args.seed + i * 7919 for i in range(args.num_realizations)
         ]
+        if args.weight_seeds:
+            assert len(args.weight_seeds) == len(seeds), (
+                f"--weight-seeds ({len(args.weight_seeds)}) must match the number of data seeds "
+                f"({len(seeds)}) -- one weight-init seed per realization."
+            )
+            weight_seeds = list(args.weight_seeds)
+        else:
+            weight_seeds = [None] * len(seeds)
         for topology in args.topologies:
             for r in args.r_values:
-                for real, seed in enumerate(seeds):
+                for real, (seed, weight_seed) in enumerate(zip(seeds, weight_seeds)):
                     config = dict(vars(args))
                     config["seed"] = seed
+                    config["weight_seed"] = weight_seed
+                    logged_weight_seed = seed if weight_seed is None else weight_seed
                     try:
                         val_error = train_one(topology, r, config, device)
                     except RuntimeError as e:
-                        writer.writerow([topology, r, real, seed, "skipped"])
+                        writer.writerow([topology, r, real, seed, logged_weight_seed, "skipped"])
                         fcsv.flush()
                         print(
-                            f"{topology} r={r} realization={real} seed={seed} SKIPPED: {e}",
+                            f"{topology} r={r} realization={real} seed={seed} "
+                            f"weight_seed={logged_weight_seed} SKIPPED: {e}",
                             flush=True,
                         )
                         continue
-                    writer.writerow([topology, r, real, seed, val_error])
+                    writer.writerow([topology, r, real, seed, logged_weight_seed, val_error])
                     fcsv.flush()
                     print(
-                        f"{topology} r={r} realization={real} seed={seed} val_error={val_error:.4f}",
+                        f"{topology} r={r} realization={real} seed={seed} "
+                        f"weight_seed={logged_weight_seed} val_error={val_error:.4f}",
                         flush=True,
                     )
 
