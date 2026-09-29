@@ -346,6 +346,10 @@ class SPICEDataset(Dataset):
         }
 
 
+def _next_pow2(n: int) -> int:
+    return 1 if n <= 1 else 1 << (n - 1).bit_length()
+
+
 def _pad1(t: torch.Tensor, n_max: int) -> torch.Tensor:
     return _pad_dim1(t.unsqueeze(0), n_max).squeeze(0)
 
@@ -395,8 +399,8 @@ def spice_collate_fn(batch: List[Dict[str, object]]) -> Dict[str, object]:
         subset_list.append(item["subset"])
         box_list.append(item["V"])
 
-    N1_max = max(max(solute_n), 1)
-    N2_max = max(max(solvent_n), 1)
+    N1_max = _next_pow2(max(max(solute_n), 1))
+    N2_max = _next_pow2(max(max(solvent_n), 1))
 
     all_solute_types = torch.stack([_pad1(t, N1_max) for t in solute_types], dim=0)
     all_solute_mask = torch.stack([_mask_for(n, N1_max) for n in solute_n], dim=0)
