@@ -24,8 +24,16 @@ def build_model_from_config(config: dict) -> SPICEEnergyForceModel:
         n_max=config["n_max"],
         pw_e_cutoff=config.get("pw_e_cutoff"),
         n_master_nodes=config.get("n_master_nodes", 4),
+        backbone=config.get("backbone", "production"),
         num_fusion_heads=config.get("num_fusion_heads", 4),
         ablate_max_degree=config.get("ablate_max_degree"),
+        num_broadcast_heads=config.get("num_broadcast_heads", 4),
+        rbf_num_basis=config.get("rbf_num_basis", 12),
+        rbf_min=config.get("rbf_min", 0.3),
+        rbf_cutoff=config.get("rbf_cutoff", 25.0),
+        sigma=config.get("sigma"),
+        alpha_floor=config.get("alpha_floor", 1e-4),
+        use_norms=config.get("use_norms", True),
     )
 
 
@@ -63,11 +71,7 @@ def main():
     )
     indices = dataset.indices_for_identities(identities)
     if len(indices) != len(identities):
-        raise RuntimeError(
-            f"Reconstructed dataset yielded {len(indices)}/{len(identities)} {args.split} identities -- "
-            "the hdf5 files at split['hdf5_paths'] have likely changed since training. Aborting rather "
-            "than silently evaluating on the wrong subset."
-        )
+        raise RuntimeError
 
     loader = DataLoader(
         Subset(dataset, indices), batch_size=args.batch_size, shuffle=False,
@@ -80,39 +84,18 @@ def main():
     model = build_model_from_config(config).to(device)
     load_result = model.load_state_dict(ckpt["model_state_dict"], strict=False)
     if load_result.unexpected_keys:
-        raise RuntimeError(
-            f"Checkpoint has {len(load_result.unexpected_keys)} unexpected key(s) not present in the "
-            f"current model -- this is not the known pre/post per-master-node-attention architecture "
-            f"gap (that direction only produces missing keys, never unexpected ones); aborting rather "
-            f"than silently loading a mismatched model:\n{load_result.unexpected_keys}"
-        )
+        raise RuntimeError
     unexplained = [
         k for k in load_result.missing_keys
         if not any(f".{p}." in k for p in ("spatial_radial", "spatial_query_proj", "node_k_gate"))
     ]
     if unexplained:
-        raise RuntimeError(
-            f"Checkpoint is missing {len(unexplained)} key(s) beyond the known "
-            f"spatial_radial/spatial_query_proj/node_k_gate architecture gap -- this looks like a "
-            f"real mismatch, not just the expected pre-per-master-node-attention checkpoint gap; "
-            f"aborting rather than silently evaluating a partially-initialized model:\n{unexplained}"
-        )
+        raise RuntimeError
     if load_result.missing_keys:
-        print(
-            f"Checkpoint predates {len(load_result.missing_keys)} MasterNodeAttention key(s) added "
-            f"by the per-master-node-attention architecture change (spatial_radial/spatial_query_proj/"
-            f"node_k_gate) -- left at random init, but confirmed unused since EnergyLayer calls "
-            f"master_attn() with per_node_com/node_conditioned_k defaulting False:\n"
-            f"{load_result.missing_keys}"
-        )
+        print(f"Checkpoint predates {len(load_result.missing_keys)} MasterNodeAttention key(s) added ")
     model.eval()
     print(f"Loaded {ckpt_path} (epoch={ckpt.get('epoch')}, val_loss={ckpt.get('val_loss')})")
-    print(
-        "Training-time normalization stats (informational only, NOT applied to predictions -- "
-        "see module docstring): "
-        f"energy_mean={config.get('energy_mean')}, energy_std={config.get('energy_std')}, "
-        f"force_rms={config.get('force_rms')}"
-    )
+    print(f"energy_mean={config.get('energy_mean')}, energy_std={config.get('energy_std')}, "f"force_rms={config.get('force_rms')}")
 
     out_csv = args.out_csv or os.path.join(args.ckpt_dir, f"eval_{args.split}.csv")
     rows = []

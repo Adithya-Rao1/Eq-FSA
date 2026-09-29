@@ -95,7 +95,7 @@ def format_hook_report(stats: dict, top_k: int = 30) -> str:
     return "\n".join(lines)
 
 
-def _instrumented_submodules(model: SPICEEnergyForceModel):
+def _instrumented_submodules_production(model: SPICEEnergyForceModel):
     em = model.energy_model
     yield em.seed_radial_net, "seed_radial_net"
     yield em.master_pool_agg, "master_pool_agg"
@@ -110,7 +110,7 @@ def _instrumented_submodules(model: SPICEEnergyForceModel):
     yield em.seed_proj_out, "seed_proj_out"
     yield em.seed_proj_norm, "seed_proj_norm"
     yield em.input_embedding, "input_embedding"
-    
+
     yield em.readout.ffn0, "energy_model.readout.ffn0"
     yield em.readout.ffn1, "energy_model.readout.ffn1"
     yield em.readout.ffn2, "energy_model.readout.ffn2"
@@ -134,6 +134,52 @@ def _instrumented_submodules(model: SPICEEnergyForceModel):
     yield model.norm_readout1, "norm_readout1"
     yield model.norm_readout2, "norm_readout2"
     yield model.out, "out"
+
+
+def _instrumented_submodules_lr_restructure(model: SPICEEnergyForceModel):
+    em = model.energy_model
+    yield em.seed_radial_net, "seed_radial_net"
+    yield em.mol_prop_emb, "mol_prop_emb"
+    yield em.f0_ffn, "f0_ffn"
+    yield em.mol_ffn, "mol_ffn"
+    yield em.seed_proj, "seed_proj"
+    yield em.seed_proj_out, "seed_proj_out"
+    yield em.seed_proj_norm, "seed_proj_norm"
+    yield em.input_embedding, "input_embedding"
+
+    yield em.readout.ffn0, "energy_model.readout.ffn0"
+    yield em.readout.ffn1, "energy_model.readout.ffn1"
+    yield em.readout.ffn2, "energy_model.readout.ffn2"
+
+    for i, layer in enumerate(em.layers):
+        yield layer.sr_attn, f"layer{i}.sr_attn"
+        yield layer.sr_attn.psi_e, f"layer{i}.sr_attn.psi_e"
+        yield layer.sr_attn.pair_readout, f"layer{i}.sr_attn.pair_readout"
+        yield layer.sr_attn.direct_sum_w, f"layer{i}.sr_attn.direct_sum_w"
+        yield layer.aggregator, f"layer{i}.aggregator"
+        yield layer.update, f"layer{i}.update"
+        yield layer.broadcast, f"layer{i}.broadcast"
+        yield layer.W_master_self, f"layer{i}.W_master_self"
+        yield layer.master_ln, f"layer{i}.master_ln"
+        yield layer.W_V_self_linear["1"], f"layer{i}.W_V_self_linear[1]"
+        yield layer.W_V_self_norm, f"layer{i}.W_V_self_norm"
+        yield layer.sigma_gate, f"layer{i}.sigma_gate"
+        yield layer.layer_norm_in, f"layer{i}.layer_norm_in"
+        yield layer.readout.ffn0, f"layer{i}.readout.ffn0"
+        yield layer.readout.ffn1, f"layer{i}.readout.ffn1"
+        yield layer.readout.ffn2, f"layer{i}.readout.ffn2"
+
+    yield model.norm_readout1, "norm_readout1"
+    yield model.norm_readout2, "norm_readout2"
+    yield model.out, "out"
+
+
+def _instrumented_submodules(model: SPICEEnergyForceModel):
+    backbone = getattr(model, "backbone", "production")
+    if backbone == "lr_restructure":
+        yield from _instrumented_submodules_lr_restructure(model)
+    else:
+        yield from _instrumented_submodules_production(model)
 
 
 def attach_hooks(model: SPICEEnergyForceModel) -> MagnitudeTracker:

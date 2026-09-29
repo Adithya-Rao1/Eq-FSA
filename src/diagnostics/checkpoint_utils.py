@@ -46,8 +46,16 @@ def build_model_from_config(config: dict, device: torch.device) -> SPICEEnergyFo
         n_max=config["n_max"],
         pw_e_cutoff=config.get("pw_e_cutoff"),
         n_master_nodes=config.get("n_master_nodes", 4),
+        backbone=config.get("backbone", "production"),
         num_fusion_heads=config.get("num_fusion_heads", 4),
         ablate_max_degree=config.get("ablate_max_degree"),
+        num_broadcast_heads=config.get("num_broadcast_heads", 4),
+        rbf_num_basis=config.get("rbf_num_basis", 12),
+        rbf_min=config.get("rbf_min", 0.3),
+        rbf_cutoff=config.get("rbf_cutoff", 25.0),
+        sigma=config.get("sigma"),
+        alpha_floor=config.get("alpha_floor", 1e-4),
+        use_norms=config.get("use_norms", True),
     ).to(device)
     return model
 

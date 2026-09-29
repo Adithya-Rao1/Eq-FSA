@@ -14,6 +14,7 @@ import torch.nn.functional as nnf
 from torch.utils.data import DataLoader, random_split
 
 from stage_1.model import EnergyModel, masked_mean
+from stage_1.lr_restructure.model import LREnergyModel
 from utils.se3_utils import RadialNetwork, EquivariantNormReadout, EquivariantRMSNorm, EquivariantLinear
 from stage_1.spice_dataset import SPICEDataset, spice_collate_fn, _EDGE_FEAT_DIM
 from log_setup.utils import logger
@@ -35,27 +36,62 @@ class SPICEEnergyForceModel(nn.Module):
         n_max: int,
         pw_e_cutoff: float | None = None,
         n_master_nodes: int = 4,
+        backbone: str = "lr_restructure",
+        # production (EnergyModel) only
         num_fusion_heads: int = 4,
         ablate_max_degree: int | None = None,
         grad_checkpoint: bool = False,
+        # lr_restructure (LREnergyModel) only
+        num_broadcast_heads: int = 4,
+        rbf_num_basis: int = 12,
+        rbf_min: float = 0.3,
+        rbf_cutoff: float = 25.0,
+        sigma: float | None = None,
+        alpha_floor: float = 1e-4,
+        use_norms: bool = True,
     ):
         super().__init__()
-        self.energy_model = EnergyModel(
-            radial_net=radial_net,
-            num_atom_types=num_atom_types,
-            max_degree=max_degree,
-            num_layers=num_layers,
-            feature_dim=feature_dim,
-            hidden_dim=hidden_dim,
-            edge_cutoff=edge_cutoff,
-            n_max=n_max,
-            pw_e_cutoff=pw_e_cutoff,
-            n_master_nodes=n_master_nodes,
-            num_fusion_heads=num_fusion_heads,
-            edge_feat_dim=_EDGE_FEAT_DIM,
-            ablate_max_degree=ablate_max_degree,
-            grad_checkpoint=grad_checkpoint,
-        )
+        self.backbone = backbone
+        if backbone == "lr_restructure":
+            self.energy_model = LREnergyModel(
+                radial_net=radial_net,
+                num_atom_types=num_atom_types,
+                max_degree=max_degree,
+                num_layers=num_layers,
+                feature_dim=feature_dim,
+                hidden_dim=hidden_dim,
+                edge_cutoff=edge_cutoff,
+                n_max=n_max,
+                pw_e_cutoff=pw_e_cutoff,
+                n_master_nodes=n_master_nodes,
+                num_broadcast_heads=num_broadcast_heads,
+                edge_feat_dim=_EDGE_FEAT_DIM,
+                rbf_num_basis=rbf_num_basis,
+                rbf_min=rbf_min,
+                rbf_cutoff=rbf_cutoff,
+                sigma=sigma,
+                alpha_floor=alpha_floor,
+                use_norms=use_norms,
+            )
+        elif backbone == "production":
+            self.energy_model = EnergyModel(
+                radial_net=radial_net,
+                num_atom_types=num_atom_types,
+                max_degree=max_degree,
+                num_layers=num_layers,
+                feature_dim=feature_dim,
+                hidden_dim=hidden_dim,
+                edge_cutoff=edge_cutoff,
+                n_max=n_max,
+                pw_e_cutoff=pw_e_cutoff,
+                n_master_nodes=n_master_nodes,
+                num_fusion_heads=num_fusion_heads,
+                edge_feat_dim=_EDGE_FEAT_DIM,
+                ablate_max_degree=ablate_max_degree,
+                grad_checkpoint=grad_checkpoint,
+            )
+        else:
+            raise ValueError(f"Unknown backbone: {backbone!r} (expected 'lr_restructure' or 'production')")
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
         self.out = nn.Sequential(
@@ -183,7 +219,10 @@ class SPICETrainer:
         self.model.energy_model.diag_enabled = True
         for layer in self.model.energy_model.layers:
             layer.diag_enabled = True
-            layer.master_attn.diag_enabled = True
+            if hasattr(layer, "master_attn"):
+                layer.master_attn.diag_enabled = True
+        if self.model.backbone != "production":
+            logger.info(f"backbone={self.model.backbone!r};")
 
         ckpt_dir = self.config.get("ckpt_dir", ".")
         self.provenance = ProvenanceLogger(os.path.join(ckpt_dir, "provenance.jsonl"))
@@ -349,9 +388,15 @@ class SPICETrainer:
     def _bucket_name(name: str) -> str:
         if "sr_attn" in name or "radial_V_sr" in name or "W_V_self" in name:
             return "sr"
-        if "master_attn" in name or "W_master_self" in name or "master_pool" in name or "master_expand" in name:
+        if ("master_attn" in name or "W_master_self" in name or "master_pool" in name 
+            or "master_expand" in name
+            or ".aggregator." in name or "master_ln" in name
+        ):
             return "master"
-        if "master_fusion" in name:
+        if (
+            "master_fusion" in name
+            or ".broadcast." in name or ".update." in name
+        ):
             return "fusion"
         return "other"
 
@@ -371,17 +416,18 @@ class SPICETrainer:
 
     def _risk_scalars(self) -> dict:
         alphas, damping_mins, Z_mins, g_a_norms = [], [], [], []
-        for layer in self.model.energy_model.layers:
-            ma = layer.master_attn
-            alphas.append(float(nnf.softplus(ma.alpha).item() + 1e-4))
-            if ma._diag_damping_sum_min is not None:
-                damping_mins.append(ma._diag_damping_sum_min)
-            if ma._diag_Z_min is not None:
-                Z_mins.append(ma._diag_Z_min)
-            if layer._diag_g_a_norm is not None:
-                g_a_norms.append(layer._diag_g_a_norm)
+        if self.model.backbone == "production":
+            for layer in self.model.energy_model.layers:
+                ma = layer.master_attn
+                alphas.append(float(nnf.softplus(ma.alpha).item() + 1e-4))
+                if ma._diag_damping_sum_min is not None:
+                    damping_mins.append(ma._diag_damping_sum_min)
+                if ma._diag_Z_min is not None:
+                    Z_mins.append(ma._diag_Z_min)
+                if layer._diag_g_a_norm is not None:
+                    g_a_norms.append(layer._diag_g_a_norm)
         counter_snap = counters.snapshot_and_reset()
-        min_abs_radial = self.model.energy_model._diag_stats.get("min_abs_radial")
+        min_abs_radial = getattr(self.model.energy_model, "_diag_stats", {}).get("min_abs_radial")
         return {
             "alpha": min(alphas) if alphas else None,
             "damping_sum_min": min(damping_mins) if damping_mins else None,
@@ -715,9 +761,17 @@ def run_training(config: dict, device: torch.device | None = None):
         n_max=config["n_max"],
         pw_e_cutoff=config.get("pw_e_cutoff"),
         n_master_nodes=config.get("n_master_nodes", 4),
+        backbone=config.get("backbone", "lr_restructure"),
         num_fusion_heads=config.get("num_fusion_heads", 4),
         ablate_max_degree=config.get("ablate_max_degree"),
         grad_checkpoint=config.get("grad_checkpoint", False),
+        num_broadcast_heads=config.get("num_broadcast_heads", 4),
+        rbf_num_basis=config.get("rbf_num_basis", 12),
+        rbf_min=config.get("rbf_min", 0.3),
+        rbf_cutoff=config.get("rbf_cutoff", 25.0),
+        sigma=config.get("sigma"),
+        alpha_floor=config.get("alpha_floor", 1e-4),
+        use_norms=config.get("use_norms", True),
     )
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -777,7 +831,15 @@ def main():
     parser.add_argument("--pw-e-cutoff", type=float, default=None, help="Long-range k-space energy cutoff (k_max = sqrt(2*e_cutoff)); caps |k| independent of box size. Not a reliable substitute for keeping --n-max small -- filtering high-k modes did not consistently fix instability at n_max=4 in testing")
     parser.add_argument("--num-atom-types", type=int, default=23, help="mappings.py padding + 22 element types (incl. Li)")
     parser.add_argument("--n-master-nodes", type=int, default=8, help="Number of virtual master nodes accumulating long-range SE(3)-invariant context, co-located at the molecular center of mass")
-    parser.add_argument("--num-fusion-heads", type=int, default=4, help="Attention heads for the one-shot master-node-to-atom fusion cross-attention; must divide --feature-dim")
+    parser.add_argument("--backbone", type=str, default="lr_restructure", choices=["lr_restructure", "production"], help="Energy+force backbone: 'lr_restructure' (default) is stage_1/lr_restructure's bounded-softmax, moving-master-node architecture that beat DimeNet/Nequip-Allegro on oversquashing and RSA on lr_sr; 'production' is the original stage_1/model.py EnergyModel, kept for comparison/rollback")
+    parser.add_argument("--num-fusion-heads", type=int, default=4, help="[--backbone production only] Attention heads for the one-shot master-node-to-atom fusion cross-attention; must divide --feature-dim")
+    parser.add_argument("--num-broadcast-heads", type=int, default=4, help="[--backbone lr_restructure only] Attention heads for the per-layer master-node<->atom broadcast attention; must divide --feature-dim")
+    parser.add_argument("--rbf-num-basis", type=int, default=12, help="[--backbone lr_restructure only] Number of RBF basis functions for the per-master-node distance-weighted attention")
+    parser.add_argument("--rbf-min", type=float, default=0.3, help="[--backbone lr_restructure only] Minimum RBF center spacing (Angstrom)")
+    parser.add_argument("--rbf-cutoff", type=float, default=25.0, help="[--backbone lr_restructure only] Maximum RBF center distance (Angstrom)")
+    parser.add_argument("--sigma", type=float, default=None, help="[--backbone lr_restructure only] Fixed physical width for the Ewald damping envelope (alpha = 1/(2*sigma^2)); default None leaves alpha a learned parameter, matching production EnergyModel's behavior -- SPICE molecules have no single canonical sigma the way the synthetic lr_sr Coulomb benchmark does")
+    parser.add_argument("--alpha-floor", type=float, default=1e-4, help="[--backbone lr_restructure only] Floor added to the learned Ewald damping alpha (softplus(alpha_param) + alpha_floor); ignored when --sigma is set")
+    parser.add_argument("--use-norms", action=argparse.BooleanOptionalAction, default=True, help="[--backbone lr_restructure only] Use RMSNorm throughout the backbone; --no-use-norms strips them (ablation)")
     parser.add_argument("--val-fraction", type=float, default=0.05)
     parser.add_argument("--test-fraction", type=float, default=0.05, help="Held-out test split, carved out alongside val (never trained or validated against) -- its identity is persisted to <ckpt-dir>/dataset_split.pt for later use by e.g. diagnostics/test_set_confidence_interval.py")
     parser.add_argument("--num-workers", type=int, default=8)

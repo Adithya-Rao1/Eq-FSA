@@ -13,6 +13,7 @@ from utils.calc_props import _MOL_FEAT_NAMES
 
 
 def rebuild_model(saved_args: dict, device: torch.device, dtype: torch.dtype) -> SPICEEnergyForceModel:
+    backbone = saved_args.get("backbone", "production")
     model = SPICEEnergyForceModel(
         radial_net=RadialNetwork,
         num_atom_types=saved_args["num_atom_types"],
@@ -23,7 +24,15 @@ def rebuild_model(saved_args: dict, device: torch.device, dtype: torch.dtype) ->
         edge_cutoff=saved_args["edge_cutoff"],
         n_max=saved_args["n_max"],
         n_master_nodes=saved_args["n_master_nodes"],
-        num_fusion_heads=saved_args["num_fusion_heads"],
+        backbone=backbone,
+        num_fusion_heads=saved_args.get("num_fusion_heads", 4),
+        num_broadcast_heads=saved_args.get("num_broadcast_heads", 4),
+        rbf_num_basis=saved_args.get("rbf_num_basis", 12),
+        rbf_min=saved_args.get("rbf_min", 0.3),
+        rbf_cutoff=saved_args.get("rbf_cutoff", 25.0),
+        sigma=saved_args.get("sigma"),
+        alpha_floor=saved_args.get("alpha_floor", 1e-4),
+        use_norms=saved_args.get("use_norms", True),
     ).to(device=device, dtype=dtype)
     return model
 
@@ -32,10 +41,10 @@ def load_state_dict_allow_new_params(model: SPICEEnergyForceModel, state_dict: d
     result = model.load_state_dict(state_dict, strict=False)
     unexpected_missing = [k for k in result.missing_keys if not k.endswith(".alpha")]
     if unexpected_missing:
-        raise RuntimeError(f"Unexpected missing keys beyond the new alpha params: {unexpected_missing}")
+        raise RuntimeError
     if result.unexpected_keys:
-        raise RuntimeError(f"Unexpected keys in checkpoint not present in current model: {result.unexpected_keys}")
-    print(f"  Loaded checkpoint with strict=False; new params left at init: {result.missing_keys}")
+        raise RuntimeError
+    print(f"Loaded checkpoint with strict=False; new params left at init: {result.missing_keys}")
 
 
 def describe_geometry(batch: dict):
@@ -46,7 +55,7 @@ def describe_geometry(batch: dict):
     V = batch["V"]
     B, N, _ = x.shape
 
-    print("\n--- Geometry characterization ---")
+    print("\nGeometry characterization")
     x_wrapped = minimum_image(x, V)
     com, _ = masked_weighted_com(x_wrapped, masses, mask)
     r_true = (x_wrapped - com.unsqueeze(1)).norm(dim=-1)
@@ -327,9 +336,13 @@ def main():
 
     model.eval()
 
-    report_master_attn_fix(model, batch)
-
     check_mol_props_raw(batch, model)
+
+    if model.backbone != "production":
+        print(f"backbone={model.backbone!r}. The forward-activation ")
+        return
+
+    report_master_attn_fix(model, batch)
 
     instrument_seed_pathway(model, batch)
 
