@@ -264,6 +264,13 @@ class SPICETrainer:
 
         cache_limit = int(self.config.get("dynamo_cache_size_limit", 64))
         torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, cache_limit)
+        # AOTAutograd's "donated buffer" optimization frees activation buffers after the first
+        # backward, assuming create_graph=False/retain_graph=False -- incompatible with training
+        # here, which needs create_graph=True (forces come from torch.autograd.grad(..., create_
+        # graph=True), then the loss backprops through that too, a genuine double backward).
+        # Without this, compiled training crashes with "compiled with non-empty donated buffers
+        # requires create_graph=False" the first time a real backward runs.
+        torch._functorch.config.donated_buffer = False
         compile_mode = self.config.get("compile_mode", "default")
         logger.info(
             f"torch.compile: enabled (mode={compile_mode!r}, "

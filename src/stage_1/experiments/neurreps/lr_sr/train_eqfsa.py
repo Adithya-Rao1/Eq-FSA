@@ -92,6 +92,7 @@ def train_one(seed: int, config: dict, dataset_cache: "dict | None" = None) -> d
     if use_compile:
         cache_limit = int(config.get("dynamo_cache_size_limit", 64))
         torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, cache_limit)
+        torch._functorch.config.donated_buffer = False
         compile_mode = config.get("compile_mode", "reduce-overhead")
         compiled_model = torch.compile(model, mode=compile_mode)
         if config.get("log_every", 0):
