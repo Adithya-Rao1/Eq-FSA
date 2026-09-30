@@ -45,6 +45,9 @@ def build_model(variant: str, mace_model, mace_init_state: dict, config: dict, d
         mace_model, variant, feature_dim=config["feature_dim"], hidden_dim=config["hidden_dim"],
         n_max=config["n_max"], num_master_nodes=config["num_master_nodes"], rsa_sigma=config["rsa_sigma"],
         num_lr_layers=config.get("num_lr_layers", 1),
+        num_broadcast_heads=config["num_broadcast_heads"],
+        rbf_num_basis=config["rbf_num_basis"], rbf_min=config["rbf_min"], rbf_cutoff=config["rbf_cutoff"],
+        lr_sigma=config.get("lr_sigma"), alpha_floor=config["alpha_floor"],
     ).to(device)
 
 
@@ -217,13 +220,27 @@ def run_variant(
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--variants", type=str, nargs="+", default=["none", "eqfsa", "rsa"])
+    parser.add_argument("--variants", type=str, nargs="+", default=["sr_only", "eqfsa_lr", "rsa"],
+                         help="'none' (frozen zero-shot MACE-OFF) is available but omitted")
     parser.add_argument("--mace-model-size", type=str, default="small")
     parser.add_argument("--num-configs", type=int, default=2000)
     parser.add_argument("--n-max", type=int, default=2)
     parser.add_argument("--num-master-nodes", type=int, default=4)
     parser.add_argument("--rsa-sigma", type=float, default=5.0)
     parser.add_argument("--num-lr-layers", type=int, default=1,)
+    parser.add_argument("--num-broadcast-heads", type=int, default=4,
+                         help="[--variants eqfsa_lr only] Attention heads for lr_restructure's "
+                              "MasterBroadcastAttention; must divide --feature-dim")
+    parser.add_argument("--rbf-num-basis", type=int, default=12,
+                         help="[--variants eqfsa_lr only] RBF basis count for MasterNodeAggregator's "
+                              "distance-weighted attention")
+    parser.add_argument("--rbf-min", type=float, default=0.3, help="[--variants eqfsa_lr only]")
+    parser.add_argument("--rbf-cutoff", type=float, default=25.0,
+                         help="[--variants eqfsa_lr only]")
+    parser.add_argument("--lr-sigma", type=float, default=None,
+                         help="[--variants eqfsa_lr only] Fixed Ewald damping width for "
+                              "MasterNodeUpdate; default None leaves alpha learned")
+    parser.add_argument("--alpha-floor", type=float, default=1e-4, help="[--variants eqfsa_lr only]")
     parser.add_argument("--feature-dim", type=int, default=32)
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=50)
@@ -232,8 +249,7 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--no-lr-schedule", dest="lr_schedule", action="store_false",)
     parser.add_argument("--warmup-epochs", type=int, default=5,)
-    parser.add_argument("--min-lr", type=float, default=1e-6,
-                         help="Cosine annealing floor (matches train_spice.py's own default).")
+    parser.add_argument("--min-lr", type=float, default=1e-6,)
     parser.add_argument("--lambda-energy", type=float, default=1.0)
     parser.add_argument("--lambda-force", type=float, default=0.5)
     parser.add_argument("--two-phase-loss", action="store_true")

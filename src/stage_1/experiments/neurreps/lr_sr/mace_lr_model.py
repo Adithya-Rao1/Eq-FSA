@@ -3,11 +3,15 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from stage_1.attention import MasterFusionAttention, MasterNodeAttention
 from stage_1.experiments.neurreps.lr_sr.rsa_attention import RSAAttention
+from stage_1.lr_restructure.aggregation import MasterNodeAggregator
+from stage_1.lr_restructure.broadcast import MasterBroadcastAttention
+from stage_1.lr_restructure.update import MasterNodeUpdate
 from stage_1.model import masked_mean, masked_weighted_com, seed_equivariant_features
-from utils.pw_bases import minimum_image
-from utils.se3_utils import AggregateFeatures, EquivariantRMSNorm, RadialNetwork, init_sequential_, scalar_ffn
+from utils.pw_bases import make_miller_indices, make_wavevectors, minimum_image
+from utils.se3_utils import (
+    AggregateFeatures, EquivariantRMSNorm, IrrepLinear, RadialNetwork, init_sequential_, scalar_ffn,
+)
 
 MACE_OFF_MODEL_SIZE = "small"
 MACE_OFF_DTYPE = "float32"
@@ -90,12 +94,15 @@ class MaceLRModel(nn.Module):
     def __init__(
         self, mace_model, variant: str, feature_dim: int = 32, hidden_dim: int = 64,
         n_max: int = 2, num_master_nodes: int = 4, rsa_sigma: float = 5.0,
-        max_degree: int = 2, num_fusion_heads: int = 4, num_lr_layers: int = 1,
+        max_degree: int = 2, num_broadcast_heads: int = 4, num_lr_layers: int = 1,
+        rbf_num_basis: int = 12, rbf_min: float = 0.3, rbf_cutoff: float = 25.0,
+        lr_sigma: "float | None" = None, alpha_floor: float = 1e-4,
     ):
         super().__init__()
-        assert variant in ("none", "sr_only", "eqfsa", "rsa")
+        assert variant in ("none", "sr_only", "eqfsa_lr", "rsa")
         self.mace_model = mace_model
         self.variant = variant
+        self.n_max = n_max
         self.num_lr_layers = num_lr_layers
         self._graph_cache: dict = {}
         for p in self.mace_model.parameters():
@@ -108,23 +115,22 @@ class MaceLRModel(nn.Module):
 
         unfreeze_readouts(self.mace_model)
         self.embed = ChargeReadoutEmbedding(feature_dim, hidden_dim)
-        if variant == "eqfsa":
+        if variant == "eqfsa_lr":
             self.num_master_nodes = num_master_nodes
             self.max_degree = max_degree
             self.seed_radial_net = RadialNetwork(num_basis=1, hidden_dim=hidden_dim)
-            self.master_pool_agg = AggregateFeatures(
-                out_feat_dim=feature_dim, inp_feat_dim=feature_dim, hidden_dim=hidden_dim,
+            self.g_a_init = nn.Parameter(torch.randn(num_master_nodes, feature_dim) * 0.1)
+            self.lr_aggregator = MasterNodeAggregator(
+                feature_dim, num_master_nodes, hidden_dim, rbf_num_basis, rbf_min, rbf_cutoff,
             )
-            self.master_pool_ffn = scalar_ffn(feature_dim, hidden_dim)
-            self.master_expand = nn.Sequential(
-                nn.RMSNorm(feature_dim), nn.LeakyReLU(),
-                nn.Linear(feature_dim, num_master_nodes * feature_dim),
+            self.lr_update = MasterNodeUpdate(sigma=lr_sigma, alpha_floor=alpha_floor)
+            self.W_master_self = IrrepLinear(feature_dim)
+            self.master_ln = EquivariantRMSNorm(feature_dim, degree=0)
+            self.lr_broadcast = MasterBroadcastAttention(
+                RadialNetwork, max_degree, feature_dim, hidden_dim, num_heads=num_broadcast_heads,
             )
-            init_sequential_(self.master_expand, "leaky_relu")
-            self.master_expand_norm = EquivariantRMSNorm(feature_dim, degree=0)
-            self.master_attn = MasterNodeAttention(feature_dim, n_max, hidden_dim=hidden_dim)
-            self.master_fusion = MasterFusionAttention(
-                RadialNetwork, max_degree, feature_dim, hidden_dim, num_heads=num_fusion_heads,
+            self.register_buffer(
+                "lr_miller_indices", make_miller_indices(n_max, dtype=torch.get_default_dtype()),
             )
             self.fusion_pool = AggregateFeatures(
                 out_feat_dim=feature_dim, inp_feat_dim=feature_dim, hidden_dim=hidden_dim,
@@ -139,34 +145,33 @@ class MaceLRModel(nn.Module):
 
     def _lr_correction(self, node_energy, charges, positions, mask, V):
         f_in0 = self.embed(node_energy, charges)
-        if self.variant == "eqfsa":
+        if self.variant == "eqfsa_lr":
             B = charges.shape[0]
             masses = mask.float()
             x_com, _ = masked_weighted_com(positions, masses, mask)
+            x_wrapped = minimum_image(positions, V)
 
             seeded = seed_equivariant_features(
                 f_in0.squeeze(-1), self.seed_radial_net, positions, masses, mask, V,
             )
             f_atoms = {0: f_in0, 1: seeded[1], 2: seeded[2]}
 
-            agg_per_atom = self.master_pool_agg(f_atoms[0], f_atoms[1], f_atoms[2]).squeeze(-1)
-            pooled_in = self.master_pool_ffn(masked_mean(agg_per_atom, mask))
-            g_a = self.master_expand(pooled_in).view(B, self.num_master_nodes, -1).unsqueeze(-1)
-            g_a = self.master_expand_norm(g_a)
+            g_a = self.g_a_init.unsqueeze(0).expand(B, -1, -1).unsqueeze(-1).clone()
+            X_a = x_com.unsqueeze(1).expand(B, self.num_master_nodes, -1).clone()
+            kvecs, _, mode_mask = make_wavevectors(V, self.n_max, None, indices=self.lr_miller_indices)
 
-            x_wrapped = minimum_image(positions, V)
             fusion_accum = {l: torch.zeros_like(f_atoms[l]) for l in f_atoms}
             for _ in range(self.num_lr_layers):
-                g_a_out = g_a.squeeze(-1) + self.master_attn(g_a, f_in0, positions, x_com, mask, V).squeeze(-1)
-                g_a = g_a_out.unsqueeze(-1)
-                layer_fusion = self.master_fusion(
-                    f_atoms=f_atoms, g_a=g_a, x=x_wrapped, x_com=x_com, V=V,
-                )
+                pooled, X_a_new = self.lr_aggregator(g_a.squeeze(-1), f_atoms[0].squeeze(-1), x_wrapped, X_a, mask, V)
+                g_a_new = self.lr_update(pooled, X_a_new, V, kvecs, mode_mask)
+                g_a_out = self.master_ln(self.W_master_self(g_a) + g_a_new.unsqueeze(-1))
+                layer_fusion = self.lr_broadcast(f_atoms, g_a_out, X_a_new, x_wrapped, mask, V)
                 fusion_accum = {l: fusion_accum[l] + layer_fusion[l] for l in fusion_accum}
+                g_a, X_a = g_a_out, X_a_new
             fusion_scalar = self.fusion_pool(fusion_accum[0], fusion_accum[1], fusion_accum[2]).squeeze(-1)
             fusion_pooled = masked_mean(fusion_scalar, mask)
 
-            decoder_in = torch.cat([g_a_out.reshape(B, -1), fusion_pooled], dim=-1)
+            decoder_in = torch.cat([g_a.squeeze(-1).reshape(B, -1), fusion_pooled], dim=-1)
             return self.decoder(decoder_in).squeeze(-1)
         per_atom = self.lr_attn(f_in0, positions, mask, V).squeeze(-1)
         pooled = (per_atom * mask.unsqueeze(-1)).sum(dim=1)

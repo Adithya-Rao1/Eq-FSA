@@ -37,6 +37,7 @@ class SPICEEnergyForceModel(nn.Module):
         pw_e_cutoff: float | None = None,
         n_master_nodes: int = 4,
         backbone: str = "lr_restructure",
+        edge_feat_dim: int = _EDGE_FEAT_DIM,
         # production (EnergyModel) only
         num_fusion_heads: int = 4,
         ablate_max_degree: int | None = None,
@@ -65,7 +66,7 @@ class SPICEEnergyForceModel(nn.Module):
                 pw_e_cutoff=pw_e_cutoff,
                 n_master_nodes=n_master_nodes,
                 num_broadcast_heads=num_broadcast_heads,
-                edge_feat_dim=_EDGE_FEAT_DIM,
+                edge_feat_dim=edge_feat_dim,
                 rbf_num_basis=rbf_num_basis,
                 rbf_min=rbf_min,
                 rbf_cutoff=rbf_cutoff,
@@ -86,7 +87,7 @@ class SPICEEnergyForceModel(nn.Module):
                 pw_e_cutoff=pw_e_cutoff,
                 n_master_nodes=n_master_nodes,
                 num_fusion_heads=num_fusion_heads,
-                edge_feat_dim=_EDGE_FEAT_DIM,
+                edge_feat_dim=edge_feat_dim,
                 ablate_max_degree=ablate_max_degree,
                 grad_checkpoint=grad_checkpoint,
             )
