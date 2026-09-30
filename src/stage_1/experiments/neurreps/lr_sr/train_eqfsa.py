@@ -72,7 +72,9 @@ def train_one(seed: int, config: dict, dataset_cache: "dict | None" = None) -> d
     n_val = max(1, int(round(len(dataset) * config["val_fraction"])))
     n_train = len(dataset) - n_val
     train_ds, val_ds = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(seed + 100000))
-    train_loader = DataLoader(train_ds, batch_size=config["batch_size"], shuffle=True, collate_fn=lr_sr_collate_fn)
+    train_loader = DataLoader(
+        train_ds, batch_size=config["batch_size"], shuffle=True, collate_fn=lr_sr_collate_fn, drop_last=True,
+    )
     val_loader = DataLoader(val_ds, batch_size=config["batch_size"], shuffle=False, collate_fn=lr_sr_collate_fn)
 
     energy_mean, energy_std, force_rms = energy_force_stats(dataset, train_ds.indices)
@@ -80,7 +82,21 @@ def train_one(seed: int, config: dict, dataset_cache: "dict | None" = None) -> d
     torch.manual_seed(seed)
     model = build_model(config, device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=config["lr"], weight_decay=1e-4, fused=(device.type == "cuda"),
+    )
+
+    use_compile = bool(config.get("torch_compile", True)) and device.type == "cuda"
+    if use_compile:
+        cache_limit = int(config.get("dynamo_cache_size_limit", 64))
+        torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, cache_limit)
+        compile_mode = config.get("compile_mode", "reduce-overhead")
+        compiled_model = torch.compile(model, mode=compile_mode)
+        if config.get("log_every", 0):
+            print(f"  [eqfsa seed={seed}] torch.compile enabled (mode={compile_mode!r})", flush=True)
+    else:
+        compiled_model = model
+
     scheduler = None
     if config.get("lr_schedule", True):
         steps_per_epoch = max(len(train_loader), 1)
@@ -124,7 +140,8 @@ def train_one(seed: int, config: dict, dataset_cache: "dict | None" = None) -> d
             edge_feats = batch["edge_feats"].to(device)
             optimizer.zero_grad()
             U, F_pred = compute_energy_and_forces(
-                model, positions, types, masses, mask, V, mol_props, edge_feats,
+                compiled_model, positions, types, masses, mask, V, mol_props, edge_feats,
+                create_graph=model.training,
             )
             U_n = (U - energy_mean) / energy_std
             U_target_n = (batch["energy"].to(device) - energy_mean) / energy_std
@@ -160,7 +177,8 @@ def train_one(seed: int, config: dict, dataset_cache: "dict | None" = None) -> d
         mol_props = batch["mol_props"].to(device)
         edge_feats = batch["edge_feats"].to(device)
         U, F_pred = compute_energy_and_forces(
-            model, positions, types, masses, mask, V, mol_props, edge_feats,
+            compiled_model, positions, types, masses, mask, V, mol_props, edge_feats,
+            create_graph=model.training,
         )
         U, F_pred = U.detach(), F_pred.detach()
         energy_target, force_target = batch["energy"].to(device), batch["forces"].to(device)
@@ -258,6 +276,9 @@ def main():
     parser.add_argument("--phase1-lambda-force", type=float, default=1000.0)
     parser.add_argument("--phase2-lambda-energy", type=float, default=100.0)
     parser.add_argument("--phase2-lambda-force", type=float, default=1.0)
+    parser.add_argument("--torch-compile", action=argparse.BooleanOptionalAction, default=True,)
+    parser.add_argument("--compile-mode", type=str, default="reduce-overhead", choices=["default", "reduce-overhead", "max-autotune"],)
+    parser.add_argument("--dynamo-cache-size-limit", type=int, default=64)
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--num-realizations", type=int, default=3)
@@ -268,6 +289,8 @@ def main():
     config = vars(args)
     config["_device"] = detect_device(config["device"])
     print(f"Using device: {config['_device']}", flush=True)
+    if config["_device"].type == "cuda":
+        torch.set_float32_matmul_precision("high")
 
     if config["smoke_test"]:
         config["num_configs"] = 8
