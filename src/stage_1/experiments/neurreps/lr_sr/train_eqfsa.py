@@ -76,6 +76,8 @@ def train_one(seed: int, config: dict, dataset_cache: "dict | None" = None) -> d
         train_ds, batch_size=config["batch_size"], shuffle=True, collate_fn=lr_sr_collate_fn, drop_last=True,
     )
     val_loader = DataLoader(val_ds, batch_size=config["batch_size"], shuffle=False, collate_fn=lr_sr_collate_fn)
+    if len(train_loader) == 0:
+        raise ValueError
 
     energy_mean, energy_std, force_rms = energy_force_stats(dataset, train_ds.indices)
 
@@ -296,6 +298,7 @@ def main():
         config["num_configs"] = 8
         config["epochs"] = 2
         config["num_realizations"] = 1
+        config["batch_size"] = min(config["batch_size"], 2)
 
     os.makedirs(config["outdir"], exist_ok=True)
     csv_path = os.path.join(config["outdir"], "results.csv")
