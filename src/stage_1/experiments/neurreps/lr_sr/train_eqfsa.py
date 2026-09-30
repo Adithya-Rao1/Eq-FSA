@@ -97,7 +97,20 @@ def train_one(seed: int, config: dict, dataset_cache: "dict | None" = None) -> d
         )
 
     model.train()
+    two_phase = config.get("two_phase_loss", False)
+    phase1_epochs = config.get("phase1_epochs", 0)
+    prev_phase = None
     for epoch in range(config["epochs"]):
+        if two_phase and epoch < phase1_epochs:
+            lambda_energy, lambda_force, phase = config["phase1_lambda_energy"], config["phase1_lambda_force"], 1
+        elif two_phase:
+            lambda_energy, lambda_force, phase = config["phase2_lambda_energy"], config["phase2_lambda_force"], 2
+        else:
+            lambda_energy, lambda_force, phase = config["lambda_energy"], config["lambda_force"], None
+        if phase is not None and phase != prev_phase:
+            print(f"  [eqfsa seed={seed}] epoch={epoch}: entering phase {phase} "
+                  f"(lambda_energy={lambda_energy:g}, lambda_force={lambda_force:g})", flush=True)
+            prev_phase = phase
         log_every = config.get("log_every", 0)
         is_log_epoch = log_every and (epoch % log_every == 0 or epoch == config["epochs"] - 1)
         epoch_loss, epoch_e_term, epoch_f_term, n_batches = 0.0, 0.0, 0.0, 0
@@ -118,7 +131,7 @@ def train_one(seed: int, config: dict, dataset_cache: "dict | None" = None) -> d
             F_n = F_pred / force_rms
             F_target_n = batch["forces"].to(device) / force_rms
             loss, e_term, f_term = spice_loss(
-                U_n, U_target_n, F_n, F_target_n, mask, config["lambda_energy"], config["lambda_force"],
+                U_n, U_target_n, F_n, F_target_n, mask, lambda_energy, lambda_force,
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -239,6 +252,12 @@ def main():
     parser.add_argument("--min-lr", type=float, default=1e-6)
     parser.add_argument("--lambda-energy", type=float, default=1.0)
     parser.add_argument("--lambda-force", type=float, default=0.5)
+    parser.add_argument("--two-phase-loss", action="store_true",)
+    parser.add_argument("--phase1-epochs", type=int, default=100)
+    parser.add_argument("--phase1-lambda-energy", type=float, default=1.0)
+    parser.add_argument("--phase1-lambda-force", type=float, default=1000.0)
+    parser.add_argument("--phase2-lambda-energy", type=float, default=100.0)
+    parser.add_argument("--phase2-lambda-force", type=float, default=1.0)
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--num-realizations", type=int, default=3)
