@@ -138,14 +138,11 @@ def compute_energy_and_forces(
     V: torch.Tensor,
     mol_props: torch.Tensor,
     edge_feats: torch.Tensor,
-    create_graph: bool | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    if create_graph is None:
-        create_graph = model.training
     x = x.clone().requires_grad_(True)
     U = model(x, types_, masses, mask, V, mol_props, edge_feats)
     (grad_x,) = torch.autograd.grad(
-        U.sum(), x, create_graph=create_graph,
+        U.sum(), x, create_graph=model.training,
     )
     F = -grad_x
     return U, F
@@ -200,7 +197,6 @@ class SPICETrainer:
         self._setup_csv_logging()
         self._setup_training()
         self._setup_diagnostics()
-        self._setup_compile()
         self._setup_explosion_skip()
 
     def _setup_diagnostics(self):
@@ -248,29 +244,6 @@ class SPICETrainer:
         logger.info(
             f"Diagnostics enabled. Provenance: {self.provenance.path}, dumps: {self._diag_dump_dir}"
         )
-
-    def _setup_compile(self):
-        use_compile = bool(self.config.get("torch_compile", True)) and self.device.type == "cuda"
-        if use_compile and self.diag:
-            logger.info(
-                "torch.compile: disabled while --diagnostics is set (the per-submodule "
-                "forward/backward hooks in diagnostics/hooks.py fight compilation -- each hooked "
-                "module forces a graph break, defeating the point of compiling)."
-            )
-            use_compile = False
-        if not use_compile:
-            self.compiled_model = self.model
-            return
-
-        cache_limit = int(self.config.get("dynamo_cache_size_limit", 64))
-        torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, cache_limit)
-        torch._functorch.config.donated_buffer = False
-        compile_mode = self.config.get("compile_mode", "default")
-        logger.info(
-            f"torch.compile: enabled (mode={compile_mode!r}, "
-            f"dynamo cache_size_limit={torch._dynamo.config.cache_size_limit})."
-        )
-        self.compiled_model = torch.compile(self.model, mode=compile_mode)
 
     def _setup_explosion_skip(self):
         self._n_skipped_nonfinite = 0
@@ -389,11 +362,10 @@ class SPICETrainer:
     def _step(self, batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch = self._to_device(batch)
         U, F = compute_energy_and_forces(
-            self.compiled_model,
+            self.model,
             batch["all_solute_x"], batch["all_solute_types"],
             batch["all_solute_masses"], batch["all_solute_mask"], batch["V"],
             batch['mol_props'], batch['all_solute_edge_feats'],
-            create_graph=self.model.training,
         )
         energy_mean = self.config["energy_mean"]
         energy_std = self.config["energy_std"]
@@ -877,9 +849,6 @@ def main():
     parser.add_argument("--sigma", type=float, default=None, help="[--backbone lr_restructure only] Fixed physical width for the Ewald damping envelope (alpha = 1/(2*sigma^2)); default None leaves alpha a learned parameter, matching production EnergyModel's behavior -- SPICE molecules have no single canonical sigma the way the synthetic lr_sr Coulomb benchmark does")
     parser.add_argument("--alpha-floor", type=float, default=1e-4, help="[--backbone lr_restructure only] Floor added to the learned Ewald damping alpha (softplus(alpha_param) + alpha_floor); ignored when --sigma is set")
     parser.add_argument("--use-norms", action=argparse.BooleanOptionalAction, default=True, help="[--backbone lr_restructure only] Use RMSNorm throughout the backbone; --no-use-norms strips them (ablation)")
-    parser.add_argument("--torch-compile", action=argparse.BooleanOptionalAction, default=True, help="Compile the energy model with torch.compile (CUDA only; no-op on CPU). Automatically disabled when --diagnostics is set, since diagnostics/hooks.py's per-submodule forward/backward hooks force a graph break per module and defeat the point of compiling. Use --no-torch-compile for eager-mode debugging/comparison")
-    parser.add_argument("--compile-mode", type=str, default="default", choices=["default", "reduce-overhead", "max-autotune"], help="torch.compile mode when --torch-compile is set. spice_collate_fn buckets each batch's atom count to the next power of two and (for --backbone lr_restructure) LREnergyModel already buckets its edge count, so 'reduce-overhead's CUDA-graph capture should mostly work now -- try it explicitly. Defaults to 'default' rather than 'reduce-overhead' anyway since the atom-count bucketing hasn't been verified on real hardware yet (see stage_1/lr_restructure/CLAUDE.md); 'reduce-overhead' is a no-op safety net for --backbone production, which has no edge-count bucketing at all")
-    parser.add_argument("--dynamo-cache-size-limit", type=int, default=64, help="torch._dynamo.config.cache_size_limit override when --torch-compile is set. SPICE's per-batch atom count varies more than lr_restructure's other training scripts saw (which hit the default limit of 8 even with far less shape variation); past this limit Dynamo silently falls back to eager for further-diverging shapes")
     parser.add_argument("--val-fraction", type=float, default=0.05)
     parser.add_argument("--test-fraction", type=float, default=0.05, help="Held-out test split, carved out alongside val (never trained or validated against) -- its identity is persisted to <ckpt-dir>/dataset_split.pt for later use by e.g. diagnostics/test_set_confidence_interval.py")
     parser.add_argument("--num-workers", type=int, default=8)
