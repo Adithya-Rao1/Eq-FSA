@@ -21,8 +21,10 @@ def _next_pow2(n: int) -> int:
 @torch._dynamo.disable()
 def _build_padded_edges(pair_mask: torch.Tensor, x_diff: torch.Tensor, edge_feats: torch.Tensor):
     edge_b, edge_i, edge_j = pair_mask.nonzero(as_tuple=True)
-    x_rel_e = x_diff[edge_b, edge_i, edge_j]
-    edge_feat_e = edge_feats[edge_b, edge_i, edge_j]
+    B, N = x_diff.shape[0], x_diff.shape[1]
+    flat_idx = edge_b * (N * N) + edge_i * N + edge_j
+    x_rel_e = x_diff.reshape(B * N * N, 3).index_select(0, flat_idx)
+    edge_feat_e = edge_feats.reshape(B * N * N, edge_feats.shape[-1]).index_select(0, flat_idx)
 
     E = int(edge_b.shape[0])
     device = edge_b.device

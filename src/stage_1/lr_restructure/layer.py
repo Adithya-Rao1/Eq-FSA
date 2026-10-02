@@ -85,14 +85,21 @@ class LRLayer(nn.Module):
         with torch.profiler.record_function("lr_local_sr"):
             f_in = self.layer_norm_in(f_in)
 
-            f_in_i_e = {k: f_in[k][edge_b, edge_i] for k in range(self.k_max + 1)}
-            f0_j_e = {k: f0[k][edge_b, edge_j] for k in range(self.k_max + 1)}
+            receiver_flat = edge_b * N + edge_i
+            sender_flat = edge_b * N + edge_j
+            f_in_i_e = {
+                k: f_in[k].reshape(B * N, *f_in[k].shape[2:]).index_select(0, receiver_flat)
+                for k in range(self.k_max + 1)
+            }
+            f0_j_e = {
+                k: f0[k].reshape(B * N, *f0[k].shape[2:]).index_select(0, sender_flat)
+                for k in range(self.k_max + 1)
+            }
             with torch.profiler.record_function("lr_sr_attn_only"):
                 alpha_e, Wv_j_sr_flat = self.sr_attn(
                     f_in_i_e, f0_j_e, x_rel_e, edge_feat_e, edge_b, edge_i, batch_size=B, num_atoms=N,
                     edge_valid=edge_valid,
                 )
-            receiver_flat = edge_b * N + edge_i
 
             self_terms_raw = {l: self.W_V_self_linear[str(l)](f_in[l]) for l in range(self.max_degree + 1)}
             self_terms = self.W_V_self_norm(self_terms_raw)
