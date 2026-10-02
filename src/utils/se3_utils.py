@@ -392,9 +392,9 @@ def scatter_softmax(
     group_max = torch.full((num_groups,), float("-inf"), device=scores.device, dtype=scores.dtype)
     group_max = group_max.scatter_reduce(0, index, scores, reduce="amax", include_self=True)
     group_max = torch.where(torch.isinf(group_max), torch.zeros_like(group_max), group_max)
-    exp_scores = torch.exp(scores - group_max[index] + 1e-8)
-    denom = torch.zeros(num_groups, device=scores.device, dtype=scores.dtype).scatter_add(0, index, exp_scores)
-    return exp_scores / denom[index].clamp(min=1e-12)
+    exp_scores = torch.exp(scores - group_max.index_select(0, index) + 1e-8)
+    denom = torch.zeros(num_groups, device=scores.device, dtype=scores.dtype).index_add(0, index, exp_scores)
+    return exp_scores / denom.index_select(0, index).clamp(min=1e-12)
 
 def hadamard_exp_kernel(
     q_i: torch.Tensor,
