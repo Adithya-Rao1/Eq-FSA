@@ -83,7 +83,9 @@ def train_one(
 
     trainable = [p for p in model.parameters() if p.requires_grad]
     if trainable:
-        optimizer = torch.optim.AdamW(trainable, lr=config["lr"], weight_decay=1e-4)
+        optimizer = torch.optim.AdamW(
+            trainable, lr=config["lr"], weight_decay=1e-4, fused=(device.type == "cuda"),
+        )
         scheduler = None
         if config.get("lr_schedule", True):
             steps_per_epoch = max(len(train_loader), 1)
@@ -268,6 +270,8 @@ def main():
     config = vars(args)
     config["_device"] = detect_device(config["device"])
     print(f"Using device: {config['_device']}", flush=True)
+    if config["_device"].type == "cuda":
+        torch.set_float32_matmul_precision("high")
 
     if config["smoke_test"]:
         config["num_configs"] = 8

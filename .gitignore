@@ -15,3 +15,5 @@ CLAUDE.md
 *.bib
 *.csv
 *.png
+*.pdf
+/src/stage_1/lr_restructure/poster
