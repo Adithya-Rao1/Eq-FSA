@@ -15,6 +15,7 @@ KCAL_PER_MOL_TO_EV = 0.0433641
 EV_TO_MEV = 1000.0
 
 ATOMIC_NUMBER_VOCAB = 95  # DimeNet++'s fixed Embedding(95, ...) table; SchNet/NequIP/MACE all fine with real Z too
+MD17_ELEMENTS = [1, 6, 7, 8]  # H, C, N, O --> every element across all 10 rMD17 molecules (see MOLECULE_SMILES)
 
 
 class RawMD17(Dataset):
@@ -75,6 +76,21 @@ def loss_fn(energy, energy_target, forces, forces_target, lambda1: float, lambda
     return energy_term + force_term, energy_term, force_term
 
 
+class _DenseRadiusInteractionGraph(nn.Module):
+    def __init__(self, cutoff: float, max_num_neighbors: int = 32):
+        
+        super().__init__()
+        self.cutoff = cutoff
+        self.max_num_neighbors = max_num_neighbors
+
+    def forward(self, pos: torch.Tensor, batch: torch.Tensor):
+        from stage_1.experiments.neurreps.oversquashing.dimenet_baseline import radius_graph
+        edge_index = radius_graph(pos, r=self.cutoff, batch=batch, max_num_neighbors=self.max_num_neighbors)
+        row, col = edge_index
+        edge_weight = (pos[row] - pos[col]).norm(dim=-1)
+        return edge_index, edge_weight
+
+
 def build_schnet(config: dict) -> Tuple[nn.Module, ModelFn]:
     from torch_geometric.nn.models import SchNet
 
@@ -82,6 +98,7 @@ def build_schnet(config: dict) -> Tuple[nn.Module, ModelFn]:
         hidden_channels=config["hidden_dim"], num_filters=config["hidden_dim"],
         num_interactions=config["num_layers"], num_gaussians=50,
         cutoff=config["cutoff"], readout="add",
+        interaction_graph=_DenseRadiusInteractionGraph(cutoff=config["cutoff"]),
     )
 
     def model_fn(z, pos, batch):
@@ -205,41 +222,41 @@ def build_allegro(config: dict) -> Tuple[nn.Module, ModelFn]:
 
 def build_mace(config: dict) -> Tuple[nn.Module, ModelFn]:
     import numpy as np
-    import torch.nn.functional as F
-    from mace.modules import ScaleShiftMACE, interaction_classes
     from e3nn import o3
-    from stage_1.experiments.neurreps.oversquashing.dimenet_baseline import radius_graph
+    from mace.data import AtomicData, Configuration
+    from mace.modules import ScaleShiftMACE, interaction_classes
+    from mace.tools.torch_geometric.batch import Batch
+    from mace.tools.utils import AtomicNumberTable
 
-    atomic_numbers = list(range(1, ATOMIC_NUMBER_VOCAB))
+    z_table = AtomicNumberTable(MD17_ELEMENTS)
     model = ScaleShiftMACE(
         r_max=config["cutoff"], num_bessel=8, num_polynomial_cutoff=5,
         max_ell=2, interaction_cls=interaction_classes["RealAgnosticResidualInteractionBlock"],
         interaction_cls_first=interaction_classes["RealAgnosticInteractionBlock"],
-        num_interactions=config["num_layers"], num_elements=len(atomic_numbers),
+        num_interactions=config["num_layers"], num_elements=len(MD17_ELEMENTS),
         hidden_irreps=o3.Irreps(f"{config['hidden_dim']}x0e + {config['hidden_dim']}x1o"),
         MLP_irreps=o3.Irreps(f"{config['hidden_dim']}x0e"),
-        atomic_energies=np.zeros(len(atomic_numbers), dtype=np.float32),
+        atomic_energies=np.zeros(len(MD17_ELEMENTS), dtype=np.float32),
         avg_num_neighbors=config.get("avg_num_neighbors", 10.0),
-        atomic_numbers=atomic_numbers, correlation=3, gate=torch.nn.functional.silu,
+        atomic_numbers=MD17_ELEMENTS, correlation=3, gate=torch.nn.functional.silu,
         atomic_inter_scale=1.0, atomic_inter_shift=0.0,
     )
-    z_to_idx = {z: i for i, z in enumerate(atomic_numbers)}
+
+    def _graph_for(z_i: torch.Tensor, pos_i: torch.Tensor):
+        config_i = Configuration(
+            atomic_numbers=z_i.detach().cpu().numpy().astype(int),
+            positions=pos_i.detach().cpu().numpy().astype(np.float64),
+            properties={}, property_weights={},
+            cell=np.zeros((3, 3)), pbc=(False, False, False),
+        )
+        return AtomicData.from_config(config_i, z_table=z_table, cutoff=config["cutoff"])
 
     def model_fn(z, pos, batch):
-        row, col = radius_graph(pos, r=config["cutoff"], batch=batch, max_num_neighbors=64)
-        edge_index = torch.stack([row, col], dim=0)
-        node_idx = torch.tensor([z_to_idx[int(zi)] for zi in z], device=z.device)
-        node_attrs = F.one_hot(node_idx, num_classes=len(atomic_numbers)).to(pos.dtype)
-        shifts = torch.zeros(edge_index.shape[1], 3, device=pos.device)
-        out = model(
-            {
-                "positions": pos, "edge_index": edge_index, "shifts": shifts,
-                "node_attrs": node_attrs, "batch": batch,
-                "ptr": torch.cat([torch.zeros(1, dtype=torch.long, device=z.device),
-                                   torch.bincount(batch).cumsum(0)]),
-            },
-            training=model.training,
-        )
+        num_graphs = int(batch.max().item()) + 1
+        data_list = [_graph_for(z[batch == g], pos[batch == g]) for g in range(num_graphs)]
+        mace_batch = Batch.from_data_list(data_list).to(pos.device)
+        mace_batch.positions = pos
+        out = model(mace_batch.to_dict(), training=model.training, compute_force=False)
         return out["energy"]
 
     return model, model_fn
