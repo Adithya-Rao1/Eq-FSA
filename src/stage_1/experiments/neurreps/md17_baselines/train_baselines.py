@@ -194,10 +194,14 @@ def build_allegro(config: dict) -> Tuple[nn.Module, ModelFn]:
         backbone = AllegroModel(
             seed=0, model_dtype="float32",
             type_names=[f"Z{z}" for z in range(ATOMIC_NUMBER_VOCAB)],
-            r_max=config["cutoff"], num_layers=config["num_layers"], l_max=1, parity="o3_full",
+            r_max=config["cutoff"], num_layers=config["num_layers"], l_max=1, parity=True,
+            radial_chemical_embed={
+                "_target_": "allegro.nn.TwoBodyBesselScalarEmbed",
+                "num_bessels": 8, "bessel_trainable": False, "polynomial_cutoff_p": 6,
+            },
             num_scalar_features=config["hidden_dim"], num_tensor_features=config.get("num_tensor_features", 16),
             avg_num_neighbors=config.get("avg_num_neighbors", 10.0),
-            per_type_energy_scales=1.0, per_type_energy_shifts=0.0,
+            per_type_energy_scales=1.0, per_type_energy_shifts=0.0, do_derivatives=False,
         )
     finally:
         torch.set_default_dtype(prev_default_dtype)
