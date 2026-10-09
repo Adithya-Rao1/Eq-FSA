@@ -32,6 +32,17 @@ MOLECULE_SMILES: Dict[str, str] = {
 }
 
 
+_RMD17_URL_FIXED = "https://archive.materialscloud.org/api/records/pfffs-fff86/files/rmd17.tar.bz2/content"
+
+
+def get_pyg_md17_class():
+    from torch_geometric.datasets import MD17 as PyGMD17
+
+    if PyGMD17.revised_url != _RMD17_URL_FIXED:
+        PyGMD17.revised_url = _RMD17_URL_FIXED
+    return PyGMD17
+
+
 def _split_dir(root: str) -> str:
     return os.path.join(root, "raw", "rmd17", "splits")
 
@@ -61,7 +72,7 @@ class MD17Dataset(Dataset):
         if not 0 <= split_idx <= 4:
             raise ValueError(f"split_idx must be 0-4 (rMD17 ships 5 official splits), got {split_idx}")
 
-        from torch_geometric.datasets import MD17 as PyGMD17
+        PyGMD17 = get_pyg_md17_class()
 
         full = PyGMD17(root=root, name=f"revised {molecule}")
 

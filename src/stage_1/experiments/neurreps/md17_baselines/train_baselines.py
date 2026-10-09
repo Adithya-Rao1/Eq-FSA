@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
-from stage_1.md17_dataset import MOLECULE_SMILES, _read_split_indices
+from stage_1.md17_dataset import MOLECULE_SMILES, _read_split_indices, get_pyg_md17_class
 
 KCAL_PER_MOL_TO_EV = 0.0433641
 EV_TO_MEV = 1000.0
@@ -19,7 +19,7 @@ ATOMIC_NUMBER_VOCAB = 95  # DimeNet++'s fixed Embedding(95, ...) table; SchNet/N
 
 class RawMD17(Dataset):
     def __init__(self, molecule: str, root: str, split_idx: int, train: bool):
-        from torch_geometric.datasets import MD17 as PyGMD17
+        PyGMD17 = get_pyg_md17_class()
 
         full = PyGMD17(root=root, name=f"revised {molecule}")
         indices = _read_split_indices(root, split_idx, train)
