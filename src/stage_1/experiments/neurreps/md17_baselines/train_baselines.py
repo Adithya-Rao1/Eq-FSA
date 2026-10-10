@@ -9,6 +9,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
+torch.serialization.add_safe_globals([slice])
+
 from stage_1.md17_dataset import MOLECULE_SMILES, _read_split_indices, get_pyg_md17_class
 
 KCAL_PER_MOL_TO_EV = 0.0433641
