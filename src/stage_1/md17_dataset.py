@@ -63,6 +63,7 @@ class MD17Dataset(Dataset):
         train: bool,
         box_padding: float = 12.0,
         edge_cutoff: float = 5.0,
+        energy_shift: "float | None" = None,
     ):
         if molecule not in MOLECULE_SMILES:
             raise ValueError(
@@ -95,12 +96,20 @@ class MD17Dataset(Dataset):
         # NOTE: unlike SPICE's SMILES, MOLECULE_SMILES above carries no atom map, so structural-prior signal is weaker here than for SPICE until we get the true per-molecule atom-index permutation
         self._edge_feats = build_rdkit_edge_features(self.smiles, self._n_atoms)
 
+        if energy_shift is None:
+            energy_shift = float(
+                torch.tensor([float(d.energy) * KCAL_PER_MOL_TO_EV for d in self._data]).mean()
+            )
+        self.energy_shift = energy_shift
+
     def __len__(self) -> int:
         return len(self._data)
 
     def energy_force_stats(self, indices=None):
         idx = range(len(self._data)) if indices is None else indices
-        energies = torch.tensor([float(self._data[i].energy) * KCAL_PER_MOL_TO_EV for i in idx])
+        energies = torch.tensor(
+            [float(self._data[i].energy) * KCAL_PER_MOL_TO_EV - self.energy_shift for i in idx]
+        )
         force_sumsq = torch.tensor(
             [float((self._data[i].force * KCAL_PER_MOL_TO_EV).pow(2).sum()) for i in idx]
         )
@@ -112,7 +121,7 @@ class MD17Dataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, object]:
         d = self._data[idx]
         x = d.pos.float()
-        energy = float(d.energy) * KCAL_PER_MOL_TO_EV
+        energy = float(d.energy) * KCAL_PER_MOL_TO_EV - self.energy_shift
         forces = d.force.float() * KCAL_PER_MOL_TO_EV
 
         V = compute_molecular_box(x, self._box_padding, self._box_padding, self._edge_cutoff)

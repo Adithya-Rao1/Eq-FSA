@@ -19,22 +19,33 @@ MD17_ELEMENTS = [1, 6, 7, 8]  # H, C, N, O --> every element across all 10 rMD17
 
 
 class RawMD17(Dataset):
-    def __init__(self, molecule: str, root: str, split_idx: int, train: bool):
+    def __init__(self, molecule: str, root: str, split_idx: int, train: bool, energy_shift: "float | None" = None):
         PyGMD17 = get_pyg_md17_class()
 
         full = PyGMD17(root=root, name=f"revised {molecule}")
         indices = _read_split_indices(root, split_idx, train)
         self._data = [full[i] for i in indices]
 
+        if energy_shift is None:
+            energy_shift = float(
+                torch.tensor([float(d.energy) * KCAL_PER_MOL_TO_EV for d in self._data]).mean()
+            )
+        self.energy_shift = energy_shift
+
     def __len__(self) -> int:
         return len(self._data)
 
     def __getitem__(self, idx: int):
         d = self._data[idx]
-        return d.z, d.pos.float(), float(d.energy) * KCAL_PER_MOL_TO_EV, d.force.float() * KCAL_PER_MOL_TO_EV
+        return (
+            d.z, d.pos.float(), float(d.energy) * KCAL_PER_MOL_TO_EV - self.energy_shift,
+            d.force.float() * KCAL_PER_MOL_TO_EV,
+        )
 
     def energy_force_stats(self) -> Tuple[float, float, float]:
-        energies = torch.tensor([float(d.energy) * KCAL_PER_MOL_TO_EV for d in self._data])
+        energies = torch.tensor(
+            [float(d.energy) * KCAL_PER_MOL_TO_EV - self.energy_shift for d in self._data]
+        )
         n_atoms = self._data[0].z.shape[0]
         force_sumsq = torch.tensor(
             [float((d.force * KCAL_PER_MOL_TO_EV).pow(2).sum()) for d in self._data]
@@ -275,7 +286,10 @@ MODEL_BUILDERS = {
 def train_one(model_name: str, config: dict, device: torch.device, seed: int) -> dict:
     torch.manual_seed(seed)
     train_ds = RawMD17(config["molecule"], config["data_root"], config["split_idx"], train=True)
-    test_ds = RawMD17(config["molecule"], config["data_root"], config["split_idx"], train=False)
+    test_ds = RawMD17(
+        config["molecule"], config["data_root"], config["split_idx"], train=False,
+        energy_shift=train_ds.energy_shift,
+    )
     energy_mean, energy_std, force_rms = train_ds.energy_force_stats()
 
     train_loader = DataLoader(train_ds, batch_size=config["batch_size"], shuffle=True, collate_fn=raw_collate)

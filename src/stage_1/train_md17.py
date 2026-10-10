@@ -22,6 +22,7 @@ def build_dataloaders(config: dict, device: torch.device | None = None):
     val_ds = MD17Dataset(
         molecule=config["molecule"], root=config["data_root"], split_idx=config["split_idx"],
         train=False, box_padding=config["box_padding"], edge_cutoff=config["edge_cutoff"],
+        energy_shift=train_ds.energy_shift,
     )
     energy_mean, energy_std, force_rms = train_ds.energy_force_stats()
 
@@ -107,15 +108,11 @@ def run_training(config: dict, device: torch.device | None = None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--molecule", type=str, required=True,
-                         choices=["aspirin", "ethanol", "malonaldehyde", "benzene"])
-    parser.add_argument("--split-idx", type=int, default=0, choices=[0, 1, 2, 3, 4],
-                         help="Which of rMD17's 5 official splits to use")
-    parser.add_argument("--data-root", type=str, default="data/rmd17",
-                         help="torch_geometric.datasets.MD17 root -- auto-downloads rmd17.tar.bz2 here on first use")
+    parser.add_argument("--molecule", type=str, required=True,choices=["aspirin", "ethanol", "malonaldehyde", "benzene"])
+    parser.add_argument("--split-idx", type=int, default=0, choices=[0, 1, 2, 3, 4],)
+    parser.add_argument("--data-root", type=str, default="data/rmd17",)
     parser.add_argument("--ckpt-dir", type=str, default="stage_1/results_md17")
-    parser.add_argument("--csv-path", type=str, default=None,
-                         help="Loss/grad-norm CSV path (default: <ckpt-dir>/loss_log.csv)")
+    parser.add_argument("--csv-path", type=str, default=None,)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--n-epochs", type=int, default=200)
     parser.add_argument("--max-steps", type=int, default=None)
