@@ -242,10 +242,16 @@ def build_mace(config: dict) -> Tuple[nn.Module, ModelFn]:
     from e3nn import o3
     from mace.data import AtomicData, Configuration
     from mace.modules import ScaleShiftMACE, interaction_classes
+    from mace.modules.wrapper_ops import CuEquivarianceConfig
     from mace.tools.torch_geometric.batch import Batch
     from mace.tools.utils import AtomicNumberTable
 
     z_table = AtomicNumberTable(MD17_ELEMENTS)
+    device = config.get("_device", torch.device("cpu"))
+    cueq_config = CuEquivarianceConfig(
+        enabled=True, layout="ir_mul", group="O3_e3nn", optimize_all=True,
+        conv_fusion=(device.type == "cuda"),
+    )
     model = ScaleShiftMACE(
         r_max=config["cutoff"], num_bessel=8, num_polynomial_cutoff=5,
         max_ell=2, interaction_cls=interaction_classes["RealAgnosticResidualInteractionBlock"],
@@ -256,7 +262,7 @@ def build_mace(config: dict) -> Tuple[nn.Module, ModelFn]:
         atomic_energies=np.zeros(len(MD17_ELEMENTS), dtype=np.float32),
         avg_num_neighbors=config.get("avg_num_neighbors", 10.0),
         atomic_numbers=MD17_ELEMENTS, correlation=3, gate=torch.nn.functional.silu,
-        atomic_inter_scale=1.0, atomic_inter_shift=0.0,
+        atomic_inter_scale=1.0, atomic_inter_shift=0.0, cueq_config=cueq_config,
     )
 
     def _graph_for(z_i: torch.Tensor, pos_i: torch.Tensor):
@@ -287,6 +293,7 @@ MODEL_BUILDERS = {
 
 def train_one(model_name: str, config: dict, device: torch.device, seed: int) -> dict:
     torch.manual_seed(seed)
+    config["_device"] = device  
     train_ds = RawMD17(config["molecule"], config["data_root"], config["split_idx"], train=True)
     test_ds = RawMD17(
         config["molecule"], config["data_root"], config["split_idx"], train=False,
