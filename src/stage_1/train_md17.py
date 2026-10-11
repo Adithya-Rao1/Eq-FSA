@@ -10,8 +10,10 @@ from torch.utils.data import DataLoader
 
 from stage_1.md17_dataset import MD17Dataset
 from stage_1.spice_dataset import spice_collate_fn
-from stage_1.train_spice import SPICEEnergyForceModel, SPICETrainer, detect_device
+from stage_1.train_spice import SPICEEnergyForceModel, SPICETrainer, compute_energy_and_forces, detect_device
 from utils.se3_utils import RadialNetwork
+
+EV_TO_MEV = 1000.0
 
 
 def build_dataloaders(config: dict, device: torch.device | None = None):
@@ -45,8 +47,47 @@ def build_dataloaders(config: dict, device: torch.device | None = None):
     return train_loader, val_loader, energy_mean, energy_std, force_rms
 
 
+def evaluate_mae(trainer: SPICETrainer, config: dict) -> dict:
+    model = trainer.model
+    device = trainer.device
+    model.eval()
+    total_e_ae, total_f_ae, total_graphs, total_f_components = 0.0, 0.0, 0, 0
+    with torch.enable_grad(): 
+        for batch in trainer.val_loader:
+            batch = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in batch.items()}
+            U, F = compute_energy_and_forces(
+                model, batch["all_solute_x"], batch["all_solute_types"],
+                batch["all_solute_masses"], batch["all_solute_mask"], batch["V"],
+                batch["mol_props"], batch["all_solute_edge_feats"],
+            )
+            mask = batch["all_solute_mask"].bool()
+            total_e_ae += (U.detach() - batch["energy"]).abs().sum().item()
+            total_f_ae += (F.detach() - batch["solute_forces"])[mask].abs().sum().item()
+            total_graphs += U.shape[0]
+            total_f_components += int(mask.sum().item()) * 3
+    model.train()
+
+    energy_mae_mev = (total_e_ae / total_graphs) * EV_TO_MEV
+    force_mae_mev = (total_f_ae / total_f_components) * EV_TO_MEV
+
+    csv_path = os.path.join(config["ckpt_dir"], "results.csv")
+    write_header = not os.path.exists(csv_path)
+    with open(csv_path, "a", newline="") as fcsv:
+        writer = csv.writer(fcsv)
+        if write_header:
+            writer.writerow(["model", "molecule", "split_idx", "seed", "energy_mae_mev", "force_mae_mev_per_angstrom"])
+        writer.writerow(["eqfsa", config["molecule"], config["split_idx"], config.get("seed", 0), energy_mae_mev, force_mae_mev])
+    print(
+        f"model=eqfsa molecule={config['molecule']} split={config['split_idx']} "
+        f"seed={config.get('seed', 0)} energy_mae={energy_mae_mev:.2f}meV "
+        f"force_mae={force_mae_mev:.2f}meV/A", flush=True,
+    )
+    return {"energy_mae_mev": energy_mae_mev, "force_mae_mev_per_angstrom": force_mae_mev}
+
+
 def run_training(config: dict, device: torch.device | None = None):
     device = device or detect_device(config.get("device"))
+    torch.manual_seed(config.get("seed", 0))
     if device.type == "cuda":
         torch.set_float32_matmul_precision("high")
     train_loader, val_loader, energy_mean, energy_std, force_rms = build_dataloaders(config, device=device)
@@ -100,6 +141,7 @@ def run_training(config: dict, device: torch.device | None = None):
                 best_val_loss = min(best_val_loss, val_loss)
                 if (epoch + 1) % config.get("save_every", 1) == 0:
                     trainer.save_checkpoint(epoch, val_loss, is_best)
+        evaluate_mae(trainer, config)
     finally:
         trainer.close()
 
@@ -149,6 +191,7 @@ def main():
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--save-every", type=int, default=10)
     parser.add_argument("--val-every", type=int, default=5)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--diagnostics", action="store_true")
