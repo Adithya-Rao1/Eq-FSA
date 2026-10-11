@@ -15,7 +15,8 @@ from utils.se3_utils import (
 
 MACE_OFF_MODEL_SIZE = "small"
 MACE_OFF_DTYPE = "float32"
-CHARGE_TO_ELEMENT = {1.0: 1, -1.0: 8}  # +1e -> H (Z=1), -1e -> O (Z=8)
+CHARGE_TO_ELEMENT = {1.0: 1, -1.0: 8}  # +1e -> H (Z=1), -1e -> O (Z=8); frozen MACE-OFF needs real elements
+CHARGE_TO_ELEMENT_SCRATCH = {1.0: 1, -1.0: 2}
 
 
 def load_frozen_mace_off(model_size: str = MACE_OFF_MODEL_SIZE, device: str = "cpu", default_dtype: str = MACE_OFF_DTYPE):
@@ -39,14 +40,24 @@ def build_z_table(mace_model):
     return AtomicNumberTable(mace_model.atomic_numbers.tolist())
 
 
-def configuration_to_atomic_data(positions: torch.Tensor, types: torch.Tensor, box: float, z_table, cutoff: float):
+def build_scratch_z_table():
+    from mace.tools.utils import AtomicNumberTable
+
+    return AtomicNumberTable(sorted(set(CHARGE_TO_ELEMENT_SCRATCH.values())))
+
+
+def configuration_to_atomic_data(
+    positions: torch.Tensor, types: torch.Tensor, box: float, z_table, cutoff: float,
+    charge_to_element: "dict | None" = None,
+):
     import numpy as np
     from mace.data import AtomicData, Configuration
 
     from stage_1.experiments.neurreps.lr_sr.dataset import POSITIVE_TYPE_IDX
 
+    charge_to_element = charge_to_element if charge_to_element is not None else CHARGE_TO_ELEMENT
     atomic_numbers = np.array(
-        [CHARGE_TO_ELEMENT[1.0] if int(t.item()) == POSITIVE_TYPE_IDX else CHARGE_TO_ELEMENT[-1.0] for t in types],
+        [charge_to_element[1.0] if int(t.item()) == POSITIVE_TYPE_IDX else charge_to_element[-1.0] for t in types],
         dtype=int,
     )
     config = Configuration(
@@ -63,6 +74,7 @@ def configuration_to_atomic_data(positions: torch.Tensor, types: torch.Tensor, b
 def batch_configurations(
     positions_batch: torch.Tensor, types_batch: torch.Tensor, boxes, z_table, cutoff: float, device,
     idx_batch: "torch.Tensor | None" = None, graph_cache: "dict | None" = None,
+    charge_to_element: "dict | None" = None,
 ):
     from mace.tools.torch_geometric.batch import Batch
 
@@ -72,12 +84,76 @@ def batch_configurations(
         if cache_key is not None and cache_key in graph_cache:
             data_list.append(graph_cache[cache_key])
         else:
-            data = configuration_to_atomic_data(positions_batch[b], types_batch[b], float(boxes[b]), z_table, cutoff)
+            data = configuration_to_atomic_data(
+                positions_batch[b], types_batch[b], float(boxes[b]), z_table, cutoff,
+                charge_to_element=charge_to_element,
+            )
             if cache_key is not None:
                 graph_cache[cache_key] = data
             data_list.append(data)
     batch = Batch.from_data_list(data_list)
     return batch.to(device)
+
+
+def compute_avg_num_neighbors(
+    dataset, z_table, cutoff: float, charge_to_element: dict, num_samples: int = 50,
+) -> float:
+    import numpy as np
+
+    n = min(num_samples, len(dataset))
+    counts = []
+    for i in range(n):
+        cfg = dataset.configs[i]
+        data = configuration_to_atomic_data(
+            cfg["x"], cfg["types"], float(cfg["box"]), z_table, cutoff, charge_to_element=charge_to_element,
+        )
+        counts.append(data.edge_index.shape[1] / data.positions.shape[0])
+    return float(np.mean(counts))
+
+
+def build_scratch_mace(z_table, config: dict, device):
+    import numpy as np
+    from e3nn import o3
+    from mace import modules
+
+    num_elements = len(z_table)
+    feature_dim = config["feature_dim"]
+    hidden_irreps = o3.Irreps(f"{feature_dim}x0e + {feature_dim}x1o + {feature_dim}x2e")
+    model = modules.ScaleShiftMACE(
+        r_max=config.get("mace_r_max", 5.0),
+        num_bessel=8,
+        num_polynomial_cutoff=5,
+        max_ell=2,
+        interaction_cls=modules.interaction_classes["RealAgnosticResidualInteractionBlock"],
+        interaction_cls_first=modules.interaction_classes["RealAgnosticInteractionBlock"],
+        num_interactions=config.get("mace_num_interactions", 2),
+        num_elements=num_elements,
+        hidden_irreps=hidden_irreps,
+        edge_irreps=None,
+        MLP_irreps=o3.Irreps("16x0e"),
+        atomic_energies=np.zeros(num_elements),
+        apply_cutoff=True,
+        avg_num_neighbors=config["avg_num_neighbors"],
+        atomic_numbers=z_table.zs,
+        use_reduced_cg=False,
+        use_so3=False,
+        use_edge_irreps_first=False,
+        cueq_config=None,
+        correlation=config.get("mace_correlation", 3),
+        gate=modules.gate_dict["silu"],
+        pair_repulsion=False,
+        distance_transform="None",
+        radial_MLP=[config["hidden_dim"]] * 3,
+        radial_type="bessel",
+        atomic_inter_scale=1.0,
+        atomic_inter_shift=0.0,
+        heads=None,
+        embedding_specs=None,
+        use_embedding_readout=False,
+        use_last_readout_only=False,
+        use_agnostic_product=False,
+    )
+    return model.to(device=device, dtype=torch.get_default_dtype())
 
 
 class ChargeReadoutEmbedding(nn.Module):
@@ -97,6 +173,7 @@ class MaceLRModel(nn.Module):
         max_degree: int = 2, num_broadcast_heads: int = 4, num_lr_layers: int = 1,
         rbf_num_basis: int = 12, rbf_min: float = 0.3, rbf_cutoff: float = 25.0,
         lr_sigma: "float | None" = None, alpha_floor: float = 1e-4,
+        from_scratch: bool = False, charge_to_element: "dict | None" = None,
     ):
         super().__init__()
         assert variant in ("none", "sr_only", "eqfsa_lr", "rsa")
@@ -104,16 +181,24 @@ class MaceLRModel(nn.Module):
         self.variant = variant
         self.n_max = n_max
         self.num_lr_layers = num_lr_layers
+        self.from_scratch = from_scratch
+        self.charge_to_element = charge_to_element if charge_to_element is not None else CHARGE_TO_ELEMENT
         self._graph_cache: dict = {}
-        for p in self.mace_model.parameters():
-            p.requires_grad_(False)
+        if from_scratch:
+            for p in self.mace_model.parameters():
+                p.requires_grad_(True)
+        else:
+            for p in self.mace_model.parameters():
+                p.requires_grad_(False)
         if variant == "none":
             return
         if variant == "sr_only":
-            unfreeze_readouts(self.mace_model)
+            if not from_scratch:
+                unfreeze_readouts(self.mace_model)
             return
 
-        unfreeze_readouts(self.mace_model)
+        if not from_scratch:
+            unfreeze_readouts(self.mace_model)
         self.embed = ChargeReadoutEmbedding(feature_dim, hidden_dim)
         if variant == "eqfsa_lr":
             self.num_master_nodes = num_master_nodes
@@ -181,7 +266,7 @@ class MaceLRModel(nn.Module):
                 device, idx=None):
         mace_batch = batch_configurations(
             positions_batch.detach(), types_batch, boxes, z_table, cutoff, device,
-            idx_batch=idx, graph_cache=self._graph_cache,
+            idx_batch=idx, graph_cache=self._graph_cache, charge_to_element=self.charge_to_element,
         )
         N = positions_batch.shape[1]
         mace_batch.positions = positions_batch.reshape(-1, 3)

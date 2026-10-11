@@ -13,7 +13,8 @@ from stage_1.experiments.neurreps.lr_sr.dataset import (
     LRSRDataset, N_ATOMS, POSITIVE_TYPE_IDX, lr_sr_collate_fn,
 )
 from stage_1.experiments.neurreps.lr_sr.mace_lr_model import (
-    MACE_OFF_DTYPE, MaceLRModel, build_z_table, compute_energy_and_forces, load_frozen_mace_off,
+    CHARGE_TO_ELEMENT_SCRATCH, MACE_OFF_DTYPE, MaceLRModel, build_scratch_mace, build_scratch_z_table,
+    build_z_table, compute_avg_num_neighbors, compute_energy_and_forces, load_frozen_mace_off,
 )
 
 def detect_device(requested: str | None) -> torch.device:
@@ -37,10 +38,18 @@ def energy_force_stats(dataset: LRSRDataset, indices) -> tuple[float, float, flo
     return energy_mean, energy_std, force_rms
 
 
-def build_model(variant: str, mace_model, mace_init_state: dict, config: dict, device) -> MaceLRModel:
-    mace_model.load_state_dict(mace_init_state)
-    for p in mace_model.parameters():
-        p.requires_grad_(False)
+def build_model(
+    variant: str, mace_model, mace_init_state: dict, config: dict, device,
+    from_scratch: bool = False, z_table=None,
+) -> MaceLRModel:
+    if from_scratch:
+        mace_model = build_scratch_mace(z_table, config, device)
+        charge_to_element = CHARGE_TO_ELEMENT_SCRATCH
+    else:
+        mace_model.load_state_dict(mace_init_state)
+        for p in mace_model.parameters():
+            p.requires_grad_(False)
+        charge_to_element = None  # MaceLRModel defaults this to CHARGE_TO_ELEMENT
     return MaceLRModel(
         mace_model, variant, feature_dim=config["feature_dim"], hidden_dim=config["hidden_dim"],
         n_max=config["n_max"], num_master_nodes=config["num_master_nodes"], rsa_sigma=config["rsa_sigma"],
@@ -48,6 +57,7 @@ def build_model(variant: str, mace_model, mace_init_state: dict, config: dict, d
         num_broadcast_heads=config["num_broadcast_heads"],
         rbf_num_basis=config["rbf_num_basis"], rbf_min=config["rbf_min"], rbf_cutoff=config["rbf_cutoff"],
         lr_sigma=config.get("lr_sigma"), alpha_floor=config["alpha_floor"],
+        from_scratch=from_scratch, charge_to_element=charge_to_element,
     ).to(device)
 
 
@@ -78,7 +88,10 @@ def train_one(
     energy_mean, energy_std, force_rms = energy_force_stats(dataset, train_ds.indices)
 
     torch.manual_seed(seed)
-    model = build_model(variant, mace_model, mace_init_state, config, device)
+    model = build_model(
+        variant, mace_model, mace_init_state, config, device,
+        from_scratch=config.get("mace_from_scratch", False), z_table=z_table,
+    )
     cutoff = float(model.mace_model.r_max)
 
     trainable = [p for p in model.parameters() if p.requires_grad]
@@ -237,7 +250,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--variants", type=str, nargs="+", default=["sr_only", "eqfsa_lr", "rsa"],
                          help="'none' (frozen zero-shot MACE-OFF) is available but omitted")
-    parser.add_argument("--mace-model-size", type=str, default="small")
+    parser.add_argument("--mace-model-size", type=str, default="small", help="[frozen backbone only]")
+    parser.add_argument("--mace-from-scratch", action="store_true",
+                         help="Build a small MACE from random init instead of loading frozen "
+                              "pretrained MACE-OFF; the whole backbone trains, not just readouts")
+    parser.add_argument("--mace-r-max", type=float, default=5.0, help="[--mace-from-scratch only]")
+    parser.add_argument("--mace-num-interactions", type=int, default=2, help="[--mace-from-scratch only]")
+    parser.add_argument("--mace-correlation", type=int, default=3, help="[--mace-from-scratch only]")
+    parser.add_argument("--avg-num-neighbors-samples", type=int, default=50,
+                         help="[--mace-from-scratch only] configs sampled to estimate "
+                              "avg_num_neighbors before model construction")
     parser.add_argument("--num-configs", type=int, default=2000)
     parser.add_argument("--n-max", type=int, default=2)
     parser.add_argument("--num-master-nodes", type=int, default=4)
@@ -290,13 +312,30 @@ def main():
         config["num_configs"] = 8
         config["epochs"] = 2
         config["num_realizations"] = 1
+        config["avg_num_neighbors_samples"] = min(config["avg_num_neighbors_samples"], 4)
 
     torch.set_default_dtype(torch.float32 if MACE_OFF_DTYPE == "float32" else torch.float64)
 
-    print(f"Loading frozen MACE-OFF ({config['mace_model_size']})...", flush=True)
-    mace_model = load_frozen_mace_off(config["mace_model_size"], device=str(config["_device"]), default_dtype=MACE_OFF_DTYPE)
-    mace_init_state = copy.deepcopy(mace_model.state_dict())
-    z_table = build_z_table(mace_model)
+    if config["mace_from_scratch"]:
+        print("Building MACE from scratch (no pretrained weights)...", flush=True)
+        z_table = build_scratch_z_table()
+        mace_model, mace_init_state = None, None
+        _t0 = time.time()
+        probe_dataset = LRSRDataset(config["avg_num_neighbors_samples"], seed=config["seed"])
+        config["avg_num_neighbors"] = compute_avg_num_neighbors(
+            probe_dataset, z_table, config["mace_r_max"], CHARGE_TO_ELEMENT_SCRATCH,
+            num_samples=config["avg_num_neighbors_samples"],
+        )
+        print(f"  avg_num_neighbors={config['avg_num_neighbors']:.3f} "
+              f"(from {config['avg_num_neighbors_samples']} sampled configs, "
+              f"r_max={config['mace_r_max']}, {time.time() - _t0:.1f}s)", flush=True)
+    else:
+        print(f"Loading frozen MACE-OFF ({config['mace_model_size']})...", flush=True)
+        mace_model = load_frozen_mace_off(
+            config["mace_model_size"], device=str(config["_device"]), default_dtype=MACE_OFF_DTYPE,
+        )
+        mace_init_state = copy.deepcopy(mace_model.state_dict())
+        z_table = build_z_table(mace_model)
 
     os.makedirs(config["outdir"], exist_ok=True)
     csv_path = os.path.join(config["outdir"], "results.csv")
