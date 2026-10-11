@@ -59,6 +59,103 @@ def _generate_positions(generator: torch.Generator) -> tuple[torch.Tensor, float
     )
 
 
+def _relax_batch(positions: torch.Tensor, boxes: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    B = positions.shape[0]
+    positions = positions.clone().requires_grad_(True)
+    optimizer = torch.optim.Adam([positions], lr=RELAXATION_LR)
+    self_mask = torch.eye(N_ATOMS, dtype=torch.double).unsqueeze(0) * 1e3 
+    boxes_nnn = boxes.view(B, 1, 1, 1)
+    boxes_n11 = boxes.view(B, 1, 1)
+
+    converged = torch.zeros(B, dtype=torch.bool)
+    converged_positions = torch.zeros_like(positions)
+
+    for _ in range(MAX_RELAXATION_ITERS):
+        optimizer.zero_grad()
+        d = positions.unsqueeze(1) - positions.unsqueeze(2)             
+        d = d - boxes_nnn * torch.round(d.detach() / boxes_nnn)         
+        r = d.norm(dim=-1) + self_mask                                  
+        violation = (MIN_SEPARATION - r).clamp(min=0.0)
+        per_sample_loss = (violation ** 2).sum(dim=(1, 2)) / 2         
+
+        newly_converged = (per_sample_loss.detach() < RELAXATION_LOSS_TOL) & (~converged)
+        if newly_converged.any():
+            converged_positions[newly_converged] = positions.detach()[newly_converged]
+            converged = converged | newly_converged
+        if converged.all():
+            break
+
+        loss = per_sample_loss.sum()
+        loss.backward()
+        optimizer.step()
+        with torch.no_grad():
+            positions.data = positions.data % boxes_n11
+
+    return converged_positions, converged
+
+
+def generate_configurations_batch(seed: int, batch_size: int) -> List[Dict[str, torch.Tensor]]:
+    generators = [torch.Generator().manual_seed(seed + i) for i in range(batch_size)]
+    boxes = torch.empty(batch_size, dtype=torch.double)
+    positions = torch.empty(batch_size, N_ATOMS, 3, dtype=torch.double)
+    for i, gen in enumerate(generators):
+        box = BOX_MIN + (BOX_MAX - BOX_MIN) * torch.rand(1, generator=gen).item()
+        boxes[i] = box
+        positions[i] = torch.rand(N_ATOMS, 3, generator=gen, dtype=torch.double) * box
+
+    final_positions = torch.zeros_like(positions)
+    final_boxes = boxes.clone()
+    remaining = torch.arange(batch_size)
+
+    for _attempt in range(MAX_CONFIG_RESTARTS):
+        relaxed, converged = _relax_batch(positions[remaining], boxes[remaining])
+        done_local = remaining[converged]
+        final_positions[done_local] = relaxed[converged]
+        final_boxes[done_local] = boxes[remaining][converged]
+        remaining = remaining[~converged]
+        if remaining.numel() == 0:
+            break
+        for idx in remaining.tolist():
+            gen = generators[idx]
+            box = BOX_MIN + (BOX_MAX - BOX_MIN) * torch.rand(1, generator=gen).item()
+            boxes[idx] = box
+            positions[idx] = torch.rand(N_ATOMS, 3, generator=gen, dtype=torch.double) * box
+    else:
+        if remaining.numel() > 0:
+            raise RuntimeError(
+                f"Failed to relax {remaining.numel()} config(s) after {MAX_CONFIG_RESTARTS} "
+                f"restarts -- MIN_SEPARATION may be too large for this box/atom-count density"
+            )
+
+    configs = []
+    for i in range(batch_size):
+        box = float(final_boxes[i])
+        pos = final_positions[i]
+        charges = torch.cat([
+            torch.ones(N_POSITIVE, dtype=torch.double), -torch.ones(N_NEGATIVE, dtype=torch.double),
+        ])
+        perm = torch.randperm(N_ATOMS, generator=generators[i])
+        charges = charges[perm]
+        types = torch.where(charges > 0, POSITIVE_TYPE_IDX, NEGATIVE_TYPE_IDX).long()
+
+        V = torch.eye(3, dtype=torch.double) * box
+        pos_b, charges_b, V_b = pos.unsqueeze(0), charges.unsqueeze(0), V.unsqueeze(0)
+        energy, forces = compute_energy_and_forces(pos_b, charges_b, V_b)
+
+        mol_props = mol_props_from_atom_counts(N_POSITIVE, N_NEGATIVE).double()
+
+        configs.append({
+            "x": pos.float(),
+            "types": types,
+            "V": V.float(),
+            "energy": energy.squeeze(0).float(),
+            "forces": forces.squeeze(0).float(),
+            "mol_props": mol_props.float(),
+            "box": box,
+        })
+    return configs
+
+
 def generate_configuration(seed: int) -> Dict[str, torch.Tensor]:
     generator = torch.Generator().manual_seed(seed)
     positions, box = _generate_positions(generator)
@@ -88,8 +185,13 @@ def generate_configuration(seed: int) -> Dict[str, torch.Tensor]:
 
 
 class LRSRDataset(Dataset):
-    def __init__(self, num_configs: int, seed: int = 0):
-        self.configs = [generate_configuration(seed=seed + i) for i in range(num_configs)]
+    def __init__(self, num_configs: int, seed: int = 0, relax_batch_size: int = 64):
+        self.configs: List[Dict[str, torch.Tensor]] = []
+        start = 0
+        while start < num_configs:
+            chunk = min(relax_batch_size, num_configs - start)
+            self.configs.extend(generate_configurations_batch(seed=seed + start, batch_size=chunk))
+            start += chunk
 
     def __len__(self) -> int:
         return len(self.configs)
