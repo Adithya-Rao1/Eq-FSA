@@ -152,6 +152,7 @@ def train_one(
 
     model.eval()
     total_energy_ae, total_force_ae, total_n_configs, total_n_force_components = 0.0, 0.0, 0, 0
+    U_all, energy_target_all, F_pred_all, force_target_all = [], [], [], []
     for batch in val_loader:
         positions = batch["x"].to(device, dtype=torch.get_default_dtype())
         types = batch["types"]
@@ -166,14 +167,24 @@ def train_one(
         total_force_ae += (F_pred - force_target).abs().sum().item()
         total_n_configs += U.shape[0]
         total_n_force_components += F_pred.numel()
+        U_all.append(U); energy_target_all.append(energy_target)
+        F_pred_all.append(F_pred); force_target_all.append(force_target)
 
     energy_mae_mev_per_atom = (total_energy_ae / max(1, total_n_configs) / N_ATOMS) * 1000.0
     force_mae_mev = (total_force_ae / max(1, total_n_force_components)) * 1000.0
     n_trainable = sum(p.numel() for p in trainable) if trainable else 0
 
+    U_cat, energy_target_cat = torch.cat(U_all), torch.cat(energy_target_all)
+    F_pred_cat, force_target_cat = torch.cat(F_pred_all), torch.cat(force_target_all)
+    energy_nmse = (((U_cat - energy_target_cat) ** 2).mean()
+                   / energy_target_cat.var().clamp(min=1e-12)).item()
+    force_nmse = (((F_pred_cat - force_target_cat) ** 2).mean()
+                  / force_target_cat.var().clamp(min=1e-12)).item()
+
     return {
         "variant": variant, "energy_mae_mev_per_atom": energy_mae_mev_per_atom,
-        "force_mae_mev": force_mae_mev, "n_trainable_params": n_trainable,
+        "force_mae_mev": force_mae_mev, "energy_nmse": energy_nmse, "force_nmse": force_nmse,
+        "n_trainable_params": n_trainable,
     }
 
 
@@ -191,7 +202,7 @@ def run_variant(
 ) -> dict:
     base_seed = config["seed"]
     num_realizations = 1 if variant == "none" else config["num_realizations"]
-    keys = ["energy_mae_mev_per_atom", "force_mae_mev", "n_trainable_params"]
+    keys = ["energy_mae_mev_per_atom", "force_mae_mev", "energy_nmse", "force_nmse", "n_trainable_params"]
     per_realization = {k: [] for k in keys}
     for i in range(num_realizations):
         seed = base_seed + i * 7919
@@ -211,7 +222,9 @@ def run_variant(
             os.fsync(raw_file.fileno())
             print(f"  [{variant}] realization {i+1}/{num_realizations} (seed={seed}) done: "
                   f"energy_mae={result['energy_mae_mev_per_atom']:.4f} meV/atom  "
-                  f"force_mae={result['force_mae_mev']:.4f} meV/A  ({realization_time_s:.1f}s)", flush=True)
+                  f"force_mae={result['force_mae_mev']:.4f} meV/A  "
+                  f"energy_nmse={result['energy_nmse']:.4f}  force_nmse={result['force_nmse']:.4f}  "
+                  f"({realization_time_s:.1f}s)", flush=True)
     row = {"variant": variant, "num_realizations": num_realizations}
     for k in keys:
         mean, std = _mean_std(per_realization[k])
@@ -290,7 +303,7 @@ def main():
     raw_csv_path = os.path.join(config["outdir"], "results_raw.csv")
     raw_fieldnames = [
         "variant", "realization", "seed", "train_time_s",
-        "energy_mae_mev_per_atom", "force_mae_mev", "n_trainable_params",
+        "energy_mae_mev_per_atom", "force_mae_mev", "energy_nmse", "force_nmse", "n_trainable_params",
     ]
 
     rows = []
@@ -310,6 +323,8 @@ def main():
             print(
                 f"  energy_mae={result['energy_mae_mev_per_atom']:.4f}+/-{result['energy_mae_mev_per_atom_std']:.4f} meV/atom  "
                 f"force_mae={result['force_mae_mev']:.4f}+/-{result['force_mae_mev_std']:.4f} meV/A  "
+                f"energy_nmse={result['energy_nmse']:.4f}+/-{result['energy_nmse_std']:.4f}  "
+                f"force_nmse={result['force_nmse']:.4f}+/-{result['force_nmse_std']:.4f}  "
                 f"({result['train_time_s']:.1f}s)",
                 flush=True,
             )
