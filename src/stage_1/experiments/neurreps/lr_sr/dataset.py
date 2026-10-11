@@ -61,13 +61,14 @@ def _generate_positions(generator: torch.Generator) -> tuple[torch.Tensor, float
 
 def _relax_batch(positions: torch.Tensor, boxes: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     B = positions.shape[0]
+    device = positions.device
     positions = positions.clone().requires_grad_(True)
     optimizer = torch.optim.Adam([positions], lr=RELAXATION_LR)
-    self_mask = torch.eye(N_ATOMS, dtype=torch.double).unsqueeze(0) * 1e3 
+    self_mask = torch.eye(N_ATOMS, dtype=torch.double, device=device).unsqueeze(0) * 1e3
     boxes_nnn = boxes.view(B, 1, 1, 1)
     boxes_n11 = boxes.view(B, 1, 1)
 
-    converged = torch.zeros(B, dtype=torch.bool)
+    converged = torch.zeros(B, dtype=torch.bool, device=device)
     converged_positions = torch.zeros_like(positions)
 
     for _ in range(MAX_RELAXATION_ITERS):
@@ -94,7 +95,9 @@ def _relax_batch(positions: torch.Tensor, boxes: torch.Tensor) -> tuple[torch.Te
     return converged_positions, converged
 
 
-def generate_configurations_batch(seed: int, batch_size: int) -> List[Dict[str, torch.Tensor]]:
+def generate_configurations_batch(
+    seed: int, batch_size: int, device: "torch.device | str | None" = None,
+) -> List[Dict[str, torch.Tensor]]:
     generators = [torch.Generator().manual_seed(seed + i) for i in range(batch_size)]
     boxes = torch.empty(batch_size, dtype=torch.double)
     positions = torch.empty(batch_size, N_ATOMS, 3, dtype=torch.double)
@@ -108,7 +111,11 @@ def generate_configurations_batch(seed: int, batch_size: int) -> List[Dict[str, 
     remaining = torch.arange(batch_size)
 
     for _attempt in range(MAX_CONFIG_RESTARTS):
-        relaxed, converged = _relax_batch(positions[remaining], boxes[remaining])
+        pos_in, box_in = positions[remaining], boxes[remaining]
+        if device is not None:
+            pos_in, box_in = pos_in.to(device), box_in.to(device)
+        relaxed, converged = _relax_batch(pos_in, box_in)
+        relaxed, converged = relaxed.cpu(), converged.cpu()
         done_local = remaining[converged]
         final_positions[done_local] = relaxed[converged]
         final_boxes[done_local] = boxes[remaining][converged]
@@ -185,12 +192,17 @@ def generate_configuration(seed: int) -> Dict[str, torch.Tensor]:
 
 
 class LRSRDataset(Dataset):
-    def __init__(self, num_configs: int, seed: int = 0, relax_batch_size: int = 64):
+    def __init__(
+        self, num_configs: int, seed: int = 0, relax_batch_size: int = 64,
+        device: "torch.device | str | None" = None,
+    ):
         self.configs: List[Dict[str, torch.Tensor]] = []
         start = 0
         while start < num_configs:
             chunk = min(relax_batch_size, num_configs - start)
-            self.configs.extend(generate_configurations_batch(seed=seed + start, batch_size=chunk))
+            self.configs.extend(
+                generate_configurations_batch(seed=seed + start, batch_size=chunk, device=device)
+            )
             start += chunk
 
     def __len__(self) -> int:

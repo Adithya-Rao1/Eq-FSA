@@ -72,7 +72,10 @@ def train_one(
         dataset = dataset_cache[cache_key]
     else:
         _t_dataset0 = time.time()
-        dataset = LRSRDataset(config["num_configs"], seed=seed)
+        dataset = LRSRDataset(
+            config["num_configs"], seed=seed, relax_batch_size=config["relax_batch_size"],
+            device=device,
+        )
         if config.get("log_every", 0):
             print(f"  [{variant} seed={seed}] LRSRDataset generation (position relaxation): "
                   f"{time.time() - _t_dataset0:.1f}s for {config['num_configs']} configs", flush=True)
@@ -248,35 +251,24 @@ def run_variant(
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--variants", type=str, nargs="+", default=["sr_only", "eqfsa_lr", "rsa"],
-                         help="'none' (frozen zero-shot MACE-OFF) is available but omitted")
+    parser.add_argument("--variants", type=str, nargs="+", default=["sr_only", "eqfsa_lr", "rsa"],)
     parser.add_argument("--mace-model-size", type=str, default="small", help="[frozen backbone only]")
-    parser.add_argument("--mace-from-scratch", action="store_true",
-                         help="Build a small MACE from random init instead of loading frozen "
-                              "pretrained MACE-OFF; the whole backbone trains, not just readouts")
+    parser.add_argument("--mace-from-scratch", action="store_true",)
     parser.add_argument("--mace-r-max", type=float, default=5.0, help="[--mace-from-scratch only]")
     parser.add_argument("--mace-num-interactions", type=int, default=2, help="[--mace-from-scratch only]")
     parser.add_argument("--mace-correlation", type=int, default=3, help="[--mace-from-scratch only]")
-    parser.add_argument("--avg-num-neighbors-samples", type=int, default=50,
-                         help="[--mace-from-scratch only] configs sampled to estimate "
-                              "avg_num_neighbors before model construction")
+    parser.add_argument("--avg-num-neighbors-samples", type=int, default=50,)
+    parser.add_argument("--relax-batch-size", type=int, default=64,)
     parser.add_argument("--num-configs", type=int, default=2000)
     parser.add_argument("--n-max", type=int, default=2)
     parser.add_argument("--num-master-nodes", type=int, default=4)
     parser.add_argument("--rsa-sigma", type=float, default=5.0)
     parser.add_argument("--num-lr-layers", type=int, default=1,)
-    parser.add_argument("--num-broadcast-heads", type=int, default=4,
-                         help="[--variants eqfsa_lr only] Attention heads for lr_restructure's "
-                              "MasterBroadcastAttention; must divide --feature-dim")
-    parser.add_argument("--rbf-num-basis", type=int, default=12,
-                         help="[--variants eqfsa_lr only] RBF basis count for MasterNodeAggregator's "
-                              "distance-weighted attention")
+    parser.add_argument("--num-broadcast-heads", type=int, default=4,)
+    parser.add_argument("--rbf-num-basis", type=int, default=12,)
     parser.add_argument("--rbf-min", type=float, default=0.3, help="[--variants eqfsa_lr only]")
-    parser.add_argument("--rbf-cutoff", type=float, default=25.0,
-                         help="[--variants eqfsa_lr only]")
-    parser.add_argument("--lr-sigma", type=float, default=None,
-                         help="[--variants eqfsa_lr only] Fixed Ewald damping width for "
-                              "MasterNodeUpdate; default None leaves alpha learned")
+    parser.add_argument("--rbf-cutoff", type=float, default=25.0, help="[--variants eqfsa_lr only]")
+    parser.add_argument("--lr-sigma", type=float, default=None, help="[--variants eqfsa_lr only]")
     parser.add_argument("--alpha-floor", type=float, default=1e-4, help="[--variants eqfsa_lr only]")
     parser.add_argument("--feature-dim", type=int, default=32)
     parser.add_argument("--hidden-dim", type=int, default=64)
@@ -321,7 +313,10 @@ def main():
         z_table = build_scratch_z_table()
         mace_model, mace_init_state = None, None
         _t0 = time.time()
-        probe_dataset = LRSRDataset(config["avg_num_neighbors_samples"], seed=config["seed"])
+        probe_dataset = LRSRDataset(
+            config["avg_num_neighbors_samples"], seed=config["seed"],
+            relax_batch_size=config["relax_batch_size"], device=config["_device"],
+        )
         config["avg_num_neighbors"] = compute_avg_num_neighbors(
             probe_dataset, z_table, config["mace_r_max"], CHARGE_TO_ELEMENT_SCRATCH,
             num_samples=config["avg_num_neighbors_samples"],
