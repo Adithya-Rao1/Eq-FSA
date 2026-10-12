@@ -33,6 +33,7 @@ def so3_irreps(mults: Dict[int, int]) -> str:
     return "+".join(f"{mults[l]}x{l}" for l in sorted(mults))
 
 
+@torch._dynamo.disable()
 def spherical_harmonics_many(ls: Sequence[int], x: torch.Tensor) -> Dict[int, torch.Tensor]:
     cuet = _cuet()
     ls_sorted = sorted(set(ls))
@@ -49,6 +50,7 @@ def spherical_harmonics_many(ls: Sequence[int], x: torch.Tensor) -> Dict[int, to
     return result
 
 
+@torch._dynamo.disable()
 def e3nn_to_cue_basis(l: int, device: torch.device, dtype: torch.dtype, n_probe: int = 4000) -> torch.Tensor:
     key = (l, str(device))
     if key in _E3NN_TO_CUE_BASIS_CACHE:

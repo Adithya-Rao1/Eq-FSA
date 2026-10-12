@@ -11,8 +11,6 @@ from utils.se3_utils import (
 )
 from utils.spherical_harm import get_spherical_harmonics_many
 
-# TODO: Fix the indexing to reduce kernel launches
-
 class LRDirectSumW(nn.Module):
     def __init__(
         self,
