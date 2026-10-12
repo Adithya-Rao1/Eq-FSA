@@ -36,7 +36,6 @@ experiments = [
 cuequivariance = [
     "cuequivariance",
     "cuequivariance-torch",
-    "cuequivariance-ops-torch",
 ]
 
 [project.urls]

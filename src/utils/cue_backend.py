@@ -1,7 +1,9 @@
 from functools import lru_cache
-from typing import Dict, Sequence
+from typing import Dict, Sequence, Tuple
 
 import torch
+
+_CUE_SH_MODULE_CACHE: Dict[Tuple[Tuple[int, ...], str], "torch.nn.Module"] = {}
 
 
 @lru_cache(maxsize=1)
@@ -33,7 +35,10 @@ def so3_irreps(mults: Dict[int, int]) -> str:
 def spherical_harmonics_many(ls: Sequence[int], x: torch.Tensor) -> Dict[int, torch.Tensor]:
     cuet = _cuet()
     ls_sorted = sorted(set(ls))
-    out = cuet.spherical_harmonics(ls_sorted, x)
+    key = (tuple(ls_sorted), str(x.device))
+    if key not in _CUE_SH_MODULE_CACHE:
+        _CUE_SH_MODULE_CACHE[key] = cuet.SphericalHarmonics(ls_sorted, device=x.device)
+    out = _CUE_SH_MODULE_CACHE[key](x)
     result: Dict[int, torch.Tensor] = {}
     start = 0
     for l in ls_sorted:
