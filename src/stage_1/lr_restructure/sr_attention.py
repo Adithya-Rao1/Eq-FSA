@@ -67,15 +67,22 @@ class LRDirectSumW(nn.Module):
         self._cue_ready = False
         want_cue = use_cuequivariance and feature_dim is not None and radial_net_cls is not None
         if want_cue and cue_backend.cuequivariance_available():
-            irreps_in1 = cue_backend.so3_irreps({k: feature_dim for k in range(k_max + 1)})
-            irreps_in2 = "+".join(f"1x{J}" for J in distinct_Js)
             irreps_out = cue_backend.so3_irreps({l: feature_dim for l in range(max_degree + 1)})
-            self.cue_tp = cue_backend.build_channelwise_tp(
-                irreps_in1, irreps_in2, irreps_out, device=None, dtype=None,
-            )
-            self.cue_radial = radial_net_cls(
-                num_basis=8, hidden_dim=cue_hidden_dim, num_heads=self.cue_tp.weight_numel,
-            )
+            self.cue_tp = nn.ModuleDict()
+            self.cue_radial = nn.ModuleDict()
+            self.cue_Js_by_k: Dict[int, List[int]] = {}
+            for k in range(k_max + 1):
+                Js_k = sorted({J for l in range(max_degree + 1) for J in range(abs(l - k), l + k + 1)})
+                irreps_in1_k = cue_backend.so3_irreps({k: feature_dim})
+                irreps_in2_k = "+".join(f"1x{J}" for J in Js_k)
+                tp_k = cue_backend.build_channelwise_tp(
+                    irreps_in1_k, irreps_in2_k, irreps_out, device=None, dtype=None,
+                )
+                self.cue_tp[str(k)] = tp_k
+                self.cue_radial[str(k)] = radial_net_cls(
+                    num_basis=8, hidden_dim=cue_hidden_dim, num_heads=tp_k.weight_numel,
+                )
+                self.cue_Js_by_k[k] = Js_k
             self.feature_dim = feature_dim
             self._cue_ready = True
 
@@ -131,25 +138,22 @@ class LRDirectSumW(nn.Module):
             return out
 
         r = x.norm(dim=-1, keepdim=True)
-        weights = self.cue_radial(r).view(N, -1)
-
         Y = get_spherical_harmonics_many(self.distinct_Js, x, use_cuequivariance=True)
-        Y_concat = torch.cat([Y[J] for J in self.distinct_Js], dim=-1)
-        
-        f_concat = torch.cat(
-            [
-                (f[k] @ cue_backend.e3nn_to_cue_basis(k, device, dtype)).reshape(N, -1)
-                for k in range(self.k_max + 1)
-            ],
-            dim=-1,
-        )
 
-        out_concat = self.cue_tp(f_concat, Y_concat, weights)
+        out_concat_total = None
+        for k in range(self.k_max + 1):
+            Js_k = self.cue_Js_by_k[k]
+            tp_k = self.cue_tp[str(k)]
+            weights_k = self.cue_radial[str(k)](r).view(N, -1)
+            Y_concat_k = torch.cat([Y[J] for J in Js_k], dim=-1)
+            f_in_k = (f[k] @ cue_backend.e3nn_to_cue_basis(k, device, dtype)).reshape(N, -1)
+            out_k = tp_k(f_in_k, Y_concat_k, weights_k)
+            out_concat_total = out_k if out_concat_total is None else out_concat_total + out_k
 
         start = 0
         for l in range(self.max_degree + 1):
             width = C * (2 * l + 1)
-            out_cue_basis = out_concat[..., start:start + width].view(N, C, 2 * l + 1)
+            out_cue_basis = out_concat_total[..., start:start + width].view(N, C, 2 * l + 1)
             out[l] = out_cue_basis @ cue_backend.e3nn_to_cue_basis(l, device, dtype).T
             start += width
         return out
