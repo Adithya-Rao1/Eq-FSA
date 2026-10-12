@@ -11,6 +11,7 @@ from utils.se3_utils import (
 )
 from utils.spherical_harm import get_spherical_harmonics_many
 
+# TODO: Fix the indexing to reduce kernel launches
 
 class LRDirectSumW(nn.Module):
     def __init__(
@@ -69,22 +70,23 @@ class LRDirectSumW(nn.Module):
         if want_cue and cue_backend.cuequivariance_available():
             self.cue_tp = nn.ModuleDict()
             self.cue_radial = nn.ModuleDict()
-            self.cue_triples: List[Tuple[int, int, int]] = []
-            for l in range(max_degree + 1):
-                for k in range(k_max + 1):
-                    for J in range(abs(l - k), l + k + 1):
-                        key = f"{l}_{k}_{J}"
-                        tp = cue_backend.build_channelwise_tp(
-                            cue_backend.so3_irreps({k: feature_dim}),
-                            f"1x{J}",
-                            cue_backend.so3_irreps({l: feature_dim}),
-                            device=None, dtype=None,
-                        )
-                        self.cue_tp[key] = tp
-                        self.cue_radial[key] = radial_net_cls(
-                            num_basis=8, hidden_dim=cue_hidden_dim, num_heads=tp.weight_numel,
-                        )
-                        self.cue_triples.append((l, k, J))
+            self.cue_groups: List[Tuple[int, int, List[int]]] = [] 
+            for k in range(k_max + 1):
+                for J in range(k + max_degree + 1):
+                    valid_ls = [l for l in range(max_degree + 1) if abs(l - k) <= J <= l + k]
+                    if not valid_ls:
+                        continue
+                    key = f"{k}_{J}"
+                    irreps_out_grp = cue_backend.so3_irreps({l: feature_dim for l in valid_ls})
+                    tp = cue_backend.build_channelwise_tp(
+                        cue_backend.so3_irreps({k: feature_dim}), f"1x{J}", irreps_out_grp,
+                        device=None, dtype=None,
+                    )
+                    self.cue_tp[key] = tp
+                    self.cue_radial[key] = radial_net_cls(
+                        num_basis=8, hidden_dim=cue_hidden_dim, num_heads=tp.weight_numel,
+                    )
+                    self.cue_groups.append((k, J, valid_ls))
             self.feature_dim = feature_dim
             self._cue_ready = True
 
@@ -147,14 +149,19 @@ class LRDirectSumW(nn.Module):
         }
 
         acc: Dict[int, torch.Tensor] = {l: None for l in range(self.max_degree + 1)}
-        for (l, k, J) in self.cue_triples:
-            key = f"{l}_{k}_{J}"
+        for (k, J, valid_ls) in self.cue_groups:
+            key = f"{k}_{J}"
             weights = self.cue_radial[key](r).view(N, -1)
-            contrib = self.cue_tp[key](f_cue[k], Y[J], weights)
-            acc[l] = contrib if acc[l] is None else acc[l] + contrib
+            raw = self.cue_tp[key](f_cue[k], Y[J], weights)
+            start = 0
+            for l in valid_ls:
+                width = C * (2 * l + 1)
+                contrib = raw[..., start:start + width].view(N, C, 2 * l + 1)
+                acc[l] = contrib if acc[l] is None else acc[l] + contrib
+                start += width
 
         for l in range(self.max_degree + 1):
-            out_cue_basis = acc[l].view(N, C, 2 * l + 1)
+            out_cue_basis = acc[l]
             out[l] = out_cue_basis @ cue_backend.e3nn_to_cue_basis(l, device, dtype).T
         return out
 
