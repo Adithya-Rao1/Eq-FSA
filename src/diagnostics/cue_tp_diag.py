@@ -138,6 +138,74 @@ def main():
         expectedK2 = torch.einsum("ij,...jk,lk->...il", R, cartK2, R)
         report("K_lifted[2] equivariance", (cartK2_rot - expectedK2).abs().max().item(), cartK2.abs().max().item())
 
+    section("D. Minimal repro: single input degree (k=0 only), two-term filter_irreps_out")
+    max_degree_d, k_max_d, feature_dim_d = 1, 0, 4
+
+    def build_radial_nets_d():
+        torch.manual_seed(10)
+        radial_nets = torch.nn.ModuleDict()
+        for l in range(max_degree_d + 1):
+            n_copies = sum((l + k + 1) - abs(l - k) for k in range(k_max_d + 1))
+            radial_nets[str(l)] = BatchedRadialNetwork(
+                n_copies=n_copies, num_basis=(2 * l + 1), hidden_dim=16, radial_net_cls=RadialNetwork,
+            )
+        return radial_nets.to(device=device, dtype=DTYPE)
+
+    def build_direct_sum_w_d(use_cue):
+        torch.manual_seed(11)
+        mod = LRDirectSumW(
+            build_radial_nets_d(), max_degree_d, k_max_d, feature_dim=feature_dim_d,
+            radial_net_cls=RadialNetwork, cue_hidden_dim=16, use_cuequivariance=use_cue,
+        )
+        return mod.to(device=device, dtype=DTYPE)
+
+    Nd = 9
+    xd = torch.randn(Nd, 3, dtype=DTYPE, device=device)
+    f0d = torch.randn(Nd, feature_dim_d, 1, dtype=DTYPE, device=device)
+    fd = {0: f0d}
+    xd_rot = xd @ R.T
+    fd_rot = {0: f0d.clone()}
+
+    for label, use_cue in [("reference", False), ("cue", True)]:
+        mod = build_direct_sum_w_d(use_cue)
+        if use_cue and not mod._cue_ready:
+            print(f"  [{label}] cue path not ready, skipping")
+            continue
+        if use_cue:
+            print(f"  weight_numel={mod.cue_tp.weight_numel}, hand_path_count={len(mod.copies)}")
+        out = mod(fd, xd)
+        out_rot = mod(fd_rot, xd_rot)
+        print(f" -- {label} --")
+        report("out[0] invariance", (out[0] - out_rot[0]).abs().max().item(), out[0].abs().max().item())
+        cart1 = to_cartesian_vector(out[1].reshape(-1, 3))
+        cart1_rot = to_cartesian_vector(out_rot[1].reshape(-1, 3))
+        expected1 = torch.einsum("ij,...j->...i", R, cart1)
+        report("out[1] equivariance", (cart1_rot - expected1).abs().max().item(), cart1.abs().max().item())
+
+    section("E. Original setup (max_degree=2,k_max=2): isolate one nonzero input degree at a time")
+    for only_k in [0, 1, 2]:
+        f_iso = {k: (f[k] if k == only_k else torch.zeros_like(f[k])) for k in range(k_max + 1)}
+        f_iso_rot = {k: (f_rot[k] if k == only_k else torch.zeros_like(f_rot[k])) for k in range(k_max + 1)}
+        print(f" -- only f[{only_k}] nonzero --")
+        for label, use_cue in [("reference", False), ("cue", True)]:
+            mod = build_direct_sum_w(use_cue)
+            if use_cue and not mod._cue_ready:
+                continue
+            out = mod(f_iso, x)
+            out_rot = mod(f_iso_rot, x_rot)
+            d0 = (out[0] - out_rot[0]).abs().max().item()
+            cart1 = to_cartesian_vector(out[1].reshape(-1, 3))
+            cart1_rot = to_cartesian_vector(out_rot[1].reshape(-1, 3))
+            d1 = (cart1_rot - torch.einsum("ij,...j->...i", R, cart1)).abs().max().item()
+            cart2 = to_cartesian_tensor(out[2].reshape(-1, 5))
+            cart2_rot = to_cartesian_tensor(out_rot[2].reshape(-1, 5))
+            d2 = (cart2_rot - torch.einsum("ij,...jk,lk->...il", R, cart2, R)).abs().max().item()
+            print(
+                f"   [{label}] out0_diff={d0:.3e} out1_diff={d1:.3e} out2_diff={d2:.3e}  "
+                f"(scales: {out[0].abs().max().item():.2e}, {cart1.abs().max().item():.2e}, "
+                f"{cart2.abs().max().item():.2e})"
+            )
+
 
 if __name__ == "__main__":
     main()
