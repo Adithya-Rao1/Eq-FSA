@@ -5,6 +5,8 @@ import torch
 torch.serialization.add_safe_globals([slice])
 from e3nn import o3
 
+from utils import cue_backend
+
 _SH_MODULE_CACHE: Dict[Tuple[int, torch.dtype], torch.nn.Module] = {}
 
 
@@ -27,8 +29,21 @@ def warm_spherical_harmonics_cache(
             _SH_MODULE_CACHE[key] = _build_sh_module(l, dtype)
 
 
-def get_spherical_harmonics(l: int, x: torch.Tensor) -> torch.Tensor:
+def get_spherical_harmonics(
+    l: int, x: torch.Tensor, use_cuequivariance: bool = False,
+) -> torch.Tensor:
+    if use_cuequivariance and cue_backend.cuequivariance_available() and x.is_cuda:
+        return cue_backend.spherical_harmonics_many([l], x)[l]
     key = (l, x.dtype)
     if key not in _SH_MODULE_CACHE:
         _SH_MODULE_CACHE[key] = _build_sh_module(l, x.dtype)
     return _SH_MODULE_CACHE[key](x)
+
+
+def get_spherical_harmonics_many(
+    ls: Iterable[int], x: torch.Tensor, use_cuequivariance: bool = False,
+) -> Dict[int, torch.Tensor]:
+    ls = list(ls)
+    if use_cuequivariance and cue_backend.cuequivariance_available() and x.is_cuda:
+        return cue_backend.spherical_harmonics_many(ls, x)
+    return {l: get_spherical_harmonics(l, x) for l in ls}

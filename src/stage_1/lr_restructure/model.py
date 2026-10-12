@@ -72,6 +72,7 @@ class LREnergyModel(nn.Module):
         sigma: Optional[float] = None,
         alpha_floor: float = 1e-4,
         use_norms: bool = True,
+        use_cuequivariance: bool = False,
     ):
         super().__init__()
         self.max_degree = max_degree
@@ -111,7 +112,7 @@ class LREnergyModel(nn.Module):
                 k_max=max_degree, edge_feat_dim=edge_feat_dim, n_master_nodes=n_master_nodes,
                 num_broadcast_heads=num_broadcast_heads, rbf_num_basis=rbf_num_basis,
                 rbf_min=rbf_min, rbf_cutoff=rbf_cutoff, sigma=sigma, alpha_floor=alpha_floor,
-                use_norms=use_norms,
+                use_norms=use_norms, use_cuequivariance=use_cuequivariance,
             )
             for _ in range(num_layers)
         ])
