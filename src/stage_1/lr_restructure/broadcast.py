@@ -218,8 +218,8 @@ class MasterBroadcastAttention(nn.Module):
             )
 
             Al = cue_backend.e3nn_to_cue_basis(l, device, dtype)
-            out_K = (tp(content_K_l, Y_l, phi_K) @ Al.T).view(B, N, N_a, C, 2 * l + 1)
-            out_V = (tp(content_V_l, Y_l, phi_V) @ Al.T).view(B, N, N_a, C, 2 * l + 1)
+            out_K = tp(content_K_l, Y_l, phi_K).view(B, N, N_a, C, 2 * l + 1) @ Al.T
+            out_V = tp(content_V_l, Y_l, phi_V).view(B, N, N_a, C, 2 * l + 1) @ Al.T
             if l > 0:
                 mask = has_dir.view(B, N, N_a, 1, 1)
                 out_K = out_K * mask
