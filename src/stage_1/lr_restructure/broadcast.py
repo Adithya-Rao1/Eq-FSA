@@ -200,9 +200,6 @@ class MasterBroadcastAttention(nn.Module):
         r = x_rel_flat.norm(dim=-1, keepdim=True)
         Y = get_spherical_harmonics_many(self.degrees, x_rel_flat, use_cuequivariance=True)
         device, dtype = x_rel_flat.device, x_rel_flat.dtype
-        # content/output cross the e3nn<->cuEquivariance boundary here (content_all comes from
-        # g_a, a reference/e3nn-basis tensor; the tp's internal basis need not match) -- same
-        # fix as LRDirectSumW._forward_cue, see cue_backend.e3nn_to_cue_basis's docstring.
         A0 = cue_backend.e3nn_to_cue_basis(0, device, dtype).view(())
 
         K_lifted: Dict[int, torch.Tensor] = {}

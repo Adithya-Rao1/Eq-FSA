@@ -66,7 +66,10 @@ def e3nn_to_cue_basis(l: int, device: torch.device, dtype: torch.dtype, n_probe:
     resid = (y_e3nn @ A - y_cue).abs().max().item()
     orth_err = (A.T @ A - torch.eye(width, dtype=A.dtype, device=A.device)).abs().max().item()
     if resid > 1e-3 or orth_err > 1e-3:
-        raise RuntimeError
+        raise RuntimeError(
+            f"No clean e3nn<->cuEquivariance change of basis for degree {l}"
+            f"(fit residual={resid:.2e}, orthogonality error={orth_err:.2e})"
+        )
 
     _E3NN_TO_CUE_BASIS_CACHE[key] = A.detach()
     return A.to(dtype=dtype)
