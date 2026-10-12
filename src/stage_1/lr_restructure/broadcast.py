@@ -199,6 +199,11 @@ class MasterBroadcastAttention(nn.Module):
         C = self.feature_dim
         r = x_rel_flat.norm(dim=-1, keepdim=True)
         Y = get_spherical_harmonics_many(self.degrees, x_rel_flat, use_cuequivariance=True)
+        device, dtype = x_rel_flat.device, x_rel_flat.dtype
+        # content/output cross the e3nn<->cuEquivariance boundary here (content_all comes from
+        # g_a, a reference/e3nn-basis tensor; the tp's internal basis need not match) -- same
+        # fix as LRDirectSumW._forward_cue, see cue_backend.e3nn_to_cue_basis's docstring.
+        A0 = cue_backend.e3nn_to_cue_basis(0, device, dtype).view(())
 
         K_lifted: Dict[int, torch.Tensor] = {}
         V_lifted: Dict[int, torch.Tensor] = {}
@@ -208,11 +213,16 @@ class MasterBroadcastAttention(nn.Module):
             phi_V = self.cue_radial_V[str(l)](r).view(-1, tp.weight_numel)
             Y_l = Y[l]
 
-            content_K_l = content_all[0, :, :, l, :].unsqueeze(1).expand(B, N, N_a, C).reshape(B * N * N_a, C)
-            content_V_l = content_all[1, :, :, l, :].unsqueeze(1).expand(B, N, N_a, C).reshape(B * N * N_a, C)
+            content_K_l = (
+                content_all[0, :, :, l, :].unsqueeze(1).expand(B, N, N_a, C).reshape(B * N * N_a, C) * A0
+            )
+            content_V_l = (
+                content_all[1, :, :, l, :].unsqueeze(1).expand(B, N, N_a, C).reshape(B * N * N_a, C) * A0
+            )
 
-            out_K = tp(content_K_l, Y_l, phi_K).view(B, N, N_a, C, 2 * l + 1)
-            out_V = tp(content_V_l, Y_l, phi_V).view(B, N, N_a, C, 2 * l + 1)
+            Al = cue_backend.e3nn_to_cue_basis(l, device, dtype)
+            out_K = (tp(content_K_l, Y_l, phi_K) @ Al.T).view(B, N, N_a, C, 2 * l + 1)
+            out_V = (tp(content_V_l, Y_l, phi_V) @ Al.T).view(B, N, N_a, C, 2 * l + 1)
             if l > 0:
                 mask = has_dir.view(B, N, N_a, 1, 1)
                 out_K = out_K * mask

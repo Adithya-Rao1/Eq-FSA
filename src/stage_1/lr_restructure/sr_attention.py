@@ -134,18 +134,23 @@ class LRDirectSumW(nn.Module):
         weights = self.cue_radial(r).view(N, -1)
 
         Y = get_spherical_harmonics_many(self.distinct_Js, x, use_cuequivariance=True)
-        Y_concat = torch.cat([Y[J] for J in self.distinct_Js], dim=-1) 
-
+        Y_concat = torch.cat([Y[J] for J in self.distinct_Js], dim=-1)
+        
         f_concat = torch.cat(
-            [f[k].reshape(N, -1) for k in range(self.k_max + 1)], dim=-1,
-        )  
+            [
+                (f[k] @ cue_backend.e3nn_to_cue_basis(k, device, dtype)).reshape(N, -1)
+                for k in range(self.k_max + 1)
+            ],
+            dim=-1,
+        )
 
         out_concat = self.cue_tp(f_concat, Y_concat, weights)
 
         start = 0
         for l in range(self.max_degree + 1):
             width = C * (2 * l + 1)
-            out[l] = out_concat[..., start:start + width].view(N, C, 2 * l + 1)
+            out_cue_basis = out_concat[..., start:start + width].view(N, C, 2 * l + 1)
+            out[l] = out_cue_basis @ cue_backend.e3nn_to_cue_basis(l, device, dtype).T
             start += width
         return out
 

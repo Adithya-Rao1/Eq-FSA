@@ -4,6 +4,7 @@ from typing import Dict, Sequence, Tuple
 import torch
 
 _CUE_SH_MODULE_CACHE: Dict[Tuple[Tuple[int, ...], str], "torch.nn.Module"] = {}
+_E3NN_TO_CUE_BASIS_CACHE: Dict[Tuple[int, str], torch.Tensor] = {}
 
 
 @lru_cache(maxsize=1)
@@ -46,6 +47,29 @@ def spherical_harmonics_many(ls: Sequence[int], x: torch.Tensor) -> Dict[int, to
         result[l] = out[..., start:start + width]
         start += width
     return result
+
+
+def e3nn_to_cue_basis(l: int, device: torch.device, dtype: torch.dtype, n_probe: int = 4000) -> torch.Tensor:
+    key = (l, str(device))
+    if key in _E3NN_TO_CUE_BASIS_CACHE:
+        return _E3NN_TO_CUE_BASIS_CACHE[key].to(dtype=dtype)
+
+    from utils.spherical_harm import get_spherical_harmonics
+
+    probe_dtype = torch.double
+    x = torch.randn(n_probe, 3, device=device, dtype=probe_dtype)
+    y_e3nn = get_spherical_harmonics(l, x)
+    y_cue = spherical_harmonics_many([l], x)[l].to(probe_dtype)
+    A, *_ = torch.linalg.lstsq(y_e3nn, y_cue)
+
+    width = 2 * l + 1
+    resid = (y_e3nn @ A - y_cue).abs().max().item()
+    orth_err = (A.T @ A - torch.eye(width, dtype=A.dtype, device=A.device)).abs().max().item()
+    if resid > 1e-3 or orth_err > 1e-3:
+        raise RuntimeError
+
+    _E3NN_TO_CUE_BASIS_CACHE[key] = A.detach()
+    return A.to(dtype=dtype)
 
 
 def build_channelwise_tp(
