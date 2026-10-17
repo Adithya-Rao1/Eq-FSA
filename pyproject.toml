@@ -33,10 +33,6 @@ experiments = [
     "torch_geometric",
     "nequip",
 ]
-cuequivariance = [
-    "cuequivariance",
-    "cuequivariance-torch",
-]
 
 [project.urls]
 Repository = "https://github.com/Adithya-Rao1/Eq-FSA"

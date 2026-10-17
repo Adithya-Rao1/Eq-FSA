@@ -4,20 +4,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils import cue_backend
 from utils.pw_bases import minimum_image
 from utils.se3_utils import (
     BatchedEquivariantRMSNorm, BatchedGatedNonlinearity, BatchedRadialNetwork,
     clebsch_gordan_matrix, get_spherical_harmonics, init_linear_, scalar_ffn,
     softmax_over_neighbors,
 )
-from utils.spherical_harm import get_spherical_harmonics_many
 
 
 class MasterBroadcastAttention(nn.Module):
     def __init__(
         self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int,
-        num_heads: int = 4, use_norms: bool = True, use_cuequivariance: bool = False,
+        num_heads: int = 4, use_norms: bool = True,
     ):
         super().__init__()
         assert feature_dim % num_heads == 0, "feature_dim must be divisible by num_heads"
@@ -68,25 +66,6 @@ class MasterBroadcastAttention(nn.Module):
             BatchedEquivariantRMSNorm(feature_dim, degrees=degrees) if use_norms else nn.Identity()
         )
 
-        self.use_cuequivariance = use_cuequivariance
-        self._cue_ready = False
-        if use_cuequivariance and cue_backend.cuequivariance_available():
-            self.cue_tp = nn.ModuleDict()
-            self.cue_radial_K = nn.ModuleDict()
-            self.cue_radial_V = nn.ModuleDict()
-            for l in degrees:
-                tp = cue_backend.build_channelwise_tp(
-                    f"{feature_dim}x0", f"1x{l}", f"{feature_dim}x{l}", device=None, dtype=None,
-                )
-                self.cue_tp[str(l)] = tp
-                self.cue_radial_K[str(l)] = radial_net(
-                    num_basis=2 * l + 1, hidden_dim=hidden_dim, num_heads=tp.weight_numel,
-                )
-                self.cue_radial_V[str(l)] = radial_net(
-                    num_basis=2 * l + 1, hidden_dim=hidden_dim, num_heads=tp.weight_numel,
-                )
-            self._cue_ready = True
-
     def forward(
         self,
         f_tilde: Dict[int, torch.Tensor],
@@ -117,19 +96,28 @@ class MasterBroadcastAttention(nn.Module):
         g_a_sq = g_a.squeeze(-1)
         readout_KV_w = torch.stack([self.readout_K_w, self.readout_V_w], dim=0)
         content_all = torch.einsum("kloc,bac->kbalo", readout_KV_w, g_a_sq)
+        content_perm = content_all.permute(3, 0, 1, 2, 4).unsqueeze(-1)
 
-        if self._cue_ready:
-            K_lifted, V_lifted = self._lift_master_content_cue(
-                content_all, x_rel_flat, has_dir, B, N, N_a, H, Ch,
-            )
-        else:
-            K_lifted, V_lifted = self._lift_master_content_reference(
-                content_all, x_rel_flat, has_dir, r, B, N, N_a, L, W, H, Ch, device, dtype,
-            )
+        phi_stack = torch.stack([self.radial_KV[str(l)](r) for l in self.degrees], dim=0,)
+        Y_stack = torch.zeros(L, x_rel_flat.shape[0], W, device=device, dtype=dtype)
+        for l in self.degrees:
+            Y_stack[l, :, :2 * l + 1] = get_spherical_harmonics(l, x_rel_flat)
+        Q_lift = self.Q_lift.to(device=device, dtype=dtype)
+        QTY_stack = torch.einsum("lqi,lni->lnq", Q_lift, Y_stack).view(L, B, N, N_a, W, 1)
+
+        degree_mask = torch.stack([torch.ones_like(has_dir) if l == 0 else has_dir for l in self.degrees], dim=0,)
+        phi_kv = phi_stack.view(L, 2, B, N, N_a, 1, 1)
+        W_KV_stack = phi_kv * QTY_stack.unsqueeze(1) * degree_mask.unsqueeze(1)
+
+        KV_lifted_stack = torch.einsum("lkbnaij,lkbacj->lkbnaci", W_KV_stack, content_perm)
+        Kmaster_full = KV_lifted_stack[:, 0].view(L, B, N, N_a, H, Ch, W)
+        Vmaster_full = KV_lifted_stack[:, 1].view(L, B, N, N_a, H, Ch, W)
 
         Q = {l: Q_full[l, ..., :2 * l + 1] for l in self.degrees}
         K_self = {l: Kself_full[l, ..., :2 * l + 1] for l in self.degrees}
         V_self = {l: Vself_full[l, ..., :2 * l + 1] for l in self.degrees}
+        K_lifted = {l: Kmaster_full[l, ..., :2 * l + 1] for l in self.degrees}
+        V_lifted = {l: Vmaster_full[l, ..., :2 * l + 1] for l in self.degrees}
 
         Q_concat = torch.cat([Q[l] for l in self.degrees], dim=-1)
         Kself_concat = torch.cat([K_self[l] for l in self.degrees], dim=-1)
@@ -170,61 +158,3 @@ class MasterBroadcastAttention(nn.Module):
                 mixed[l] = mixed_hi_padded[l][..., :2 * l + 1]
 
         return self.out_norm(mixed)
-
-    def _lift_master_content_reference(
-        self, content_all, x_rel_flat, has_dir, r, B, N, N_a, L, W, H, Ch, device, dtype,
-    ):
-        content_perm = content_all.permute(3, 0, 1, 2, 4).unsqueeze(-1)
-
-        phi_stack = torch.stack([self.radial_KV[str(l)](r) for l in self.degrees], dim=0,)
-        Y_stack = torch.zeros(L, x_rel_flat.shape[0], W, device=device, dtype=dtype)
-        for l in self.degrees:
-            Y_stack[l, :, :2 * l + 1] = get_spherical_harmonics(l, x_rel_flat)
-        Q_lift = self.Q_lift.to(device=device, dtype=dtype)
-        QTY_stack = torch.einsum("lqi,lni->lnq", Q_lift, Y_stack).view(L, B, N, N_a, W, 1)
-
-        degree_mask = torch.stack([torch.ones_like(has_dir) if l == 0 else has_dir for l in self.degrees], dim=0,)
-        phi_kv = phi_stack.view(L, 2, B, N, N_a, 1, 1)
-        W_KV_stack = phi_kv * QTY_stack.unsqueeze(1) * degree_mask.unsqueeze(1)
-
-        KV_lifted_stack = torch.einsum("lkbnaij,lkbacj->lkbnaci", W_KV_stack, content_perm)
-        Kmaster_full = KV_lifted_stack[:, 0].view(L, B, N, N_a, H, Ch, W)
-        Vmaster_full = KV_lifted_stack[:, 1].view(L, B, N, N_a, H, Ch, W)
-
-        K_lifted = {l: Kmaster_full[l, ..., :2 * l + 1] for l in self.degrees}
-        V_lifted = {l: Vmaster_full[l, ..., :2 * l + 1] for l in self.degrees}
-        return K_lifted, V_lifted
-
-    def _lift_master_content_cue(self, content_all, x_rel_flat, has_dir, B, N, N_a, H, Ch):
-        C = self.feature_dim
-        r = x_rel_flat.norm(dim=-1, keepdim=True)
-        Y = get_spherical_harmonics_many(self.degrees, x_rel_flat, use_cuequivariance=True)
-        device, dtype = x_rel_flat.device, x_rel_flat.dtype
-        A0 = cue_backend.e3nn_to_cue_basis(0, device, dtype).view(())
-
-        K_lifted: Dict[int, torch.Tensor] = {}
-        V_lifted: Dict[int, torch.Tensor] = {}
-        for l in self.degrees:
-            tp = self.cue_tp[str(l)]
-            phi_K = self.cue_radial_K[str(l)](r).view(-1, tp.weight_numel)
-            phi_V = self.cue_radial_V[str(l)](r).view(-1, tp.weight_numel)
-            Y_l = Y[l]
-
-            content_K_l = (
-                content_all[0, :, :, l, :].unsqueeze(1).expand(B, N, N_a, C).reshape(B * N * N_a, C) * A0
-            )
-            content_V_l = (
-                content_all[1, :, :, l, :].unsqueeze(1).expand(B, N, N_a, C).reshape(B * N * N_a, C) * A0
-            )
-
-            Al = cue_backend.e3nn_to_cue_basis(l, device, dtype)
-            out_K = tp(content_K_l, Y_l, phi_K).view(B, N, N_a, C, 2 * l + 1) @ Al.T
-            out_V = tp(content_V_l, Y_l, phi_V).view(B, N, N_a, C, 2 * l + 1) @ Al.T
-            if l > 0:
-                mask = has_dir.view(B, N, N_a, 1, 1)
-                out_K = out_K * mask
-                out_V = out_V * mask
-
-            K_lifted[l] = out_K.view(B, N, N_a, H, Ch, 2 * l + 1)
-            V_lifted[l] = out_V.view(B, N, N_a, H, Ch, 2 * l + 1)
-        return K_lifted, V_lifted

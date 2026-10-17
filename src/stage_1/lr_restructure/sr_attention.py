@@ -4,24 +4,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils import cue_backend
 from utils.se3_utils import (
     BatchedRadialNetwork, clebsch_gordan_matrix, get_spherical_harmonics, init_linear_,
     init_sequential_, scalar_ffn, scatter_softmax, straight_through_norm,
 )
-from utils.spherical_harm import get_spherical_harmonics_many
+
 
 class LRDirectSumW(nn.Module):
-    def __init__(
-        self,
-        radial_nets: nn.ModuleDict,
-        max_degree: int,
-        k_max: int,
-        feature_dim: Optional[int] = None,
-        radial_net_cls=None,
-        cue_hidden_dim: int = 64,
-        use_cuequivariance: bool = False,
-    ):
+    def __init__(self, radial_nets: nn.ModuleDict, max_degree: int, k_max: int):
         super().__init__()
         self.radial_nets = radial_nets
         self.max_degree = max_degree
@@ -49,7 +39,7 @@ class LRDirectSumW(nn.Module):
                     ] = Q_J
                     Q_blocks.append(block)
                     copies.append((l, J))
-        self.register_buffer("Q_GLOBAL", torch.stack(Q_blocks, dim=0)) 
+        self.register_buffer("Q_GLOBAL", torch.stack(Q_blocks, dim=0))  # (n_total, R, C, W)
         self.copies = copies
         self.total_rows, self.total_cols, self.max_width = total_rows, total_cols, max_width
         self.row_starts, self.row_sizes = row_starts, row_sizes
@@ -62,38 +52,7 @@ class LRDirectSumW(nn.Module):
             persistent=False,
         )
 
-        self.use_cuequivariance = use_cuequivariance
-        self._cue_ready = False
-        want_cue = use_cuequivariance and feature_dim is not None and radial_net_cls is not None
-        if want_cue and cue_backend.cuequivariance_available():
-            self.cue_tp = nn.ModuleDict()
-            self.cue_radial = nn.ModuleDict()
-            self.cue_groups: List[Tuple[int, int, List[int]]] = [] 
-            for k in range(k_max + 1):
-                for J in range(k + max_degree + 1):
-                    valid_ls = [l for l in range(max_degree + 1) if abs(l - k) <= J <= l + k]
-                    if not valid_ls:
-                        continue
-                    key = f"{k}_{J}"
-                    irreps_out_grp = cue_backend.so3_irreps({l: feature_dim for l in valid_ls})
-                    tp = cue_backend.build_channelwise_tp(
-                        cue_backend.so3_irreps({k: feature_dim}), f"1x{J}", irreps_out_grp,
-                        device=None, dtype=None,
-                    )
-                    self.cue_tp[key] = tp
-                    self.cue_radial[key] = radial_net_cls(
-                        num_basis=8, hidden_dim=cue_hidden_dim, num_heads=tp.weight_numel,
-                    )
-                    self.cue_groups.append((k, J, valid_ls))
-            self.feature_dim = feature_dim
-            self._cue_ready = True
-
     def forward(self, f: Dict[int, torch.Tensor], x: torch.Tensor) -> Dict[int, torch.Tensor]:
-        if self._cue_ready:
-            return self._forward_cue(f, x)
-        return self._forward_reference(f, x)
-
-    def _forward_reference(self, f: Dict[int, torch.Tensor], x: torch.Tensor) -> Dict[int, torch.Tensor]:
         device, dtype = x.device, x.dtype
         N = x.shape[0]
 
@@ -107,18 +66,18 @@ class LRDirectSumW(nn.Module):
         r = x.norm(dim=-1, keepdim=True)
         phi_global = torch.cat(
             [self.radial_nets[str(l)](r) for l in range(self.max_degree + 1)], dim=0,
-        ) 
+        )  # (n_total, N, 1)
 
         Y_by_j = torch.stack(
             [F.pad(get_spherical_harmonics(J, x), (0, self.max_width - (2 * J + 1)))
              for J in self.distinct_Js],
             dim=0,
-        )  
-        Y_global = Y_by_j[self.copy_to_j_idx]  
+        )  # (n_distinct_J, N, max_width)
+        Y_global = Y_by_j[self.copy_to_j_idx]  # (n_total, N, max_width)
 
         Q_GLOBAL = self.Q_GLOBAL.to(device=device, dtype=dtype)
-        QTY_global = torch.einsum("crqi,cni->cnrq", Q_GLOBAL, Y_global)
-        W_full = (phi_global.view(-1, N, 1, 1) * QTY_global).sum(dim=0)
+        QTY_global = torch.einsum("crqi,cni->cnrq", Q_GLOBAL, Y_global)          
+        W_full = (phi_global.view(-1, N, 1, 1) * QTY_global).sum(dim=0)          
 
         f_concat = torch.cat([f[k] for k in range(self.k_max + 1)], dim=-1)
         out_concat = torch.einsum("nij,ncj->nci", W_full, f_concat)
@@ -126,41 +85,6 @@ class LRDirectSumW(nn.Module):
         for l in range(self.max_degree + 1):
             rs = self.row_starts[l]
             out[l] = out_concat[..., rs:rs + self.row_sizes[l]]
-        return out
-
-    def _forward_cue(self, f: Dict[int, torch.Tensor], x: torch.Tensor) -> Dict[int, torch.Tensor]:
-        device, dtype = x.device, x.dtype
-        N = x.shape[0]
-        C = self.feature_dim
-
-        out: Dict[int, torch.Tensor] = {}
-        if N == 0:
-            for l in range(self.max_degree + 1):
-                out[l] = torch.zeros(N, C, 2 * l + 1, device=device, dtype=dtype)
-            return out
-
-        r = x.norm(dim=-1, keepdim=True)
-        Y = get_spherical_harmonics_many(self.distinct_Js, x, use_cuequivariance=True)
-        f_cue = {
-            k: (f[k] @ cue_backend.e3nn_to_cue_basis(k, device, dtype)).reshape(N, -1)
-            for k in range(self.k_max + 1)
-        }
-
-        acc: Dict[int, torch.Tensor] = {l: None for l in range(self.max_degree + 1)}
-        for (k, J, valid_ls) in self.cue_groups:
-            key = f"{k}_{J}"
-            weights = self.cue_radial[key](r).view(N, -1)
-            raw = self.cue_tp[key](f_cue[k], Y[J], weights)
-            start = 0
-            for l in valid_ls:
-                width = C * (2 * l + 1)
-                contrib = raw[..., start:start + width].view(N, C, 2 * l + 1)
-                acc[l] = contrib if acc[l] is None else acc[l] + contrib
-                start += width
-
-        for l in range(self.max_degree + 1):
-            out_cue_basis = acc[l]
-            out[l] = out_cue_basis @ cue_backend.e3nn_to_cue_basis(l, device, dtype).T
         return out
 
 
@@ -202,7 +126,7 @@ class BatchedNormedPairReadout(nn.Module):
 class SRAttention(nn.Module):
     def __init__(
         self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int,
-        k_max: int, edge_feat_dim: int, use_norms: bool = True, use_cuequivariance: bool = False,
+        k_max: int, edge_feat_dim: int, use_norms: bool = True,
     ):
         super().__init__()
         self.max_degree = max_degree
@@ -215,10 +139,7 @@ class SRAttention(nn.Module):
                 n_copies=n_copies, num_basis=(2 * l + 1), hidden_dim=hidden_dim,
                 radial_net_cls=radial_net, use_norms=use_norms,
             )
-        self.direct_sum_w = LRDirectSumW(
-            radial_V_sr, max_degree, k_max, feature_dim=feature_dim,
-            radial_net_cls=radial_net, cue_hidden_dim=hidden_dim, use_cuequivariance=use_cuequivariance,
-        )
+        self.direct_sum_w = LRDirectSumW(radial_V_sr, max_degree, k_max)
 
         self.pair_readout = BatchedNormedPairReadout(2 * feature_dim, hidden_dim, k_max, use_norms=use_norms)
 

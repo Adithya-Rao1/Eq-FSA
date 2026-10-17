@@ -22,7 +22,6 @@ class LRLayer(nn.Module):
         edge_feat_dim: int, n_master_nodes: int, num_broadcast_heads: int = 4,
         rbf_num_basis: int = 12, rbf_min: float = 0.3, rbf_cutoff: float = 25.0,
         sigma: Optional[float] = None, alpha_floor: float = 1e-4, use_norms: bool = True,
-        use_cuequivariance: bool = False,
     ):
         super().__init__()
         self.max_degree = max_degree
@@ -30,7 +29,7 @@ class LRLayer(nn.Module):
 
         self.sr_attn = SRAttention(
             radial_net, max_degree, feature_dim, hidden_dim, k_max=k_max,
-            edge_feat_dim=edge_feat_dim, use_norms=use_norms, use_cuequivariance=use_cuequivariance,
+            edge_feat_dim=edge_feat_dim, use_norms=use_norms,
         )
         self.W_V_self_linear = nn.ModuleDict({
             str(l): EquivariantLinear(feature_dim, feature_dim) for l in range(max_degree + 1)
@@ -59,7 +58,7 @@ class LRLayer(nn.Module):
         self.master_ln = EquivariantRMSNorm(feature_dim, degree=0) if use_norms else nn.Identity()
         self.broadcast = MasterBroadcastAttention(
             radial_net, max_degree, feature_dim, hidden_dim,
-            num_heads=num_broadcast_heads, use_norms=use_norms, use_cuequivariance=use_cuequivariance,
+            num_heads=num_broadcast_heads, use_norms=use_norms,
         )
 
     def forward(

@@ -30,28 +30,12 @@ def main():
         help="reduce-overhead captures a CUDA graph to eliminate per-kernel launch overhead -- "
              "the mode that actually targets the symptom this script measures.",
     )
-    parser.add_argument(
-        "--cuequivariance", action="store_true",
-        help="route the CG tensor-product hotspots (LRDirectSumW, MasterBroadcastAttention's "
-             "K/V lift) through cuEquivariance's fused kernels instead of the hand-rolled "
-             "einsum chain. No-op (silently falls back) if cuequivariance-torch isn't "
-             "installed or there's no CUDA device.",
-    )
     args = parser.parse_args()
 
     device = torch.device(args.device) if args.device else (
         torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     )
     print(f"Using device: {device}", flush=True)
-
-    if args.cuequivariance:
-        from utils.cue_backend import cuequivariance_available
-        engaged = cuequivariance_available()
-        print(
-            f"--cuequivariance requested; cuEquivariance actually available: {engaged}"
-            + ("" if engaged else " (falling back to the reference einsum path)"),
-            flush=True,
-        )
 
     if device.type == "cuda":
         torch.set_float32_matmul_precision("high")
@@ -61,7 +45,6 @@ def main():
         num_master_nodes=args.num_master_nodes, feature_dim=args.feature_dim,
         hidden_dim=args.hidden_dim, n_max=args.n_max, num_outputs=1,
         num_layers=args.num_layers, edge_cutoff=5.0, sigma=args.sigma,
-        use_cuequivariance=args.cuequivariance,
     ).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=1e-3, fused=(device.type == "cuda"))
 
