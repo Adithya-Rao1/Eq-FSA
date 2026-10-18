@@ -22,33 +22,38 @@ class LRLayer(nn.Module):
         edge_feat_dim: int, n_master_nodes: int, num_broadcast_heads: int = 4,
         rbf_num_basis: int = 12, rbf_min: float = 0.3, rbf_cutoff: float = 25.0,
         sigma: Optional[float] = None, alpha_floor: float = 1e-4, use_norms: bool = True,
+        lazy_degree_gating: bool = False,
     ):
         super().__init__()
         self.max_degree = max_degree
         self.k_max = k_max
+        self.lazy_degree_gating = lazy_degree_gating
+
+        active_ceiling = k_max if lazy_degree_gating else max_degree
+        self.active_ceiling = active_ceiling
+        active_degrees = list(range(active_ceiling + 1))
 
         self.sr_attn = SRAttention(
-            radial_net, max_degree, feature_dim, hidden_dim, k_max=k_max,
+            radial_net, active_ceiling, feature_dim, hidden_dim, k_max=min(k_max, active_ceiling),
             edge_feat_dim=edge_feat_dim, use_norms=use_norms,
         )
         self.W_V_self_linear = nn.ModuleDict({
-            str(l): EquivariantLinear(feature_dim, feature_dim) for l in range(max_degree + 1)
+            str(l): EquivariantLinear(feature_dim, feature_dim) for l in active_degrees
         })
-        norm_degrees = list(range(max_degree + 1))
         self.W_V_self_norm = (
-            BatchedEquivariantRMSNorm(feature_dim, degrees=norm_degrees) if use_norms else nn.Identity()
+            BatchedEquivariantRMSNorm(feature_dim, degrees=active_degrees) if use_norms else nn.Identity()
         )
-        self.sigma_gate = BatchedGatedNonlinearity(feature_dim, degrees=norm_degrees)
+        self.sigma_gate = BatchedGatedNonlinearity(feature_dim, degrees=active_degrees)
         self.layer_norm_in = (
-            BatchedEquivariantRMSNorm(feature_dim, degrees=norm_degrees) if use_norms else nn.Identity()
+            BatchedEquivariantRMSNorm(feature_dim, degrees=active_degrees) if use_norms else nn.Identity()
         )
         self.layer_norm_mid = (
-            BatchedEquivariantRMSNorm(feature_dim, degrees=norm_degrees) if use_norms else nn.Identity()
+            BatchedEquivariantRMSNorm(feature_dim, degrees=active_degrees) if use_norms else nn.Identity()
         )
         self.layer_norm_out = (
-            BatchedEquivariantRMSNorm(feature_dim, degrees=norm_degrees) if use_norms else nn.Identity()
+            BatchedEquivariantRMSNorm(feature_dim, degrees=active_degrees) if use_norms else nn.Identity()
         )
-        self.readout = Readout(feature_dim, hidden_dim, use_norms=use_norms)
+        self.readout = Readout(feature_dim, hidden_dim, use_norms=use_norms, degrees=active_degrees)
 
         self.aggregator = MasterNodeAggregator(
             feature_dim, n_master_nodes, hidden_dim, rbf_num_basis, rbf_min, rbf_cutoff,
@@ -57,7 +62,7 @@ class LRLayer(nn.Module):
         self.W_master_self = IrrepLinear(feature_dim)
         self.master_ln = EquivariantRMSNorm(feature_dim, degree=0) if use_norms else nn.Identity()
         self.broadcast = MasterBroadcastAttention(
-            radial_net, max_degree, feature_dim, hidden_dim,
+            radial_net, active_ceiling, feature_dim, hidden_dim,
             num_heads=num_broadcast_heads, use_norms=use_norms,
         )
 
@@ -81,14 +86,15 @@ class LRLayer(nn.Module):
         V_inv: Optional[torch.Tensor] = None,
     ) -> Tuple[Dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
         B, N, _ = x_wrapped.shape
+        active_degrees = range(self.active_ceiling + 1)
 
         with torch.profiler.record_function("lr_local_sr"):
-            f_in = self.layer_norm_in(f_in)
+            f_in_active = self.layer_norm_in({l: f_in[l] for l in active_degrees})
 
             receiver_flat = edge_b * N + edge_i
             sender_flat = edge_b * N + edge_j
             f_in_i_e = {
-                k: f_in[k].reshape(B * N, *f_in[k].shape[2:]).index_select(0, receiver_flat)
+                k: f_in_active[k].reshape(B * N, *f_in_active[k].shape[2:]).index_select(0, receiver_flat)
                 for k in range(self.k_max + 1)
             }
             f0_j_e = {
@@ -101,12 +107,12 @@ class LRLayer(nn.Module):
                     edge_valid=edge_valid,
                 )
 
-            self_terms_raw = {l: self.W_V_self_linear[str(l)](f_in[l]) for l in range(self.max_degree + 1)}
+            self_terms_raw = {l: self.W_V_self_linear[str(l)](f_in_active[l]) for l in active_degrees}
             self_terms = self.W_V_self_norm(self_terms_raw)
 
             neighbor_raws: Dict[int, torch.Tensor] = {}
-            for l in range(self.max_degree + 1):
-                C = f_in[l].shape[2]
+            for l in active_degrees:
+                C = f_in_active[l].shape[2]
                 contrib_e = alpha_e.view(-1, 1, 1) * Wv_j_sr_flat[l]
                 neighbor_raws[l] = torch.zeros(
                     B * N, C, 2 * l + 1, device=x_wrapped.device, dtype=x_wrapped.dtype,
@@ -115,16 +121,19 @@ class LRLayer(nn.Module):
                 ).view(B, N, C, 2 * l + 1)
             neighbor_terms = self.sigma_gate(neighbor_raws)
 
-            pre_mid = {l: f_in[l] + self_terms[l] + neighbor_terms[l] for l in range(self.max_degree + 1)}
-            f_out = self.layer_norm_mid(pre_mid)
+            pre_mid = {l: f_in_active[l] + self_terms[l] + neighbor_terms[l] for l in active_degrees}
+            f_out_active = self.layer_norm_mid(pre_mid)
 
-            f_readout = self.readout(f_out)
-            pre_out = {l: f_readout[l] + f_out[l] for l in range(self.max_degree + 1)}
-            f_tilde = self.layer_norm_out(pre_out)
+            f_readout_active = self.readout(f_out_active)
+            pre_out = {l: f_readout_active[l] + f_out_active[l] for l in active_degrees}
+            f_tilde_active = self.layer_norm_out(pre_out)
+
+            f_tilde = dict(f_in)
+            f_tilde.update(f_tilde_active)
 
         with torch.profiler.record_function("lr_aggregation"):
             pooled, X_a_new = self.aggregator(
-                g_a_in.squeeze(-1), f_in[0].squeeze(-1), x_wrapped, X_a_in, node_mask, V, V_inv,
+                g_a_in.squeeze(-1), f_in_active[0].squeeze(-1), x_wrapped, X_a_in, node_mask, V, V_inv,
             )
 
         with torch.profiler.record_function("lr_update"):
@@ -132,6 +141,10 @@ class LRLayer(nn.Module):
             g_a_out = self.master_ln(self.W_master_self(g_a_in) + g_a_new.unsqueeze(-1))
 
         with torch.profiler.record_function("lr_broadcast"):
-            f_next = self.broadcast(f_tilde, g_a_out, X_a_new, x_wrapped, node_mask, V, V_inv)
+            f_next_active = self.broadcast(
+                {l: f_tilde[l] for l in active_degrees}, g_a_out, X_a_new, x_wrapped, node_mask, V, V_inv,
+            )
+            f_next = dict(f_tilde)
+            f_next.update(f_next_active)
 
         return f_next, g_a_out, X_a_new

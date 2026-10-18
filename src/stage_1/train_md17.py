@@ -122,6 +122,7 @@ def run_training(config: dict, device: torch.device | None = None):
         sigma=config.get("sigma"),
         alpha_floor=config.get("alpha_floor", 1e-4),
         use_norms=config.get("use_norms", True),
+        lazy_degree_gating=config.get("lazy_degree_gating", False),
     )
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {trainable_params:,}", flush=True)
@@ -186,6 +187,7 @@ def main():
     parser.add_argument("--sigma", type=float, default=None)
     parser.add_argument("--alpha-floor", type=float, default=1e-4)
     parser.add_argument("--use-norms", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--lazy-degree-gating", action=argparse.BooleanOptionalAction, default=False, help="[--backbone lr_restructure only] Cycle each layer's active degree ceiling and only compute up to it (see train_spice.py's flag of the same name); default off reproduces prior behavior exactly.")
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--prefetch-factor", type=int, default=2)
     parser.add_argument("--log-interval", type=int, default=10)

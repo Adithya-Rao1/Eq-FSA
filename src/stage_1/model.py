@@ -105,16 +105,24 @@ def seed_equivariant_features(
     return {1: f1, 2: f2}
 
 class Readout(nn.Module):
-    def __init__(self, feature_dim, hidden_dim=128, use_norms: bool = True):
+    def __init__(
+        self, feature_dim, hidden_dim=128, use_norms: bool = True,
+        degrees: Optional[List[int]] = None,
+    ):
         super().__init__()
         self.feature_dim = feature_dim
         self.hidden_dim = hidden_dim
+        degrees = [0, 1, 2] if degrees is None else list(degrees)
+        self.degrees = degrees
 
-        self.ffn0 = scalar_ffn(feature_dim, hidden_dim, use_norms=use_norms)
-        self.ffn1 = high_ord_ffn(feature_dim, hidden_dim, 1, use_norms=use_norms)
-        self.ffn2 = high_ord_ffn(feature_dim, hidden_dim, 2, use_norms=use_norms)
+        if 0 in degrees:
+            self.ffn0 = scalar_ffn(feature_dim, hidden_dim, use_norms=use_norms)
+        if 1 in degrees:
+            self.ffn1 = high_ord_ffn(feature_dim, hidden_dim, 1, use_norms=use_norms)
+        if 2 in degrees:
+            self.ffn2 = high_ord_ffn(feature_dim, hidden_dim, 2, use_norms=use_norms)
 
-        self.ffn = [self.ffn0, self.ffn1, self.ffn2]
+        self.ffn = {l: getattr(self, f"ffn{l}") for l in degrees}
 
     def forward(self, f):
         for l in f.keys():

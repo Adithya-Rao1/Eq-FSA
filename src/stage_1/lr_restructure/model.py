@@ -5,6 +5,7 @@ import torch.nn as nn
 
 from stage_1.model import (
     Readout, masked_weighted_com, safe_minimum_image_cutoff, seed_equivariant_features,
+    _compute_k_max,
 )
 from utils.pw_bases import minimum_image, make_wavevectors, make_miller_indices, safe_inv
 from utils.se3_utils import scalar_ffn, init_sequential_, init_linear_
@@ -72,10 +73,12 @@ class LREnergyModel(nn.Module):
         sigma: Optional[float] = None,
         alpha_floor: float = 1e-4,
         use_norms: bool = True,
+        lazy_degree_gating: bool = False,
     ):
         super().__init__()
         self.max_degree = max_degree
         self.n_master_nodes = n_master_nodes
+        self.lazy_degree_gating = lazy_degree_gating
         self.edge_cutoff = edge_cutoff
         self.n_max = n_max
         self.pw_e_cutoff = pw_e_cutoff
@@ -108,12 +111,13 @@ class LREnergyModel(nn.Module):
         self.layers = nn.ModuleList([
             LRLayer(
                 radial_net, max_degree, feature_dim, hidden_dim, edge_cutoff, n_max, pw_e_cutoff,
-                k_max=max_degree, edge_feat_dim=edge_feat_dim, n_master_nodes=n_master_nodes,
+                k_max=(_compute_k_max(m, max_degree) if lazy_degree_gating else max_degree),
+                edge_feat_dim=edge_feat_dim, n_master_nodes=n_master_nodes,
                 num_broadcast_heads=num_broadcast_heads, rbf_num_basis=rbf_num_basis,
                 rbf_min=rbf_min, rbf_cutoff=rbf_cutoff, sigma=sigma, alpha_floor=alpha_floor,
-                use_norms=use_norms,
+                use_norms=use_norms, lazy_degree_gating=lazy_degree_gating,
             )
-            for _ in range(num_layers)
+            for m in range(num_layers)
         ])
 
         self.readout = Readout(feature_dim, hidden_dim, use_norms=use_norms)

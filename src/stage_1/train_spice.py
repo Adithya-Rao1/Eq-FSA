@@ -50,6 +50,7 @@ class SPICEEnergyForceModel(nn.Module):
         sigma: float | None = None,
         alpha_floor: float = 1e-4,
         use_norms: bool = True,
+        lazy_degree_gating: bool = False,
     ):
         super().__init__()
         self.backbone = backbone
@@ -73,6 +74,7 @@ class SPICEEnergyForceModel(nn.Module):
                 sigma=sigma,
                 alpha_floor=alpha_floor,
                 use_norms=use_norms,
+                lazy_degree_gating=lazy_degree_gating,
             )
         elif backbone == "production":
             self.energy_model = EnergyModel(
@@ -781,6 +783,7 @@ def run_training(config: dict, device: torch.device | None = None):
         sigma=config.get("sigma"),
         alpha_floor=config.get("alpha_floor", 1e-4),
         use_norms=config.get("use_norms", True),
+        lazy_degree_gating=config.get("lazy_degree_gating", False),
     )
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -849,6 +852,7 @@ def main():
     parser.add_argument("--sigma", type=float, default=None, help="[--backbone lr_restructure only] Fixed physical width for the Ewald damping envelope (alpha = 1/(2*sigma^2)); default None leaves alpha a learned parameter, matching production EnergyModel's behavior -- SPICE molecules have no single canonical sigma the way the synthetic lr_sr Coulomb benchmark does")
     parser.add_argument("--alpha-floor", type=float, default=1e-4, help="[--backbone lr_restructure only] Floor added to the learned Ewald damping alpha (softplus(alpha_param) + alpha_floor); ignored when --sigma is set")
     parser.add_argument("--use-norms", action=argparse.BooleanOptionalAction, default=True, help="[--backbone lr_restructure only] Use RMSNorm throughout the backbone; --no-use-norms strips them (ablation)")
+    parser.add_argument("--lazy-degree-gating", action=argparse.BooleanOptionalAction, default=False, help="[--backbone lr_restructure only] Cycle each layer's active spherical-harmonic degree ceiling per stage_1/model.py's _compute_k_max schedule, and only build/compute up to that ceiling (degrees above it pass through unchanged for that layer) instead of every layer touching every degree. Reduces parameter count and per-layer compute; default off reproduces prior lr_restructure behavior exactly.")
     parser.add_argument("--val-fraction", type=float, default=0.05)
     parser.add_argument("--test-fraction", type=float, default=0.05, help="Held-out test split, carved out alongside val (never trained or validated against) -- its identity is persisted to <ckpt-dir>/dataset_split.pt for later use by e.g. diagnostics/test_set_confidence_interval.py")
     parser.add_argument("--num-workers", type=int, default=8)

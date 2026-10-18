@@ -24,12 +24,8 @@ def main():
     parser.add_argument("--trace-out", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--torch-compile", action="store_true")
-    parser.add_argument(
-        "--compile-mode", type=str, default=None,
-        choices=[None, "default", "reduce-overhead", "max-autotune"],
-        help="reduce-overhead captures a CUDA graph to eliminate per-kernel launch overhead -- "
-             "the mode that actually targets the symptom this script measures.",
-    )
+    parser.add_argument("--lazy-degree-gating", action="store_true", help="Cycle each layer's active degree ceiling and only compute up to it; the A/B flag for this session's param/compute-reduction change.")
+    parser.add_argument( "--compile-mode", type=str, default=None, choices=[None, "default", "reduce-overhead", "max-autotune"],)
     args = parser.parse_args()
 
     device = torch.device(args.device) if args.device else (
@@ -45,7 +41,10 @@ def main():
         num_master_nodes=args.num_master_nodes, feature_dim=args.feature_dim,
         hidden_dim=args.hidden_dim, n_max=args.n_max, num_outputs=1,
         num_layers=args.num_layers, edge_cutoff=5.0, sigma=args.sigma,
+        lazy_degree_gating=args.lazy_degree_gating,
     ).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"lazy_degree_gating={args.lazy_degree_gating}: {n_params:,} params", flush=True)
     opt = torch.optim.Adam(model.parameters(), lr=1e-3, fused=(device.type == "cuda"))
 
     train_model = model

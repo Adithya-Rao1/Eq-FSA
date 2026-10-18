@@ -16,6 +16,7 @@ class LRRestructureEncoder(nn.Module):
         num_outputs: int, num_layers: int = 4, edge_cutoff: float = 5.0,
         num_broadcast_heads: int = 4, rbf_num_basis: int = 12, rbf_min: float = 0.3,
         rbf_cutoff: float = 25.0, sigma: Optional[float] = None, alpha_floor: float = 1e-4,
+        lazy_degree_gating: bool = False,
     ):
         super().__init__()
         from utils.se3_utils import RadialNetwork
@@ -27,6 +28,7 @@ class LRRestructureEncoder(nn.Module):
             n_master_nodes=num_master_nodes, edge_feat_dim=1,
             num_broadcast_heads=num_broadcast_heads, rbf_num_basis=rbf_num_basis,
             rbf_min=rbf_min, rbf_cutoff=rbf_cutoff, sigma=sigma, alpha_floor=alpha_floor,
+            lazy_degree_gating=lazy_degree_gating,
         )
         self.decoder = _Decoder(feature_dim, hidden_dim, num_outputs)
 
