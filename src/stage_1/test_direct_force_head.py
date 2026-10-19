@@ -29,8 +29,8 @@ N_MASTER_NODES = 2
 EDGE_CUTOFF = 100.0
 N_MAX = 1
 
-ATOL = 1e-6
-RTOL = 1e-6
+ATOL = 1e-7
+RTOL = 1e-7
 
 
 def build_model(seed: int = 123) -> SPICEEnergyForceModel:
@@ -66,7 +66,7 @@ def test_sh1_to_cartesian_basis_convention():
     n = n / n.norm(dim=-1, keepdim=True)
     Y1 = get_spherical_harmonics(1, n)
     recovered = torch.einsum("ij,nj->ni", SH1_TO_CARTESIAN.to(DTYPE), Y1)
-    torch.testing.assert_close(recovered, n, atol=1e-3, rtol=1e-3)
+    torch.testing.assert_close(recovered, n, atol=ATOL, rtol=RTOL)
 
 
 @pytest.mark.parametrize("full", [False, True])
@@ -97,14 +97,19 @@ def test_net_force_is_zero():
     with torch.no_grad():
         _, F = model(x, types_, masses, mask, V, mol_props, edge_feats, force_mode="direct")
     net = (F * mask.unsqueeze(-1).to(DTYPE)).sum(dim=1)
-    torch.testing.assert_close(net, torch.zeros_like(net), atol=1e-8, rtol=0.0)
+    torch.testing.assert_close(net, torch.zeros_like(net), atol=ATOL, rtol=0.0)
 
 
 def _net_torque(x, F, masses, mask, V):
     from stage_1.model import masked_weighted_com
-    r_com, _ = masked_weighted_com(x, masses, mask, V=None)
-    r_rel = (x - r_com.unsqueeze(1)) * mask.unsqueeze(-1).to(DTYPE)
-    return (torch.cross(r_rel, F, dim=-1) * mask.unsqueeze(-1).to(DTYPE)).sum(dim=1)
+    from utils.pw_bases import minimum_image
+    m = mask.to(DTYPE)
+    ref_idx = m.argmax(dim=1)
+    x_ref = x[torch.arange(x.shape[0]), ref_idx]
+    x_tilde = x_ref.unsqueeze(1) + minimum_image(x - x_ref.unsqueeze(1), V)
+    r_com, _ = masked_weighted_com(x_tilde, masses, mask, V=None)
+    r_rel = (x_tilde - r_com.unsqueeze(1)) * m.unsqueeze(-1)
+    return (torch.cross(r_rel, F, dim=-1) * m.unsqueeze(-1)).sum(dim=1)
 
 
 def test_net_torque_is_zero_random_geometry():
@@ -115,7 +120,27 @@ def test_net_torque_is_zero_random_geometry():
     with torch.no_grad():
         _, F = model(x, types_, masses, mask, V, mol_props, edge_feats, force_mode="direct")
     tau = _net_torque(x, F, masses, mask, V)
-    torch.testing.assert_close(tau, torch.zeros_like(tau), atol=5e-4, rtol=0.0)
+    torch.testing.assert_close(tau, torch.zeros_like(tau), atol=ATOL, rtol=0.0)
+
+
+def test_net_force_and_torque_zero_with_atom_shifted_by_lattice_vector():
+    model = build_model()
+    model.eval()
+    B, N = 2, 6
+    x, types_, masses, mask, V, mol_props, edge_feats = make_batch(B, N, seed=17)
+
+    lattice_vec = V[:, :, 0]  # (B, 3); to_cartesian(s, V) = V @ s, so s=(1,0,0) -> V[...,0]
+    x_shifted = x.clone()
+    x_shifted[:, -1, :] = x_shifted[:, -1, :] + lattice_vec  # last atom moved by one full cell
+
+    with torch.no_grad():
+        _, F = model(x_shifted, types_, masses, mask, V, mol_props, edge_feats, force_mode="direct")
+
+    net = (F * mask.unsqueeze(-1).to(DTYPE)).sum(dim=1)
+    torch.testing.assert_close(net, torch.zeros_like(net), atol=ATOL, rtol=0.0)
+
+    tau = _net_torque(x_shifted, F, masses, mask, V)
+    torch.testing.assert_close(tau, torch.zeros_like(tau), atol=ATOL, rtol=0.0)
 
 
 def test_net_torque_is_zero_near_linear_geometry():
@@ -133,7 +158,7 @@ def test_net_torque_is_zero_near_linear_geometry():
         _, F = model(x, types_, masses, mask, V, mol_props, edge_feats, force_mode="direct")
     assert torch.isfinite(F).all()
     tau = _net_torque(x, F, masses, mask, V)
-    torch.testing.assert_close(tau, torch.zeros_like(tau), atol=1e-4, rtol=0.0)
+    torch.testing.assert_close(tau, torch.zeros_like(tau), atol=ATOL, rtol=0.0)
 
 
 def test_direct_mode_never_calls_autograd_grad(monkeypatch):
