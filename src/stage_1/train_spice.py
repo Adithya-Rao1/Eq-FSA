@@ -732,6 +732,14 @@ class SPICETrainer:
                 f"out of {batch_idx + 1} (cumulative: {self._n_skipped_nonfinite})."
             )
         self._log_csv_row("train_epoch_avg", epoch, loss=avg_loss)
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        n_steps = batch_idx + 1
+        elapsed = time.time() - epoch_start
+        logger.info(
+            f"Epoch {epoch}: {elapsed:.2f}s total, {1000 * elapsed / n_steps:.1f}ms/step "
+            f"({n_steps} steps)"
+        )
         return avg_loss
 
     def validate(self, epoch: int) -> float:
