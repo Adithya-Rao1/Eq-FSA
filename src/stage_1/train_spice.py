@@ -24,6 +24,12 @@ from diagnostics.hooks import attach_hooks, attach_grad_hooks
 from diagnostics.provenance import ProvenanceLogger
 from diagnostics.drift import DriftDetector
 
+
+@torch._dynamo.disable()
+def _solve_torque_alpha(I_com: torch.Tensor, tau: torch.Tensor) -> torch.Tensor:
+    return (torch.linalg.pinv(I_com, hermitian=True) @ tau.unsqueeze(-1)).squeeze(-1)
+
+
 class SPICEEnergyForceModel(nn.Module):
     def __init__(
         self,
@@ -148,9 +154,8 @@ class SPICEEnergyForceModel(nn.Module):
         I_terms = masses_m.unsqueeze(-1).unsqueeze(-1) * (
             r_sq.unsqueeze(-1).unsqueeze(-1) * eye3 - r_outer
         )
-        I_com = I_terms.sum(dim=1)  
-        # For singlular I_com (e.g. linear N=2 molecules)
-        alpha = (torch.linalg.pinv(I_com, hermitian=True) @ tau.unsqueeze(-1)).squeeze(-1)
+        I_com = I_terms.sum(dim=1)
+        alpha = _solve_torque_alpha(I_com, tau)
         correction = masses_m.unsqueeze(-1) * torch.cross(
             alpha.unsqueeze(1).expand_as(r_rel), r_rel, dim=-1,
         )
