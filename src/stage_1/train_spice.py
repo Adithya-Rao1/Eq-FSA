@@ -132,7 +132,8 @@ class SPICEEnergyForceModel(nn.Module):
         n_real = m.sum(dim=1, keepdim=True).clamp(min=1.0).unsqueeze(-1)
         F_mean = (F_raw * m.unsqueeze(-1)).sum(dim=1, keepdim=True) / n_real
         F1 = F_raw - F_mean
-      
+
+        ref_idx = m.argmax(dim=1)
         x_ref = x[torch.arange(x.shape[0], device=x.device), ref_idx]
         x_tilde = x_ref.unsqueeze(1) + minimum_image(x - x_ref.unsqueeze(1), V)
         r_com, _ = masked_weighted_com(x_tilde, masses, mask, V=None)
