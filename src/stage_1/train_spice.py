@@ -13,7 +13,8 @@ import torch.nn as nn
 import torch.nn.functional as nnf
 from torch.utils.data import DataLoader, random_split
 
-from stage_1.model import EnergyModel, masked_mean
+from stage_1.model import EnergyModel, masked_mean, masked_weighted_com, SH1_TO_CARTESIAN
+from utils.pw_bases import minimum_image
 from stage_1.lr_restructure.model import LREnergyModel
 from utils.se3_utils import RadialNetwork, EquivariantNormReadout, EquivariantRMSNorm, EquivariantLinear
 from stage_1.spice_dataset import SPICEDataset, spice_collate_fn, _EDGE_FEAT_DIM
@@ -110,6 +111,50 @@ class SPICEEnergyForceModel(nn.Module):
             nn.LeakyReLU(),
             EquivariantLinear(hidden_dim, 1),
         )
+
+        self.direct_force_proj = EquivariantLinear(feature_dim, 1)
+        self.register_buffer("sh1_to_cartesian", SH1_TO_CARTESIAN.clone())
+
+    def _compute_direct_forces(
+        self,
+        f: dict,
+        x: torch.Tensor,
+        masses: torch.Tensor,
+        mask: torch.Tensor,
+        V: torch.Tensor,
+    ) -> torch.Tensor:
+        m = mask.to(x.dtype)
+
+        f1_sh = self.direct_force_proj(f[1]).squeeze(-2)  
+        sh1_to_cartesian = self.sh1_to_cartesian.to(device=x.device, dtype=f1_sh.dtype)
+        F_raw = torch.einsum("ij,bnj->bni", sh1_to_cartesian, f1_sh)  # Cartesian
+
+        n_real = m.sum(dim=1, keepdim=True).clamp(min=1.0).unsqueeze(-1)
+        F_mean = (F_raw * m.unsqueeze(-1)).sum(dim=1, keepdim=True) / n_real
+        F1 = F_raw - F_mean
+      
+        x_ref = x[torch.arange(x.shape[0], device=x.device), ref_idx]
+        x_tilde = x_ref.unsqueeze(1) + minimum_image(x - x_ref.unsqueeze(1), V)
+        r_com, _ = masked_weighted_com(x_tilde, masses, mask, V=None)
+        r_rel = (x_tilde - r_com.unsqueeze(1)) * m.unsqueeze(-1)
+        masses_m = masses * m
+
+        tau = (torch.cross(r_rel, F1, dim=-1) * m.unsqueeze(-1)).sum(dim=1)  # (B, 3)
+
+        r_outer = torch.einsum("bni,bnj->bnij", r_rel, r_rel)
+        r_sq = (r_rel ** 2).sum(dim=-1)
+        eye3 = torch.eye(3, device=x.device, dtype=x.dtype)
+        I_terms = masses_m.unsqueeze(-1).unsqueeze(-1) * (
+            r_sq.unsqueeze(-1).unsqueeze(-1) * eye3 - r_outer
+        )
+        I_com = I_terms.sum(dim=1)  
+        # For singlular I_com (e.g. linear N=2 molecules)
+        alpha = (torch.linalg.pinv(I_com, hermitian=True) @ tau.unsqueeze(-1)).squeeze(-1)
+        correction = masses_m.unsqueeze(-1) * torch.cross(
+            alpha.unsqueeze(1).expand_as(r_rel), r_rel, dim=-1,
+        )
+        return F1 - correction
+
     def forward(
         self,
         x: torch.Tensor,
@@ -119,7 +164,8 @@ class SPICEEnergyForceModel(nn.Module):
         V: torch.Tensor,
         mol_props: torch.Tensor,
         edge_feats: torch.Tensor,
-    ) -> torch.Tensor:
+        force_mode: str = "energy_only",
+    ):
         f = self.energy_model(
             x, types_, masses, mask, V, mol_props, edge_feats,
         )
@@ -129,7 +175,16 @@ class SPICEEnergyForceModel(nn.Module):
         u_ten = self.norm_readout2(f_pooled[2])
         full_vec = f_pooled[0].squeeze(-1) + u_vec.unsqueeze(-1) + u_ten.unsqueeze(-1)
         out = self.out(full_vec.unsqueeze(-1))
-        return out.squeeze(-1).squeeze(-1)
+        energy = out.squeeze(-1).squeeze(-1)
+
+        if force_mode == "energy_only":
+            return energy
+        if force_mode in ("direct", "both"):
+            direct_forces = self._compute_direct_forces(f, x, masses, mask, V)
+            return energy, direct_forces
+        raise ValueError(
+            f"Unknown force_mode: {force_mode!r} (expected 'energy_only', 'direct', or 'both')"
+        )
 
 def compute_energy_and_forces(
     model: SPICEEnergyForceModel,
@@ -140,14 +195,26 @@ def compute_energy_and_forces(
     V: torch.Tensor,
     mol_props: torch.Tensor,
     edge_feats: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    x = x.clone().requires_grad_(True)
-    U = model(x, types_, masses, mask, V, mol_props, edge_feats)
-    (grad_x,) = torch.autograd.grad(
-        U.sum(), x, create_graph=model.training,
-    )
-    F = -grad_x
-    return U, F
+    force_mode: str = "conservative",
+    model_fn=None,
+):
+    call = model_fn if model_fn is not None else model
+    if force_mode == "conservative":
+        x = x.clone().requires_grad_(True)
+        U = call(x, types_, masses, mask, V, mol_props, edge_feats)
+        (grad_x,) = torch.autograd.grad(U.sum(), x, create_graph=model.training)
+        F = -grad_x
+        return U, F
+    if force_mode == "direct":
+        U, F = call(x, types_, masses, mask, V, mol_props, edge_feats, force_mode="direct")
+        return U, F
+    if force_mode == "both":
+        x = x.clone().requires_grad_(True)
+        U, F_direct = call(x, types_, masses, mask, V, mol_props, edge_feats, force_mode="direct")
+        (grad_x,) = torch.autograd.grad(U.sum(), x, create_graph=model.training)
+        F_cons = -grad_x
+        return U, F_direct, F_cons
+    raise ValueError(f"Unknown force_mode: {force_mode!r} (expected 'conservative', 'direct', or 'both')")
 
 
 def spice_loss(
@@ -158,12 +225,26 @@ def spice_loss(
     mask: torch.Tensor,
     lambda1: float,
     lambda2: float,
+    F_cons: torch.Tensor | None = None,
+    F_cons_hat: torch.Tensor | None = None,
+    lambda2_conservative: float | None = None,
+    lambda_force_match: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     energy_term = lambda1 * (U - U_hat) ** 2
     force_sq = ((F - F_hat) ** 2).sum(dim=-1) * mask
     n_atoms = mask.sum(dim=1).clamp(min=1)
     force_term = lambda2 * (force_sq.sum(dim=1) / n_atoms)
-    return (energy_term + force_term).mean(), energy_term.mean(), force_term.mean()
+    total = energy_term + force_term
+
+    if F_cons is not None and F_cons_hat is not None and lambda2_conservative:
+        cons_sq = ((F_cons - F_cons_hat) ** 2).sum(dim=-1) * mask
+        total = total + lambda2_conservative * (cons_sq.sum(dim=1) / n_atoms)
+
+    if F_cons is not None and lambda_force_match:
+        match_sq = ((F - F_cons) ** 2).sum(dim=-1) * mask
+        total = total + lambda_force_match * (match_sq.sum(dim=1) / n_atoms)
+
+    return total.mean(), energy_term.mean(), force_term.mean()
 
 
 _CSV_FIELDS = [
@@ -327,6 +408,21 @@ class SPICETrainer:
             fused=(self.device.type == "cuda"),
         )
 
+        self.force_mode = config.get("force_mode", "conservative")
+        self.train_model = self.model
+        if config.get("torch_compile"):
+            if self.force_mode == "direct":
+                compile_kwargs = {}
+                if config.get("compile_mode"):
+                    compile_kwargs["mode"] = config["compile_mode"]
+                self.train_model = torch.compile(self.model, **compile_kwargs)
+            else:
+                logger.warning(
+                    f"--torch-compile was requested but force_mode={self.force_mode!r} still "
+                    "needs the autograd-forces double-backward graph (create_graph=True) -- "
+                    "compiling only helps in force_mode='direct'. Falling back to eager."
+                )
+
         steps_per_epoch = max(len(self.train_loader), 1)
         total_steps = steps_per_epoch * config["n_epochs"]
         warmup_steps = max(config.get("warmup_epochs", 1) * steps_per_epoch, 1)
@@ -347,6 +443,10 @@ class SPICETrainer:
         logger.info(f"  Device:              {self.device}")
         logger.info(f"  lr:                  {config['lr']:.2e}")
         logger.info(f"  lambda1 / lambda2:   {config['lambda1']} / {config['lambda2']}")
+        logger.info(
+            f"  force_mode:          {self.force_mode}  "
+            f"(torch.compile active: {self.train_model is not self.model})"
+        )
         logger.info(f"  Total training steps:{total_steps}")
         logger.info(
             f"  Model config:        num_layers={config.get('num_layers')} max_degree={config.get('max_degree')} "
@@ -363,12 +463,19 @@ class SPICETrainer:
 
     def _step(self, batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch = self._to_device(batch)
-        U, F = compute_energy_and_forces(
+        result = compute_energy_and_forces(
             self.model,
             batch["all_solute_x"], batch["all_solute_types"],
             batch["all_solute_masses"], batch["all_solute_mask"], batch["V"],
             batch['mol_props'], batch['all_solute_edge_feats'],
+            force_mode=self.force_mode, model_fn=self.train_model,
         )
+        F_cons = None
+        if self.force_mode == "both":
+            U, F, F_cons = result
+        else:
+            U, F = result
+
         energy_mean = self.config["energy_mean"]
         energy_std = self.config["energy_std"]
         force_rms = self.config["force_rms"]
@@ -377,6 +484,7 @@ class SPICETrainer:
         U_target_n = (batch["energy"] - energy_mean) / energy_std
         F_n = F / force_rms
         F_target_n = batch["solute_forces"] / force_rms
+        F_cons_n = F_cons / force_rms if F_cons is not None else None
 
         if self.diag:
             mask = batch["all_solute_mask"].bool()
@@ -391,6 +499,9 @@ class SPICETrainer:
         return spice_loss(
             U_n, U_target_n, F_n, F_target_n, batch["all_solute_mask"],
             self.config["lambda1"], self.config["lambda2"],
+            F_cons=F_cons_n, F_cons_hat=F_target_n if F_cons_n is not None else None,
+            lambda2_conservative=self.config.get("lambda2_conservative"),
+            lambda_force_match=self.config.get("lambda_force_match", 0.0),
         )
 
     @staticmethod
@@ -853,6 +964,11 @@ def main():
     parser.add_argument("--alpha-floor", type=float, default=1e-4, help="[--backbone lr_restructure only] Floor added to the learned Ewald damping alpha (softplus(alpha_param) + alpha_floor); ignored when --sigma is set")
     parser.add_argument("--use-norms", action=argparse.BooleanOptionalAction, default=True, help="[--backbone lr_restructure only] Use RMSNorm throughout the backbone; --no-use-norms strips them (ablation)")
     parser.add_argument("--lazy-degree-gating", action=argparse.BooleanOptionalAction, default=False, help="[--backbone lr_restructure only] Cycle each layer's active spherical-harmonic degree ceiling per stage_1/model.py's _compute_k_max schedule, and only build/compute up to that ceiling (degrees above it pass through unchanged for that layer) instead of every layer touching every degree. Reduces parameter count and per-layer compute; default off reproduces prior lr_restructure behavior exactly.")
+    parser.add_argument("--force-mode", type=str, default="conservative", choices=["conservative", "direct", "both"], help="'conservative' (default): forces via autograd.grad on positions, unchanged. 'direct': forces from SPICEEnergyForceModel's direct force head, no autograd through positions at all -- the torch.compile-friendly path, intended for pretraining. 'both': one forward pass computes direct forces and energy together, one autograd.grad call (reusing that graph) also recovers conservative forces -- PET-M-style joint training; see --lambda2-conservative/--lambda-force-match.")
+    parser.add_argument("--lambda2-conservative", type=float, default=None, help="[force_mode=both only] Loss weight for the conservative force term against the DFT-labeled target. Defaults to None (term disabled) -- pass a value to enable PET-M-style joint training of both heads against the ground truth.")
+    parser.add_argument("--lambda-force-match", type=float, default=0.0, help="[force_mode=both only] Loss weight for ||F_direct - F_conservative||^2, encouraging the direct head to approximate the true energy gradient (Bigi et al. 2412.11569 Sec 3.5's recommended cheap alternative to a direct Jacobian-symmetry penalty). Default 0 (off).")
+    parser.add_argument("--torch-compile", action=argparse.BooleanOptionalAction, default=False, help="Wrap the model in torch.compile for the forward pass. Only has an effect when --force-mode direct (the only mode without the create_graph=True double-backward pattern that breaks compile); a warning is logged and this is ignored otherwise.")
+    parser.add_argument("--compile-mode", type=str, default=None, choices=[None, "default", "reduce-overhead", "max-autotune"], help="torch.compile mode, passed through when --torch-compile is set.")
     parser.add_argument("--val-fraction", type=float, default=0.05)
     parser.add_argument("--test-fraction", type=float, default=0.05, help="Held-out test split, carved out alongside val (never trained or validated against) -- its identity is persisted to <ckpt-dir>/dataset_split.pt for later use by e.g. diagnostics/test_set_confidence_interval.py")
     parser.add_argument("--num-workers", type=int, default=8)
