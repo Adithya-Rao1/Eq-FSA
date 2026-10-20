@@ -746,24 +746,40 @@ class SPICETrainer:
         self.model.eval()
         val_start = time.time()
         val_loss = 0.0
+        batch_times = []
         grad_ctx = torch.no_grad() if self.force_mode == "direct" else torch.enable_grad()
         with grad_ctx:
             for batch in self.val_loader:
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize()
+                batch_start = time.time()
                 loss, _, _ = self._step(batch)
                 val_loss += float(loss.item())
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize()
+                batch_times.append(time.time() - batch_start)
         avg = val_loss / max(len(self.val_loader), 1)
         self._log_csv_row("validation", epoch, loss=avg)
         self.model.train()
         if self.diag:
             counters.snapshot_and_reset()
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
         elapsed = time.time() - val_start
         n_batches = max(len(self.val_loader), 1)
         logger.info(
             f"Validation (epoch {epoch}): {elapsed:.2f}s total, "
             f"{1000 * elapsed / n_batches:.1f}ms/batch ({n_batches} batches)"
         )
+        if batch_times:
+            sorted_times = sorted(batch_times)
+            median = sorted_times[len(sorted_times) // 2]
+            outliers = [t for t in batch_times if t > 3 * median]
+            worst = sorted_times[-5:]
+            logger.info(
+                f"Validation per-batch breakdown: median={1000*median:.1f}ms  "
+                f"min={1000*sorted_times[0]:.1f}ms  max={1000*sorted_times[-1]:.1f}ms  "
+                f"{len(outliers)}/{n_batches} batches >3x median  "
+                f"worst-5(ms)={[round(1000*t, 1) for t in worst]}"
+            )
         return avg
 
     def save_checkpoint(self, epoch: int, val_loss: float, is_best: bool = False):
