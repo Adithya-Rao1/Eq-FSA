@@ -22,12 +22,13 @@ class LRLayer(nn.Module):
         edge_feat_dim: int, n_master_nodes: int, num_broadcast_heads: int = 4,
         rbf_num_basis: int = 12, rbf_min: float = 0.3, rbf_cutoff: float = 25.0,
         sigma: Optional[float] = None, alpha_floor: float = 1e-4, use_norms: bool = True,
-        lazy_degree_gating: bool = False,
+        lazy_degree_gating: bool = False, use_long_range: bool = True,
     ):
         super().__init__()
         self.max_degree = max_degree
         self.k_max = k_max
         self.lazy_degree_gating = lazy_degree_gating
+        self.use_long_range = use_long_range
 
         active_ceiling = k_max if lazy_degree_gating else max_degree
         self.active_ceiling = active_ceiling
@@ -55,16 +56,17 @@ class LRLayer(nn.Module):
         )
         self.readout = Readout(feature_dim, hidden_dim, use_norms=use_norms, degrees=active_degrees)
 
-        self.aggregator = MasterNodeAggregator(
-            feature_dim, n_master_nodes, hidden_dim, rbf_num_basis, rbf_min, rbf_cutoff,
-        )
-        self.update = MasterNodeUpdate(sigma=sigma, alpha_floor=alpha_floor)
-        self.W_master_self = IrrepLinear(feature_dim)
-        self.master_ln = EquivariantRMSNorm(feature_dim, degree=0) if use_norms else nn.Identity()
-        self.broadcast = MasterBroadcastAttention(
-            radial_net, active_ceiling, feature_dim, hidden_dim,
-            num_heads=num_broadcast_heads, use_norms=use_norms,
-        )
+        if self.use_long_range:
+            self.aggregator = MasterNodeAggregator(
+                feature_dim, n_master_nodes, hidden_dim, rbf_num_basis, rbf_min, rbf_cutoff,
+            )
+            self.update = MasterNodeUpdate(sigma=sigma, alpha_floor=alpha_floor)
+            self.W_master_self = IrrepLinear(feature_dim)
+            self.master_ln = EquivariantRMSNorm(feature_dim, degree=0) if use_norms else nn.Identity()
+            self.broadcast = MasterBroadcastAttention(
+                radial_net, active_ceiling, feature_dim, hidden_dim,
+                num_heads=num_broadcast_heads, use_norms=use_norms,
+            )
 
     def forward(
         self,
@@ -130,6 +132,9 @@ class LRLayer(nn.Module):
 
             f_tilde = dict(f_in)
             f_tilde.update(f_tilde_active)
+
+        if not self.use_long_range:
+            return f_tilde, g_a_in, X_a_in
 
         with torch.profiler.record_function("lr_aggregation"):
             pooled, X_a_new = self.aggregator(

@@ -144,6 +144,7 @@ def run_training(config: dict, device: torch.device | None = None):
         alpha_floor=config.get("alpha_floor", 1e-4),
         use_norms=config.get("use_norms", True),
         lazy_degree_gating=config.get("lazy_degree_gating", False),
+        use_long_range=config.get("use_long_range", True),
     )
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {trainable_params:,}", flush=True)
@@ -180,14 +181,14 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--n-epochs", type=int, default=200)
     parser.add_argument("--max-steps", type=int, default=None)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument("--min-lr", type=float, default=1e-6, help="ReduceLROnPlateau's LR floor")
-    parser.add_argument("--plateau-factor", type=float, default=0.8, help="ReduceLROnPlateau's multiplicative LR reduction on a detected plateau")
+    parser.add_argument("--plateau-factor", type=float, default=0.9, help="ReduceLROnPlateau's multiplicative LR reduction on a detected plateau")
     parser.add_argument("--plateau-patience", type=int, default=50, help="Validation events (not epochs -- see --val-every) with no improvement before ReduceLROnPlateau reduces LR")
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--lambda1", type=float, default=1.0, help="Energy loss weight")
-    parser.add_argument("--lambda2", type=float, default=100.0, help="Force loss weight (rMD17's 1000-config regime is force-starved relative to SPICE's 1.1M-conformation scale; weighted toward forces like the field's own rMD17 protocols)")
+    parser.add_argument("--lambda2", type=float, default=1000.0, help="Force loss weight")
     parser.add_argument("--feature-dim", type=int, default=64)
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--max-degree", type=int, default=2)
@@ -210,6 +211,7 @@ def main():
     parser.add_argument("--sigma", type=float, default=None)
     parser.add_argument("--alpha-floor", type=float, default=1e-4)
     parser.add_argument("--use-norms", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--use-long-range", action=argparse.BooleanOptionalAction, default=True, help="[--backbone lr_restructure only] Run the master-node/long-range channel; --no-use-long-range skips it entirely (not constructed, not called) for a local-only ablation")
     parser.add_argument("--lazy-degree-gating", action=argparse.BooleanOptionalAction, default=False, help="[--backbone lr_restructure only] Cycle each layer's active degree ceiling and only compute up to it (see train_spice.py's flag of the same name); default off reproduces prior behavior exactly.")
     parser.add_argument("--force-mode", type=str, default="conservative", choices=["conservative", "direct", "both"], help="See train_spice.py's flag of the same name. 'direct' pretraining + 'conservative' fine-tuning (two separate invocations via --resume) is the recommended compile-friendly two-stage recipe.")
     parser.add_argument("--lambda2-conservative", type=float, default=None, help="[force_mode=both only] See train_spice.py's flag of the same name.")

@@ -308,7 +308,7 @@ def train_one(model_name: str, config: dict, device: torch.device, seed: int) ->
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=1e-4, fused=(device.type == "cuda"))
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=config.get("plateau_factor", 0.8),
+        optimizer, mode="min", factor=config.get("plateau_factor", 0.9),
         patience=config.get("plateau_patience", 50), min_lr=config.get("min_lr", 1e-6),
     )
 
@@ -362,11 +362,11 @@ def main():
     parser.add_argument("--num-tensor-features", type=int, default=16, help="[allegro only]")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--lambda1", type=float, default=1.0)
-    parser.add_argument("--lambda2", type=float, default=100.0)
+    parser.add_argument("--lambda2", type=float, default=1000.0)
     parser.add_argument("--min-lr", type=float, default=1e-6, help="ReduceLROnPlateau's LR floor")
-    parser.add_argument("--plateau-factor", type=float, default=0.8, help="ReduceLROnPlateau's multiplicative LR reduction on a detected plateau")
+    parser.add_argument("--plateau-factor", type=float, default=0.9, help="ReduceLROnPlateau's multiplicative LR reduction on a detected plateau")
     parser.add_argument("--plateau-patience", type=int, default=50, help="Epochs with no train-loss improvement before ReduceLROnPlateau reduces LR")
     parser.add_argument("--num-realizations", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)

@@ -74,11 +74,13 @@ class LREnergyModel(nn.Module):
         alpha_floor: float = 1e-4,
         use_norms: bool = True,
         lazy_degree_gating: bool = False,
+        use_long_range: bool = True,
     ):
         super().__init__()
         self.max_degree = max_degree
         self.n_master_nodes = n_master_nodes
         self.lazy_degree_gating = lazy_degree_gating
+        self.use_long_range = use_long_range
         self.edge_cutoff = edge_cutoff
         self.n_max = n_max
         self.pw_e_cutoff = pw_e_cutoff
@@ -106,7 +108,8 @@ class LREnergyModel(nn.Module):
         self.seed_proj_norm = nn.Identity() if not use_norms else nn.RMSNorm(feature_dim)
         self.seed_radial_net = radial_net(num_basis=1, hidden_dim=hidden_dim, use_norms=use_norms)
 
-        self.g_a_init = nn.Parameter(torch.randn(n_master_nodes, feature_dim) * 0.1)
+        if self.use_long_range:
+            self.g_a_init = nn.Parameter(torch.randn(n_master_nodes, feature_dim) * 0.1)
 
         self.layers = nn.ModuleList([
             LRLayer(
@@ -116,6 +119,7 @@ class LREnergyModel(nn.Module):
                 num_broadcast_heads=num_broadcast_heads, rbf_num_basis=rbf_num_basis,
                 rbf_min=rbf_min, rbf_cutoff=rbf_cutoff, sigma=sigma, alpha_floor=alpha_floor,
                 use_norms=use_norms, lazy_degree_gating=lazy_degree_gating,
+                use_long_range=use_long_range,
             )
             for m in range(num_layers)
         ])
@@ -157,9 +161,14 @@ class LREnergyModel(nn.Module):
         f0: Dict[int, torch.Tensor] = {0: f0_raw.unsqueeze(-1), 1: seeded[1], 2: seeded[2]}
         f: Dict[int, torch.Tensor] = dict(f0)
 
-        x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask, V=V, V_inv=V_inv)
-
-        kvecs, _, mode_mask = make_wavevectors(V, self.n_max, self.pw_e_cutoff, V_inv=V_inv, indices=self.miller_indices)
+        if self.use_long_range:
+            x_com, _ = masked_weighted_com(x_wrapped, atomic_masses, node_mask, V=V, V_inv=V_inv)
+            kvecs, _, mode_mask = make_wavevectors(
+                V, self.n_max, self.pw_e_cutoff, V_inv=V_inv, indices=self.miller_indices,
+            )
+        else:
+            x_com = None
+            kvecs = mode_mask = None
 
         effective_cutoff = safe_minimum_image_cutoff(V, self.edge_cutoff).view(B, 1, 1)
         x_diff_raw = x_wrapped.unsqueeze(1) - x_wrapped.unsqueeze(2)
@@ -171,8 +180,11 @@ class LREnergyModel(nn.Module):
             pair_mask, x_diff, edge_feats,
         )
 
-        g_a = self.g_a_init.unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, -1).clone()
-        X_a = x_com.unsqueeze(1).expand(B, self.n_master_nodes, -1).clone()
+        if self.use_long_range:
+            g_a = self.g_a_init.unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, -1).clone()
+            X_a = x_com.unsqueeze(1).expand(B, self.n_master_nodes, -1).clone()
+        else:
+            g_a = X_a = None
 
         layer_states = [] if return_layer_states else None
         for layer in self.layers:

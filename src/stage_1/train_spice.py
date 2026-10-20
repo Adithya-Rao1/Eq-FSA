@@ -58,6 +58,7 @@ class SPICEEnergyForceModel(nn.Module):
         alpha_floor: float = 1e-4,
         use_norms: bool = True,
         lazy_degree_gating: bool = False,
+        use_long_range: bool = True,
     ):
         super().__init__()
         self.backbone = backbone
@@ -82,6 +83,7 @@ class SPICEEnergyForceModel(nn.Module):
                 alpha_floor=alpha_floor,
                 use_norms=use_norms,
                 lazy_degree_gating=lazy_degree_gating,
+                use_long_range=use_long_range,
             )
         elif backbone == "production":
             self.energy_model = EnergyModel(
@@ -436,7 +438,7 @@ class SPICETrainer:
         )
         self.plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode="min",
-            factor=config.get("plateau_factor", 0.8),
+            factor=config.get("plateau_factor", 0.9),
             patience=config.get("plateau_patience", 50),
             min_lr=config.get("min_lr", 1e-6),
         )
@@ -597,7 +599,8 @@ class SPICETrainer:
             "global_step": self.global_step,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
-            "scheduler_state_dict": self.scheduler.state_dict(),
+            "warmup_scheduler_state_dict": self.warmup_scheduler.state_dict(),
+            "plateau_scheduler_state_dict": self.plateau_scheduler.state_dict(),
             "config": self.config,
         }, path)
         logger.info(f"[DIAG] Ring checkpoint saved: {path}")
@@ -938,6 +941,7 @@ def run_training(config: dict, device: torch.device | None = None):
         alpha_floor=config.get("alpha_floor", 1e-4),
         use_norms=config.get("use_norms", True),
         lazy_degree_gating=config.get("lazy_degree_gating", False),
+        use_long_range=config.get("use_long_range", True),
     )
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -978,14 +982,14 @@ def main():
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--n-epochs", type=int, default=50)
     parser.add_argument("--max-steps", type=int, default=None, help="Max steps for phase 2 experiment runs")
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--warmup-epochs", type=int, default=100, help="Epochs of linear LR warmup (start_factor=0.01) before ReduceLROnPlateau takes over")
     parser.add_argument("--min-lr", type=float, default=1e-6, help="ReduceLROnPlateau's LR floor")
-    parser.add_argument("--plateau-factor", type=float, default=0.8, help="ReduceLROnPlateau's multiplicative LR reduction on a detected plateau")
+    parser.add_argument("--plateau-factor", type=float, default=0.9, help="ReduceLROnPlateau's multiplicative LR reduction on a detected plateau")
     parser.add_argument("--plateau-patience", type=int, default=50, help="Validation events (not epochs -- see --val-every) with no improvement before ReduceLROnPlateau reduces LR")
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="AdamW weight decay")
     parser.add_argument("--lambda1", type=float, default=1.0, help="Energy loss weight")
-    parser.add_argument("--lambda2", type=float, default=0.5, help="Force loss weight")
+    parser.add_argument("--lambda2", type=float, default=1000.0, help="Force loss weight")
     parser.add_argument("--feature-dim", type=int, default=64)
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--max-degree", type=int, default=2)
@@ -1008,6 +1012,7 @@ def main():
     parser.add_argument("--sigma", type=float, default=None, help="[--backbone lr_restructure only] Fixed physical width for the Ewald damping envelope (alpha = 1/(2*sigma^2)); default None leaves alpha a learned parameter, matching production EnergyModel's behavior -- SPICE molecules have no single canonical sigma the way the synthetic lr_sr Coulomb benchmark does")
     parser.add_argument("--alpha-floor", type=float, default=1e-4, help="[--backbone lr_restructure only] Floor added to the learned Ewald damping alpha (softplus(alpha_param) + alpha_floor); ignored when --sigma is set")
     parser.add_argument("--use-norms", action=argparse.BooleanOptionalAction, default=True, help="[--backbone lr_restructure only] Use RMSNorm throughout the backbone; --no-use-norms strips them (ablation)")
+    parser.add_argument("--use-long-range", action=argparse.BooleanOptionalAction, default=True, help="[--backbone lr_restructure only] Run the master-node/long-range channel (aggregator+update+broadcast); --no-use-long-range skips it entirely (not constructed, not called) for a local-only ablation")
     parser.add_argument("--lazy-degree-gating", action=argparse.BooleanOptionalAction, default=False, help="[--backbone lr_restructure only] Cycle each layer's active spherical-harmonic degree ceiling per stage_1/model.py's _compute_k_max schedule, and only build/compute up to that ceiling (degrees above it pass through unchanged for that layer) instead of every layer touching every degree. Reduces parameter count and per-layer compute; default off reproduces prior lr_restructure behavior exactly.")
     parser.add_argument("--force-mode", type=str, default="conservative", choices=["conservative", "direct", "both"], help="'conservative' (default): forces via autograd.grad on positions, unchanged. 'direct': forces from SPICEEnergyForceModel's direct force head, no autograd through positions at all -- the torch.compile-friendly path, intended for pretraining. 'both': one forward pass computes direct forces and energy together, one autograd.grad call (reusing that graph) also recovers conservative forces -- PET-M-style joint training; see --lambda2-conservative/--lambda-force-match.")
     parser.add_argument("--lambda2-conservative", type=float, default=None, help="[force_mode=both only] Loss weight for the conservative force term against the DFT-labeled target. Defaults to None (term disabled) -- pass a value to enable PET-M-style joint training of both heads against the ground truth.")
