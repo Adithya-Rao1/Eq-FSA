@@ -307,9 +307,14 @@ def train_one(model_name: str, config: dict, device: torch.device, seed: int) ->
     model, model_fn = MODEL_BUILDERS[model_name](config)
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["lr"], weight_decay=1e-4, fused=(device.type == "cuda"))
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=config.get("plateau_factor", 0.8),
+        patience=config.get("plateau_patience", 50), min_lr=config.get("min_lr", 1e-6),
+    )
 
     model.train()
     for epoch in range(config["epochs"]):
+        epoch_loss, n_batches = 0.0, 0
         for batch in train_loader:
             z, pos = batch["z"].to(device), batch["pos"].to(device)
             b, E, F = batch["batch"].to(device), batch["energy"].to(device), batch["forces"].to(device)
@@ -322,6 +327,9 @@ def train_one(model_name: str, config: dict, device: torch.device, seed: int) ->
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            epoch_loss += float(loss.item())
+            n_batches += 1
+        scheduler.step(epoch_loss / max(n_batches, 1))
         if config.get("log_every") and (epoch % config["log_every"] == 0):
             print(f"  [{model_name} seed={seed}] epoch={epoch} loss={loss.item():.4f}", flush=True)
 
@@ -357,6 +365,9 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--lambda1", type=float, default=1.0)
     parser.add_argument("--lambda2", type=float, default=100.0)
+    parser.add_argument("--min-lr", type=float, default=1e-6, help="ReduceLROnPlateau's LR floor")
+    parser.add_argument("--plateau-factor", type=float, default=0.8, help="ReduceLROnPlateau's multiplicative LR reduction on a detected plateau")
+    parser.add_argument("--plateau-patience", type=int, default=50, help="Epochs with no train-loss improvement before ReduceLROnPlateau reduces LR")
     parser.add_argument("--num-realizations", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=0)

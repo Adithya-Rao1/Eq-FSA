@@ -430,19 +430,15 @@ class SPICETrainer:
                 )
 
         steps_per_epoch = max(len(self.train_loader), 1)
-        total_steps = steps_per_epoch * config["n_epochs"]
-        warmup_steps = max(config.get("warmup_epochs", 1) * steps_per_epoch, 1)
-
-        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
-            self.optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_steps,
+        self.warmup_steps = max(config.get("warmup_epochs", 1) * steps_per_epoch, 1)
+        self.warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            self.optimizer, start_factor=0.01, end_factor=1.0, total_iters=self.warmup_steps,
         )
-        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=max(total_steps - warmup_steps, 1),
-            eta_min=config.get("min_lr", 1e-6),
-        )
-        self.scheduler = torch.optim.lr_scheduler.SequentialLR(
-            self.optimizer, schedulers=[warmup_scheduler, cosine_scheduler],
-            milestones=[warmup_steps],
+        self.plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, mode="min",
+            factor=config.get("plateau_factor", 0.8),
+            patience=config.get("plateau_patience", 50),
+            min_lr=config.get("min_lr", 1e-6),
         )
 
         logger.info("SPICE stage-1 training setup:")
@@ -684,7 +680,8 @@ class SPICETrainer:
             else:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.get("grad_clip_norm", 1.0))
                 self.optimizer.step()
-                self.scheduler.step()
+                if self.global_step < self.warmup_steps:
+                    self.warmup_scheduler.step()
 
             loss_value = float(loss.item())
             epoch_loss += loss_value
@@ -761,6 +758,8 @@ class SPICETrainer:
                 batch_times.append(time.time() - batch_start)
         avg = val_loss / max(len(self.val_loader), 1)
         self._log_csv_row("validation", epoch, loss=avg)
+        if self.global_step >= self.warmup_steps:
+            self.plateau_scheduler.step(avg)
         self.model.train()
         if self.diag:
             counters.snapshot_and_reset()
@@ -791,7 +790,8 @@ class SPICETrainer:
             "global_step": self.global_step,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
-            "scheduler_state_dict": self.scheduler.state_dict(),
+            "warmup_scheduler_state_dict": self.warmup_scheduler.state_dict(),
+            "plateau_scheduler_state_dict": self.plateau_scheduler.state_dict(),
             "val_loss": val_loss,
             "config": self.config,
         }
@@ -806,7 +806,8 @@ class SPICETrainer:
         ckpt = torch.load(path, map_location=self.device)
         self.model.load_state_dict(ckpt["model_state_dict"])
         self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        self.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        self.warmup_scheduler.load_state_dict(ckpt["warmup_scheduler_state_dict"])
+        self.plateau_scheduler.load_state_dict(ckpt["plateau_scheduler_state_dict"])
         self.global_step = ckpt.get("global_step", 0)
         epoch = ckpt.get("epoch", 0)
         logger.info(f"Resumed from {path}: global_step={self.global_step}, epoch={epoch}")
@@ -978,8 +979,10 @@ def main():
     parser.add_argument("--n-epochs", type=int, default=50)
     parser.add_argument("--max-steps", type=int, default=None, help="Max steps for phase 2 experiment runs")
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--warmup-epochs", type=int, default=5, help="Epochs of linear LR warmup (start_factor=0.01) before cosine annealing begins")
-    parser.add_argument("--min-lr", type=float, default=1e-6, help="Cosine-annealing floor for the LR schedule")
+    parser.add_argument("--warmup-epochs", type=int, default=100, help="Epochs of linear LR warmup (start_factor=0.01) before ReduceLROnPlateau takes over")
+    parser.add_argument("--min-lr", type=float, default=1e-6, help="ReduceLROnPlateau's LR floor")
+    parser.add_argument("--plateau-factor", type=float, default=0.8, help="ReduceLROnPlateau's multiplicative LR reduction on a detected plateau")
+    parser.add_argument("--plateau-patience", type=int, default=50, help="Validation events (not epochs -- see --val-every) with no improvement before ReduceLROnPlateau reduces LR")
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="AdamW weight decay")
     parser.add_argument("--lambda1", type=float, default=1.0, help="Energy loss weight")
     parser.add_argument("--lambda2", type=float, default=0.5, help="Force loss weight")
