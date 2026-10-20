@@ -461,6 +461,22 @@ class SPICETrainer:
             f"pw_e_cutoff={config.get('pw_e_cutoff')} grad_clip_norm={config.get('grad_clip_norm')}"
         )
 
+        self._warmup_validation_compile()
+
+    def _warmup_validation_compile(self):
+        if self.train_model is self.model or self.force_mode != "direct":
+            return
+        logger.info(f"Warming up validation-mode compiled graph ({len(self.val_loader)} batches)...")
+        warmup_start = time.time()
+        self.model.eval()
+        with torch.no_grad():
+            for batch in self.val_loader:
+                self._step(batch)
+        self.model.train()
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        logger.info(f"Validation warmup done: {time.time() - warmup_start:.2f}s")
+
     def _to_device(self, batch: dict) -> dict:
         out = {}
         for k, v in batch.items():
