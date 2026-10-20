@@ -461,36 +461,21 @@ class SPICETrainer:
             f"pw_e_cutoff={config.get('pw_e_cutoff')} grad_clip_norm={config.get('grad_clip_norm')}"
         )
 
-        self._warmup_validation_compile()
-
-    def _warmup_validation_compile(self):
-        if self.train_model is self.model or self.force_mode != "direct":
-            return
-        logger.info(f"Warming up validation-mode compiled graph ({len(self.val_loader)} batches)...")
-        warmup_start = time.time()
-        self.model.eval()
-        with torch.no_grad():
-            for batch in self.val_loader:
-                self._step(batch)
-        self.model.train()
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-        logger.info(f"Validation warmup done: {time.time() - warmup_start:.2f}s")
-
     def _to_device(self, batch: dict) -> dict:
         out = {}
         for k, v in batch.items():
             out[k] = v.to(self.device) if torch.is_tensor(v) else v
         return out
 
-    def _step(self, batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _step(self, batch: dict, use_compiled: bool = True) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch = self._to_device(batch)
         result = compute_energy_and_forces(
             self.model,
             batch["all_solute_x"], batch["all_solute_types"],
             batch["all_solute_masses"], batch["all_solute_mask"], batch["V"],
             batch['mol_props'], batch['all_solute_edge_feats'],
-            force_mode=self.force_mode, model_fn=self.train_model,
+            force_mode=self.force_mode,
+            model_fn=self.train_model if use_compiled else self.model,
         )
         F_cons = None
         if self.force_mode == "both":
@@ -769,7 +754,7 @@ class SPICETrainer:
                 if self.device.type == "cuda":
                     torch.cuda.synchronize()
                 batch_start = time.time()
-                loss, _, _ = self._step(batch)
+                loss, _, _ = self._step(batch, use_compiled=False)
                 val_loss += float(loss.item())
                 if self.device.type == "cuda":
                     torch.cuda.synchronize()
