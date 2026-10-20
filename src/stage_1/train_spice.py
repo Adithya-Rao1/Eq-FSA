@@ -449,7 +449,7 @@ class SPICETrainer:
             f"  force_mode:          {self.force_mode}  "
             f"(torch.compile active: {self.train_model is not self.model})"
         )
-        logger.info(f"  Total training steps:{total_steps}")
+        logger.info(f"  Total training steps:{steps_per_epoch * config['n_epochs']}  (warmup_steps={self.warmup_steps})")
         logger.info(
             f"  Model config:        num_layers={config.get('num_layers')} max_degree={config.get('max_degree')} "
             f"feature_dim={config.get('feature_dim')} hidden_dim={config.get('hidden_dim')} "
