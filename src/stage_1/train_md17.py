@@ -50,39 +50,60 @@ def build_dataloaders(config: dict, device: torch.device | None = None):
 def evaluate_mae(trainer: SPICETrainer, config: dict) -> dict:
     model = trainer.model
     device = trainer.device
+    force_mode = trainer.force_mode
     model.eval()
-    total_e_ae, total_f_ae, total_graphs, total_f_components = 0.0, 0.0, 0, 0
-    with torch.enable_grad(): 
+    total_e_ae, total_f_ae, total_f_cons_ae, total_graphs, total_f_components = 0.0, 0.0, 0.0, 0, 0
+    with torch.enable_grad():
         for batch in trainer.val_loader:
             batch = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in batch.items()}
-            U, F = compute_energy_and_forces(
+            result = compute_energy_and_forces(
                 model, batch["all_solute_x"], batch["all_solute_types"],
                 batch["all_solute_masses"], batch["all_solute_mask"], batch["V"],
                 batch["mol_props"], batch["all_solute_edge_feats"],
+                force_mode=force_mode,
             )
+            if force_mode == "both":
+                U, F, F_cons = result
+            else:
+                U, F = result
+                F_cons = None
             mask = batch["all_solute_mask"].bool()
             total_e_ae += (U.detach() - batch["energy"]).abs().sum().item()
             total_f_ae += (F.detach() - batch["solute_forces"])[mask].abs().sum().item()
+            if F_cons is not None:
+                total_f_cons_ae += (F_cons.detach() - batch["solute_forces"])[mask].abs().sum().item()
             total_graphs += U.shape[0]
             total_f_components += int(mask.sum().item()) * 3
     model.train()
 
     energy_mae_mev = (total_e_ae / total_graphs) * EV_TO_MEV
     force_mae_mev = (total_f_ae / total_f_components) * EV_TO_MEV
+    force_cons_mae_mev = (total_f_cons_ae / total_f_components) * EV_TO_MEV if force_mode == "both" else None
 
     csv_path = os.path.join(config["ckpt_dir"], "results.csv")
     write_header = not os.path.exists(csv_path)
     with open(csv_path, "a", newline="") as fcsv:
         writer = csv.writer(fcsv)
         if write_header:
-            writer.writerow(["model", "molecule", "split_idx", "seed", "energy_mae_mev", "force_mae_mev_per_angstrom"])
-        writer.writerow(["eqfsa", config["molecule"], config["split_idx"], config.get("seed", 0), energy_mae_mev, force_mae_mev])
+            writer.writerow([
+                "model", "molecule", "split_idx", "seed", "force_mode",
+                "energy_mae_mev", "force_mae_mev_per_angstrom", "force_cons_mae_mev_per_angstrom",
+            ])
+        writer.writerow([
+            "eqfsa", config["molecule"], config["split_idx"], config.get("seed", 0), force_mode,
+            energy_mae_mev, force_mae_mev, force_cons_mae_mev,
+        ])
     print(
         f"model=eqfsa molecule={config['molecule']} split={config['split_idx']} "
-        f"seed={config.get('seed', 0)} energy_mae={energy_mae_mev:.2f}meV "
-        f"force_mae={force_mae_mev:.2f}meV/A", flush=True,
+        f"seed={config.get('seed', 0)} force_mode={force_mode} energy_mae={energy_mae_mev:.2f}meV "
+        f"force_mae={force_mae_mev:.2f}meV/A"
+        + (f" force_cons_mae={force_cons_mae_mev:.2f}meV/A" if force_cons_mae_mev is not None else ""),
+        flush=True,
     )
-    return {"energy_mae_mev": energy_mae_mev, "force_mae_mev_per_angstrom": force_mae_mev}
+    return {
+        "energy_mae_mev": energy_mae_mev, "force_mae_mev_per_angstrom": force_mae_mev,
+        "force_cons_mae_mev_per_angstrom": force_cons_mae_mev,
+    }
 
 
 def run_training(config: dict, device: torch.device | None = None):
