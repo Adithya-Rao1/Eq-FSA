@@ -744,15 +744,26 @@ class SPICETrainer:
 
     def validate(self, epoch: int) -> float:
         self.model.eval()
+        val_start = time.time()
         val_loss = 0.0
-        for batch in self.val_loader:
-            loss, _, _ = self._step(batch)
-            val_loss += float(loss.item())
+        grad_ctx = torch.no_grad() if self.force_mode == "direct" else torch.enable_grad()
+        with grad_ctx:
+            for batch in self.val_loader:
+                loss, _, _ = self._step(batch)
+                val_loss += float(loss.item())
         avg = val_loss / max(len(self.val_loader), 1)
         self._log_csv_row("validation", epoch, loss=avg)
         self.model.train()
         if self.diag:
             counters.snapshot_and_reset()
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        elapsed = time.time() - val_start
+        n_batches = max(len(self.val_loader), 1)
+        logger.info(
+            f"Validation (epoch {epoch}): {elapsed:.2f}s total, "
+            f"{1000 * elapsed / n_batches:.1f}ms/batch ({n_batches} batches)"
+        )
         return avg
 
     def save_checkpoint(self, epoch: int, val_loss: float, is_best: bool = False):
