@@ -56,8 +56,9 @@ class SPICEEnergyForceModel(nn.Module):
         rbf_cutoff: float = 25.0,
         sigma: float | None = None,
         alpha_floor: float = 1e-4,
-        use_norms: bool = True,
         use_long_range: bool = True,
+        # (lr_restructure backbone only -- EnergyModel/production doesn't take this yet)
+        use_norms: bool = True,
     ):
         super().__init__()
         self.backbone = backbone
@@ -105,15 +106,15 @@ class SPICEEnergyForceModel(nn.Module):
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
         self.out = nn.Sequential(
-            EquivariantRMSNorm(feature_dim, degree=0),
+            EquivariantRMSNorm(feature_dim, degree=0) if use_norms else nn.Identity(),
             EquivariantLinear(feature_dim, hidden_dim, nonlinearity="leaky_relu"),
-            EquivariantRMSNorm(hidden_dim, degree=0),
+            EquivariantRMSNorm(hidden_dim, degree=0) if use_norms else nn.Identity(),
             nn.LeakyReLU(),
             EquivariantLinear(hidden_dim, hidden_dim, nonlinearity="leaky_relu"),
-            EquivariantRMSNorm(hidden_dim, degree=0),
+            EquivariantRMSNorm(hidden_dim, degree=0) if use_norms else nn.Identity(),
             nn.LeakyReLU(),
             EquivariantLinear(hidden_dim, hidden_dim, nonlinearity="leaky_relu"),
-            EquivariantRMSNorm(hidden_dim, degree=0),
+            EquivariantRMSNorm(hidden_dim, degree=0) if use_norms else nn.Identity(),
             nn.LeakyReLU(),
             EquivariantLinear(hidden_dim, 1),
         )
