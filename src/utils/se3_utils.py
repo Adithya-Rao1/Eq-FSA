@@ -15,6 +15,8 @@ from diagnostics import counters
 
 from e3nn import o3
 
+# TODO: fix EquivariantLinear, EquivariantRMSNorm, IrrepLinear, BatchedEquivariantRMSNorm, BatchedGatedNonlinearity for wasted initialization and repetition, similar to RadialNetwork and PairReadout fixes in SRAttention
+
 _CG_CACHE: Dict[Tuple[int, int], Dict[int, torch.Tensor]] = {}
 _HE_NONLINEARITIES = {"relu", "leaky_relu", "silu", "gelu", "selu", "elu"}
 

@@ -253,17 +253,23 @@ def spice_loss(
     return total.mean(), energy_term.mean(), force_term.mean()
 
 
+_GRAD_BUCKET_NAMES = [
+    "sr_psi", "sr_pairread", "sr_radial", "sr_selfnorm", "sr_selflin",
+    "master", "fusion",
+    "other_seedradial", "other_molpropemb", "other_f0ffn", "other_molffn",
+    "other_seedprojout", "other_seedprojnorm", "other_seedproj", "other_inputembed",
+    "other_layernorm", "other_gate", "other_readout", "other_final", "other",
+]
 _CSV_FIELDS = [
     "timestamp", "epoch", "batch_idx", "global_step", "phase", "loss", "grad_norm",
-    "sr", "master", "fusion", "other",
-    "weight_sr", "weight_master", "weight_fusion", "weight_other",
+    *_GRAD_BUCKET_NAMES,
+    *[f"weight_{b}" for b in _GRAD_BUCKET_NAMES],
     "energy_term", "force_term", "lr",
     "alpha", "damping_sum_min", "Z_min", "ln_clamp_hits", "safe_inv_retries",
     "max_force_mag", "max_abs_U",
     "min_abs_radial", "eqln_deg_gt0_near_degenerate", "g_a_norm_max",
     "skipped",
 ]
-_GRAD_BUCKET_NAMES = ["sr", "master", "fusion", "other"]
 
 
 class SPICETrainer:
@@ -352,8 +358,7 @@ class SPICETrainer:
     def _log_csv_row(
         self, phase: str, epoch: int, batch_idx: int | None = None, loss: float | None = None,
         grad_norm: float | None = None, buckets: dict[str, float] | None = None,
-        weight_sr: float | None = None, weight_master: float | None = None,
-        weight_fusion: float | None = None, weight_other: float | None = None,
+        weight_buckets: dict[str, float] | None = None,
         energy_term: float | None = None, force_term: float | None = None, lr: float | None = None,
         alpha: float | None = None, damping_sum_min: float | None = None, Z_min: float | None = None,
         ln_clamp_hits: int | None = None, safe_inv_retries: int | None = None,
@@ -369,14 +374,8 @@ class SPICETrainer:
             "phase": phase,
             "loss": loss,
             "grad_norm": grad_norm,
-            "sr": (buckets or {}).get("sr"),
-            "master": (buckets or {}).get("master"),
-            "fusion": (buckets or {}).get("fusion"),
-            "other": (buckets or {}).get("other"),
-            "weight_sr": weight_sr,
-            "weight_master": weight_master,
-            "weight_fusion": weight_fusion,
-            "weight_other": weight_other,
+            **{b: (buckets or {}).get(b) for b in _GRAD_BUCKET_NAMES},
+            **{f"weight_{b}": (weight_buckets or {}).get(b) for b in _GRAD_BUCKET_NAMES},
             "energy_term": energy_term,
             "force_term": force_term,
             "lr": lr,
@@ -509,9 +508,20 @@ class SPICETrainer:
 
     @staticmethod
     def _bucket_name(name: str) -> str:
-        if "sr_attn" in name or "radial_V_sr" in name or "W_V_self" in name:
-            return "sr"
-        if ("master_attn" in name or "W_master_self" in name or "master_pool" in name 
+        # "sr" split by submodule
+        if "sr_attn.psi_e" in name:
+            return "sr_psi"
+        if "sr_attn.pair_readout" in name:
+            return "sr_pairread"
+        if "sr_attn.direct_sum_w" in name or "radial_V_sr" in name:
+            return "sr_radial"
+        if "W_V_self_norm" in name:
+            return "sr_selfnorm"
+        if "W_V_self_linear" in name:
+            return "sr_selflin"
+        if "sr_attn" in name:
+            return "sr_radial"  
+        if ("master_attn" in name or "W_master_self" in name or "master_pool" in name
             or "master_expand" in name
             or ".aggregator." in name or "master_ln" in name
         ):
@@ -521,10 +531,36 @@ class SPICETrainer:
             or ".broadcast." in name or ".update." in name
         ):
             return "fusion"
+
+        if "seed_radial_net" in name:
+            return "other_seedradial"
+        if "mol_prop_emb" in name:
+            return "other_molpropemb"
+        if "f0_ffn" in name:
+            return "other_f0ffn"
+        if "mol_ffn" in name:
+            return "other_molffn"
+        if "seed_proj_out" in name:
+            return "other_seedprojout"
+        if "seed_proj_norm" in name:
+            return "other_seedprojnorm"
+        if "seed_proj" in name:
+            return "other_seedproj"
+
+        if "input_embedding" in name:
+            return "other_inputembed"
+        if "layer_norm_in" in name:
+            return "other_layernorm"
+        if "sigma_gate" in name:
+            return "other_gate"
+        if ".readout." in name:
+            return "other_readout"
+        if "norm_readout" in name or name.startswith("out."):
+            return "other_final"
         return "other"
 
     def _grad_norm_buckets(self) -> dict[str, float]:
-        sums = {"sr": 0.0, "master": 0.0, "fusion": 0.0, "other": 0.0}
+        sums = dict(self._EMPTY_BUCKETS)
         for name, p in self.model.named_parameters():
             if p.grad is None:
                 continue
@@ -532,7 +568,7 @@ class SPICETrainer:
         return {k: v ** 0.5 for k, v in sums.items()}
 
     def _weight_norm_buckets(self) -> dict[str, float]:
-        sums = {"sr": 0.0, "master": 0.0, "fusion": 0.0, "other": 0.0}
+        sums = dict(self._EMPTY_BUCKETS)
         for name, p in self.model.named_parameters():
             sums[self._bucket_name(name)] += float((p.data ** 2).sum().item())
         return {k: v ** 0.5 for k, v in sums.items()}
@@ -562,7 +598,7 @@ class SPICETrainer:
             "g_a_norm_max": max(g_a_norms) if g_a_norms else None,
         }
 
-    _EMPTY_BUCKETS = {"sr": 0.0, "master": 0.0, "fusion": 0.0, "other": 0.0}
+    _EMPTY_BUCKETS = {b: 0.0 for b in _GRAD_BUCKET_NAMES}
     _EMPTY_RISK_SCALARS = {
         "alpha": None, "damping_sum_min": None, "Z_min": None, "ln_clamp_hits": 0,
         "safe_inv_retries": 0, "min_abs_radial": None, "eqln_deg_gt0_near_degenerate": 0,
@@ -667,7 +703,7 @@ class SPICETrainer:
             elif is_finite and should_log:
                 buckets = self._grad_norm_buckets()
             else:
-                buckets = {"sr": 0.0, "master": 0.0, "fusion": 0.0, "other": 0.0}
+                buckets = dict(self._EMPTY_BUCKETS)
 
             if not is_finite:
                 bad_params = [
@@ -699,11 +735,10 @@ class SPICETrainer:
                     "lr": self.optimizer.param_groups[0]["lr"],
                     "skipped": int(batch_skipped),
                 }
+                weight_buckets = None
                 if diag_record is not None:
-                    wb = diag_record["weight_buckets"]
+                    weight_buckets = diag_record["weight_buckets"]
                     extra.update({
-                        "weight_sr": wb["sr"], "weight_master": wb["master"],
-                        "weight_fusion": wb["fusion"], "weight_other": wb["other"],
                         "alpha": diag_record["alpha"], "damping_sum_min": diag_record["damping_sum_min"],
                         "Z_min": diag_record["Z_min"],
                         "ln_clamp_hits": diag_record["ln_clamp_hits"], "safe_inv_retries": diag_record["safe_inv_retries"],
@@ -714,7 +749,7 @@ class SPICETrainer:
                     })
                 self._log_csv_row(
                     "train_batch", epoch, batch_idx=batch_idx, loss=loss_value,
-                    grad_norm=math.sqrt(total_norm_sq.item()), buckets=buckets, **extra,
+                    grad_norm=math.sqrt(total_norm_sq.item()), buckets=buckets, weight_buckets=weight_buckets, **extra,
                 )
                 if self.provenance is not None:
                     stats = self._last_batch_stats

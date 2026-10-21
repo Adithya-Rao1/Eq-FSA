@@ -13,8 +13,14 @@ import matplotlib.pyplot as plt
 
 from diagnostics.analyze_run import load_csv, _floats
 
-_GRAD_BUCKETS = ("sr", "master", "fusion", "other")
-_WEIGHT_BUCKETS = ("weight_sr", "weight_master", "weight_fusion", "weight_other")
+_GRAD_BUCKETS = (
+    "sr_psi", "sr_pairread", "sr_radial", "sr_selfnorm", "sr_selflin",
+    "master", "fusion",
+    "other_seedradial", "other_molpropemb", "other_f0ffn", "other_molffn",
+    "other_seedprojout", "other_seedprojnorm", "other_seedproj", "other_inputembed",
+    "other_layernorm", "other_gate", "other_readout", "other_final", "other",
+)
+_WEIGHT_BUCKETS = tuple(f"weight_{b}" for b in _GRAD_BUCKETS)
 
 
 def bin_by_epoch(cols: dict, keys: list[str]) -> dict[str, dict[int, float]]:
