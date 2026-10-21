@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from utils.se3_utils import (
-    clebsch_gordan_matrix, get_spherical_harmonics, init_linear_,
+    clebsch_gordan_matrix, get_spherical_harmonics, init_linear_tensor_,
     init_sequential_, scalar_ffn, scatter_softmax, straight_through_norm,
 )
 
@@ -86,33 +86,27 @@ class LRDirectSumW(nn.Module):
         return out
 
 
-class BatchedNormedPairReadout(nn.Module):
+class PairReadout(nn.Module):
     def __init__(self, C: int, hidden: int, k_max: int, floor: float = 0.5, use_norms: bool = True):
         super().__init__()
         self.k_max = k_max
         self.floor = floor
         self.use_norms = use_norms
+        self.max_width = 2 * k_max + 1
 
-        self.equiv_proj = nn.ModuleList([nn.Linear(C, hidden, bias=False) for _ in range(k_max + 1)])
-        for lin in self.equiv_proj:
-            init_linear_(lin, "linear")
-
-        h1_templates = [nn.Linear(hidden, hidden, bias=False) for _ in range(k_max + 1)]
-        for lin in h1_templates:
-            init_linear_(lin, "silu")
-        out_templates = [nn.Linear(hidden, 1, bias=False) for _ in range(k_max + 1)]
-        for lin in out_templates:
-            init_linear_(lin, "linear")
-        self.W_h1 = nn.Parameter(torch.stack([t.weight.detach().clone() for t in h1_templates]))
+        self.W_equiv_proj = nn.Parameter(torch.empty(k_max + 1, hidden, C))
+        self.W_h1 = nn.Parameter(torch.empty(k_max + 1, hidden, hidden))
+        self.W_out = nn.Parameter(torch.empty(k_max + 1, 1, hidden))
+        for i in range(k_max + 1):
+            init_linear_tensor_(self.W_equiv_proj[i], "linear")
+            init_linear_tensor_(self.W_h1[i], "silu")
+            init_linear_tensor_(self.W_out[i], "linear")
         self.g_h1 = nn.Parameter(torch.ones(k_max + 1, hidden))
-        self.W_out = nn.Parameter(torch.stack([t.weight.detach().clone() for t in out_templates]))
 
     def forward(self, cats: List[torch.Tensor]) -> torch.Tensor:
-        norms = []
-        for k, x in enumerate(cats):
-            v = self.equiv_proj[k](x.transpose(-1, -2)).transpose(-1, -2)
-            norms.append(straight_through_norm(v, dim=-1, floor=self.floor))
-        h0 = torch.stack(norms, dim=0)
+        cats_padded = torch.stack([F.pad(x, (0, self.max_width - x.shape[-1])) for x in cats], dim=0,)  # (k_max+1, E, C, max_width)
+        v = torch.einsum("khc,kecw->kehw", self.W_equiv_proj, cats_padded)  # (k_max+1, E, hidden, max_width)
+        h0 = straight_through_norm(v, dim=-1, floor=self.floor)  # (k_max+1, E, hidden)
         h1 = h0 @ self.W_h1.transpose(-1, -2)
         if self.use_norms:
             h1 = F.rms_norm(h1, (h1.shape[-1],), None, None) * self.g_h1.unsqueeze(1)
@@ -130,13 +124,11 @@ class SRAttention(nn.Module):
         self.max_degree = max_degree
         self.k_max = k_max
 
-        n_total = sum(
-            (l + k + 1) - abs(l - k) for l in range(max_degree + 1) for k in range(k_max + 1)
-        )
+        n_total = sum((l + k + 1) - abs(l - k) for l in range(max_degree + 1) for k in range(k_max + 1))
         radial_V_sr = radial_net(num_basis=32, hidden_dim=hidden_dim, num_heads=n_total, use_norms=use_norms)
         self.direct_sum_w = LRDirectSumW(radial_V_sr, max_degree, k_max)
 
-        self.pair_readout = BatchedNormedPairReadout(2 * feature_dim, hidden_dim, k_max, use_norms=use_norms)
+        self.pair_readout = PairReadout(2 * feature_dim, hidden_dim, k_max, use_norms=use_norms)
 
         self.edge_input_norm = nn.RMSNorm(1 + edge_feat_dim) if use_norms else nn.Identity()
         self.psi_e = scalar_ffn(1 + edge_feat_dim, hidden_dim, use_norms=use_norms)

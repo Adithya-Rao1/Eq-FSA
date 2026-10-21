@@ -18,13 +18,16 @@ from e3nn import o3
 _CG_CACHE: Dict[Tuple[int, int], Dict[int, torch.Tensor]] = {}
 _HE_NONLINEARITIES = {"relu", "leaky_relu", "silu", "gelu", "selu", "elu"}
 
-def init_linear_(linear: nn.Linear, nonlinearity: str = "linear") -> None:
+def init_linear_tensor_(weight: torch.Tensor, nonlinearity: str = "linear") -> None:
     if nonlinearity in _HE_NONLINEARITIES:
         kaiming_kind = "relu" if nonlinearity == "relu" else "leaky_relu"
         a = 0.01 if nonlinearity == "leaky_relu" else 0.0
-        nn.init.kaiming_normal_(linear.weight, a=a, nonlinearity=kaiming_kind)
+        nn.init.kaiming_normal_(weight, a=a, nonlinearity=kaiming_kind)
     else:
-        nn.init.xavier_normal_(linear.weight)
+        nn.init.xavier_normal_(weight)
+
+def init_linear_(linear: nn.Linear, nonlinearity: str = "linear") -> None:
+    init_linear_tensor_(linear.weight, nonlinearity)
     if linear.bias is not None:
         nn.init.zeros_(linear.bias)
 

@@ -79,7 +79,12 @@ def test_sr_attention_matches_original():
     forked = ForkedSRAttention(RadialNetwork, max_degree, feature_dim, hidden_dim, k_max, edge_feat_dim)
 
     forked.direct_sum_w.radial_net.load_state_dict(orig.radial_V_sr.state_dict())
-    forked.pair_readout.load_state_dict(orig.pair_readout.state_dict())
+    with torch.no_grad():
+        for k in range(k_max + 1):
+            forked.pair_readout.W_equiv_proj[k].copy_(orig.pair_readout.equiv_proj[k].weight)
+        forked.pair_readout.W_h1.copy_(orig.pair_readout.W_h1)
+        forked.pair_readout.g_h1.copy_(orig.pair_readout.g_h1)
+        forked.pair_readout.W_out.copy_(orig.pair_readout.W_out)
     forked.edge_input_norm.load_state_dict(orig.edge_input_norm.state_dict())
     forked.psi_e.load_state_dict(orig.psi_e.state_dict())
     forked.psi_e_out.load_state_dict(orig.psi_e_out.state_dict())
@@ -112,9 +117,17 @@ def test_sr_attention_matches_original():
         torch.testing.assert_close(f_in_i_e[k].grad, f_in_i_e2[k].grad, atol=ATOL, rtol=RTOL)
         torch.testing.assert_close(f0_j_e[k].grad, f0_j_e2[k].grad, atol=ATOL, rtol=RTOL)
 
+    for k in range(k_max + 1):
+        torch.testing.assert_close(
+            orig.pair_readout.equiv_proj[k].weight.grad, forked.pair_readout.W_equiv_proj.grad[k],
+            atol=ATOL, rtol=RTOL,
+        )
+    torch.testing.assert_close(orig.pair_readout.W_h1.grad, forked.pair_readout.W_h1.grad, atol=ATOL, rtol=RTOL)
+    torch.testing.assert_close(orig.pair_readout.g_h1.grad, forked.pair_readout.g_h1.grad, atol=ATOL, rtol=RTOL)
+    torch.testing.assert_close(orig.pair_readout.W_out.grad, forked.pair_readout.W_out.grad, atol=ATOL, rtol=RTOL)
+
     submodule_pairs = [
         (orig.radial_V_sr, forked.direct_sum_w.radial_net),
-        (orig.pair_readout, forked.pair_readout),
         (orig.edge_input_norm, forked.edge_input_norm),
         (orig.psi_e, forked.psi_e),
         (orig.psi_e_out, forked.psi_e_out),
