@@ -24,6 +24,7 @@ def main():
     parser.add_argument("--trace-out", type=str, default=None)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--torch-compile", action="store_true")
+    parser.add_argument("--use-long-range", action=argparse.BooleanOptionalAction, default=True, help="Run the master-node/long-range channel; --no-use-long-range profiles the local-only path.")
     parser.add_argument( "--compile-mode", type=str, default=None, choices=[None, "default", "reduce-overhead", "max-autotune"],)
     args = parser.parse_args()
 
@@ -40,6 +41,7 @@ def main():
         num_master_nodes=args.num_master_nodes, feature_dim=args.feature_dim,
         hidden_dim=args.hidden_dim, n_max=args.n_max, num_outputs=1,
         num_layers=args.num_layers, edge_cutoff=5.0, sigma=args.sigma,
+        use_long_range=args.use_long_range,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"{n_params:,} params", flush=True)
