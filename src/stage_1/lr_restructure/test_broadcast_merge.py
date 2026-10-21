@@ -24,8 +24,7 @@ def _copy_weights(old: MasterBroadcastAttentionReference, new: MasterBroadcastAt
             new.qkv_self_w[l].copy_(old.qkv_self_w[str(l)])
         new.readout_K_w.copy_(old.readout_K_w)
         new.readout_V_w.copy_(old.readout_V_w)
-        for l in degrees:
-            new.radial_KV[str(l)].load_state_dict(old.radial_KV[str(l)].state_dict())
+        new.radial_KV.load_state_dict(old.radial_KV.state_dict())
         new.mlp0.load_state_dict(old.mlp0.state_dict())
         for i, l in enumerate(hi_degrees):
             new.mlp_hi_w[i].copy_(old.mlp_hi[str(l)].weight.weight)
@@ -72,9 +71,7 @@ def test_broadcast_merge_matches_reference():
         torch.testing.assert_close(f_tilde[l].grad, f_tilde2[l].grad, atol=ATOL, rtol=RTOL)
     torch.testing.assert_close(g_a.grad, g_a2.grad, atol=ATOL, rtol=RTOL)
 
-    submodule_pairs = [(old.mlp0, new.mlp0)] + [
-        (old.radial_KV[str(l)], new.radial_KV[str(l)]) for l in degrees
-    ]
+    submodule_pairs = [(old.mlp0, new.mlp0), (old.radial_KV, new.radial_KV)]
     for m_old, m_new in submodule_pairs:
         for p_old, p_new in zip(m_old.parameters(), m_new.parameters()):
             if p_old.grad is None and p_new.grad is None:

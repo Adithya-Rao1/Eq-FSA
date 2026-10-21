@@ -123,13 +123,10 @@ class SRAttention(nn.Module):
         self.max_degree = max_degree
         self.k_max = k_max
 
-        self.radial_V_sr = nn.ModuleDict()
-        for l in range(max_degree + 1):
-            n_copies = sum((l + k + 1) - abs(l - k) for k in range(k_max + 1))
-            self.radial_V_sr[str(l)] = BatchedRadialNetwork(
-                n_copies=n_copies, num_basis=(2 * l + 1), hidden_dim=hidden_dim,
-                radial_net_cls=radial_net, use_norms=use_norms,
-            )
+        n_total = sum(
+            (l + k + 1) - abs(l - k) for l in range(max_degree + 1) for k in range(k_max + 1)
+        )
+        self.radial_V_sr = radial_net(num_basis=32, hidden_dim=hidden_dim, num_heads=n_total, use_norms=use_norms)
 
         self.pair_readout = BatchedNormedPairReadout(2 * feature_dim, hidden_dim, k_max, use_norms=use_norms)
 
@@ -506,23 +503,11 @@ class MasterFusionAttention(nn.Module):
             )
         self.readout_K = nn.ModuleDict({str(l): _kv_readout() for l in range(max_degree + 1)})
         self.readout_V = nn.ModuleDict({str(l): _kv_readout() for l in range(max_degree + 1)})
-        self.radial_KV = nn.ModuleDict({
-            str(l): BatchedRadialNetwork(
-                n_copies=2, num_basis=2 * l + 1, hidden_dim=hidden_dim, radial_net_cls=radial_net,
-                use_norms=use_norms,
-            )
-            for l in range(max_degree + 1)
-        })
+        self.radial_KV = radial_net(num_basis=32, hidden_dim=hidden_dim, num_heads=2 * (max_degree + 1), use_norms=use_norms)
         if self.g_a_is_multi_degree:
             self.readout_K_direct = nn.ModuleDict({str(l): _kv_readout_direct(l) for l in range(1, max_degree + 1)})
             self.readout_V_direct = nn.ModuleDict({str(l): _kv_readout_direct(l) for l in range(1, max_degree + 1)})
-            self.radial_KV_direct = nn.ModuleDict({
-                str(l): BatchedRadialNetwork(
-                    n_copies=2, num_basis=8, hidden_dim=hidden_dim, radial_net_cls=radial_net,
-                    use_norms=use_norms,
-                )
-                for l in range(1, max_degree + 1)
-            })
+            self.radial_KV_direct = radial_net(num_basis=32, hidden_dim=hidden_dim, num_heads=2 * max_degree, use_norms=use_norms)
             self.degree_score_weight = nn.ParameterDict({
                 str(l): nn.Parameter(torch.zeros(1)) for l in range(1, max_degree + 1)
             })
@@ -557,6 +542,10 @@ class MasterFusionAttention(nn.Module):
 
         num_pos = x_rel_flat.shape[0]
         r = x_rel_flat.norm(dim=-1, keepdim=True) if num_pos > 0 else None
+        phi_kv_all = self.radial_KV(r) if num_pos > 0 else None  # (N, 2 * (max_degree + 1))
+        phi_direct_all = (
+            self.radial_KV_direct(r) if (num_pos > 0 and self.g_a_is_multi_degree) else None
+        )  # (N, 2 * max_degree)
 
         K_lifted: Dict[int, torch.Tensor] = {}
         V_lifted: Dict[int, torch.Tensor] = {}
@@ -568,7 +557,7 @@ class MasterFusionAttention(nn.Module):
                 K_content_direct = self.readout_K_direct[str(l)](g_a_dict[l])  
                 V_content_direct = self.readout_V_direct[str(l)](g_a_dict[l])
                 if num_pos > 0:
-                    phi_direct = self.radial_KV_direct[str(l)](r)
+                    phi_direct = phi_direct_all[:, 2 * (l - 1):2 * (l - 1) + 2].T.unsqueeze(-1)  # (2, N, 1)
                     W_K_direct = phi_direct[0].view(B, N, 1, 1, 1)
                     W_V_direct = phi_direct[1].view(B, N, 1, 1, 1)
                 else:
@@ -586,7 +575,7 @@ class MasterFusionAttention(nn.Module):
             V_content = self.readout_V[str(l)](g_a_dict[0])
 
             if num_pos > 0:
-                phi_kv = self.radial_KV[str(l)](r)
+                phi_kv = phi_kv_all[:, 2 * l:2 * l + 2].T.unsqueeze(-1)  # (2, N, 1)
                 cg = clebsch_gordan_matrix(l, 0, dtype=x.dtype, device=x.device)
                 Q_J = cg[l]
                 Y_J = get_spherical_harmonics(l, x_rel_dir_flat)

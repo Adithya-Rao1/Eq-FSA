@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from utils.pw_bases import minimum_image
 from utils.se3_utils import (
-    EquivariantLinear, EquivariantRMSNorm, GatedNonlinearity, BatchedRadialNetwork,
+    EquivariantLinear, EquivariantRMSNorm, GatedNonlinearity,
     clebsch_gordan_matrix, get_spherical_harmonics, scalar_ffn, softmax_over_neighbors,
 )
 
@@ -37,13 +37,7 @@ class MasterBroadcastAttentionReference(nn.Module):
         self.readout_K_w = nn.Parameter(torch.stack([t.weight.weight.detach().clone() for t in k_templates]))
         self.readout_V_w = nn.Parameter(torch.stack([t.weight.weight.detach().clone() for t in v_templates]))
 
-        self.radial_KV = nn.ModuleDict({
-            str(l): BatchedRadialNetwork(
-                n_copies=2, num_basis=2 * l + 1, hidden_dim=hidden_dim,
-                radial_net_cls=radial_net, use_norms=use_norms,
-            )
-            for l in degrees
-        })
+        self.radial_KV = radial_net(num_basis=32, hidden_dim=hidden_dim, num_heads=2 * len(degrees), use_norms=use_norms)
 
         self.mlp0 = scalar_ffn(feature_dim, hidden_dim, use_norms=use_norms)
         self.mlp_hi = nn.ModuleDict({
@@ -85,13 +79,15 @@ class MasterBroadcastAttentionReference(nn.Module):
         K_content_all = torch.einsum("loc,bac->balo", self.readout_K_w, g_a_sq)  
         V_content_all = torch.einsum("loc,bac->balo", self.readout_V_w, g_a_sq)
 
+        phi_kv_all = self.radial_KV(r)  # (N, 2 * (max_degree + 1))
+
         K_lifted: Dict[int, torch.Tensor] = {}
         V_lifted: Dict[int, torch.Tensor] = {}
         for l in range(self.max_degree + 1):
             K_content = K_content_all[:, :, l, :].unsqueeze(-1)
             V_content = V_content_all[:, :, l, :].unsqueeze(-1)
 
-            phi_kv = self.radial_KV[str(l)](r)
+            phi_kv = phi_kv_all[:, 2 * l:2 * l + 2].T.unsqueeze(-1)  # (2, N, 1)
             cg = clebsch_gordan_matrix(l, 0, dtype=x.dtype, device=x.device)
             Q_J = cg[l]
             Y_J = get_spherical_harmonics(l, x_rel_flat)

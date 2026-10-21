@@ -170,66 +170,6 @@ class RadialNetwork(nn.Module):
         return self.net(basis)
 
 
-class BatchedRadialNetwork(nn.Module):
-    def __init__(
-        self,
-        n_copies:      int,
-        num_basis:     int = 8,
-        hidden_dim:    int = 32,
-        cutoff_radius: float = 5.0,
-        num_heads:     int = 1,
-        envelope_floor: float = 0.02,
-        radial_net_cls: type = None,
-        use_norms: bool = True,
-    ):
-        super().__init__()
-        radial_net_cls = RadialNetwork if radial_net_cls is None else radial_net_cls
-        self.n_copies = n_copies
-        self.cutoff_radius = cutoff_radius
-        self.envelope_floor = envelope_floor
-        self.use_norms = use_norms
-
-        centres = torch.linspace(0.0, cutoff_radius, num_basis)
-        self.register_buffer("centres", centres)
-        width = cutoff_radius / max(num_basis - 1, 1)
-        self.register_buffer("inv_width_sq", torch.tensor(-1.0 / (2.0 * width ** 2)))
-
-        templates = [
-            radial_net_cls(num_basis, hidden_dim, cutoff_radius, num_heads, edge_feature_dim=0,
-                            envelope_floor=envelope_floor)
-            for _ in range(n_copies)
-        ]
-        self.linear_readout = isinstance(templates[0].net, nn.Linear)
-        if self.linear_readout:
-            self.W1 = nn.Parameter(torch.stack([t.net.weight.detach().clone() for t in templates]))
-        else:
-            self.W1 = nn.Parameter(torch.stack([t.net[0].weight.detach().clone() for t in templates]))
-            self.b1 = nn.Parameter(torch.stack([t.net[0].bias.detach().clone() for t in templates]))
-            self.g1 = nn.Parameter(torch.stack([t.net[1].weight.detach().clone() for t in templates]))
-            self.W2 = nn.Parameter(torch.stack([t.net[3].weight.detach().clone() for t in templates]))
-            self.g2 = nn.Parameter(torch.stack([t.net[4].weight.detach().clone() for t in templates]))
-            self.W3 = nn.Parameter(torch.stack([t.net[6].weight.detach().clone() for t in templates]))
-
-    def _basis(self, r: torch.Tensor) -> torch.Tensor:
-        diff = r - self.centres.unsqueeze(0)
-        rbf  = torch.exp(self.inv_width_sq * diff * diff)
-        r_scaled = (r / self.cutoff_radius).clamp(max=1.0)
-        envelope = (1.0 - self.envelope_floor) * 0.5 * (torch.cos(math.pi * r_scaled) + 1.0) + self.envelope_floor
-        return rbf * envelope
-
-    def forward(self, r: torch.Tensor) -> torch.Tensor:
-        basis = self._basis(r)
-        if self.linear_readout:
-            return torch.einsum("nb,jhb->jnh", basis, self.W1)
-        h1 = torch.einsum("nb,jhb->jnh", basis, self.W1) + self.b1.unsqueeze(1)
-        if self.use_norms:
-            h1 = F.rms_norm(h1, (h1.shape[-1],), None, None) * self.g1.unsqueeze(1)
-        h1 = F.silu(h1)
-        h2 = torch.einsum("jnh,jgh->jng", h1, self.W2)
-        if self.use_norms:
-            h2 = F.rms_norm(h2, (h2.shape[-1],), None, None) * self.g2.unsqueeze(1)
-        h2 = F.silu(h2)
-        return torch.einsum("jnh,joh->jno", h2, self.W3)
 
 
 def equivariant_weight_matrix(
@@ -249,16 +189,6 @@ def equivariant_weight_matrix(
     cg = clebsch_gordan_matrix(l, k, dtype=dtype, device=device)
     Js = list(range(abs(l - k), l + k + 1))
 
-    if isinstance(radial_net, BatchedRadialNetwork):
-        phi_all = radial_net(r)
-        for idx, J in enumerate(Js):
-            Q_J = cg[J].to(device=device, dtype=dtype)
-            Y_J = get_spherical_harmonics(J, x)
-            QTY = torch.einsum("ji,ni->nj", Q_J, Y_J)
-            had = phi_all[idx] * QTY
-            W   = W + had.view(N, 2 * l + 1, 2 * k + 1)
-        return W
-
     for J in Js:
         if J not in cg:
             continue
@@ -273,15 +203,15 @@ def equivariant_weight_matrix(
         phi = rnet(r)
 
         Q_J = cg[J].to(device=device, dtype=dtype)
-
         Y_J = get_spherical_harmonics(J, x)
+        QTY = Y_J @ Q_J.T
 
-        QTY = torch.einsum("ji,ni->nj", Q_J, Y_J)
         had = phi * QTY
         W   = W + had.view(N, 2 * l + 1, 2 * k + 1)
 
     return W
 
+# TODO: vectorize over (l, k)
 def apply_direct_sum_W(
     f:           Dict[int, torch.Tensor],
     x:           torch.Tensor,
@@ -291,11 +221,12 @@ def apply_direct_sum_W(
 ) -> Dict[int, torch.Tensor]:
     k_hi = max_degree if k_max is None else k_max
 
-    if str(0) in radial_nets and isinstance(radial_nets[str(0)], BatchedRadialNetwork):
+    if isinstance(radial_nets, RadialNetwork):
         device, dtype = x.device, x.dtype
         N = x.shape[0]
         r = x.norm(dim=-1, keepdim=True)
         f_concat = torch.cat([f[k] for k in range(k_hi + 1)], dim=-1)
+        phi_all = radial_nets(r) if N > 0 else None  # (N, n_total), shared across (l, k, J)
 
         Y_cache: Dict[int, torch.Tensor] = {}
         def get_Y(J: int) -> torch.Tensor:
@@ -304,26 +235,25 @@ def apply_direct_sum_W(
             return Y_cache[J]
 
         row_blocks = []
+        idx = 0
         for l in range(max_degree + 1):
-            phi_all = radial_nets[str(l)](r) if N > 0 else None
             blocks = []
-            idx = 0
             for k in range(k_hi + 1):
                 cg = clebsch_gordan_matrix(l, k, dtype=dtype, device=device)
                 W_lk = torch.zeros(N, 2 * l + 1, 2 * k + 1, device=device, dtype=dtype)
                 for J in range(abs(l - k), l + k + 1):
                     if N > 0:
-                        phi = phi_all[idx]
+                        phi = phi_all[:, idx:idx + 1]
                         Q_J = cg[J]
                         Y_J = get_Y(J)
-                        QTY = torch.einsum("ji,ni->nj", Q_J, Y_J)
+                        QTY = Y_J @ Q_J.T
                         W_lk = W_lk + (phi * QTY).view(N, 2 * l + 1, 2 * k + 1)
                     idx += 1
                 blocks.append(W_lk)
             row_blocks.append(torch.cat(blocks, dim=-1))
 
         W_full = torch.cat(row_blocks, dim=-2) 
-        out_concat = torch.einsum("nij,ncj->nci", W_full, f_concat)  
+        out_concat = f_concat @ W_full.transpose(-1, -2)
 
         out: Dict[int, torch.Tensor] = {}
         row_start = 0
@@ -517,14 +447,14 @@ class AttentionPoolExpand(nn.Module):
     ) -> torch.Tensor:
         B = agg_per_atom.shape[0]
         Q = self.queries.unsqueeze(0).expand(B, -1, -1)
-        raw_scores = torch.einsum("bac,bnc->ban", Q, agg_per_atom)
+        raw_scores = Q @ agg_per_atom.transpose(-1, -2)
         if self.learnable_gain:
             scores = raw_scores * torch.exp(self.log_gain) / self.scale
         else:
             scores = raw_scores / self.scale
         scores = scores.masked_fill(~node_mask.unsqueeze(1), float("-inf"))
         alpha = torch.softmax(scores, dim=-1)
-        pooled = torch.einsum("ban,bnc->bac", alpha, agg_per_atom)
+        pooled = alpha @ agg_per_atom
         if return_alpha:
             return pooled, alpha
         return pooled
@@ -549,7 +479,8 @@ class ContentWeightedCOM(nn.Module):
         if exclude_idx is not None:
             logits = logits.scatter(1, exclude_idx.view(-1, 1), float("-inf"))
         weights = torch.softmax(logits, dim=-1)
-        return torch.einsum("bn,bni->bi", weights, x)
+        weights_out = (weights.unsqueeze(-1) * x).sum(dim=1)
+        return weights_out
 
 
 class IrrepLinear(nn.Module):
@@ -615,7 +546,7 @@ class BatchedGatedNonlinearity(nn.Module):
         norm_stack = torch.stack(norms, dim=0)
         lead_shape = norm_stack.shape[1:-1]
         flat = norm_stack.reshape(len(self.degrees), -1, norm_stack.shape[-1])
-        gate_flat = torch.einsum("doc,dnc->dno", self.W_gate, flat) + self.b_gate.unsqueeze(1)
+        gate_flat = flat @ self.W_gate.transpose(-1, -2) + self.b_gate.unsqueeze(1)
         gate = torch.tanh(gate_flat).reshape(len(self.degrees), *lead_shape, -1)
         return {d: x[d] * gate[i].unsqueeze(-1) for i, d in enumerate(self.degrees)}
 
@@ -792,7 +723,6 @@ class BatchedHighOrdFFN(nn.Module):
         return x * gate.unsqueeze(-1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, n_copies, M, feature_dim, 2*degree+1)."""
         x = self._rms(x, self.gamma0)
         x = self._lin(x, self.W1)
         x = self._rms(x, self.gamma1)
@@ -828,7 +758,7 @@ def equivariant_weight_single_J(
 
     Y_J = get_spherical_harmonics(J, x)
 
-    QTY = torch.einsum("ji,ni->nj", Q_J, Y_J)
+    QTY = Y_J @ Q_J.T
     had = phi * QTY                               
     return had.view(x.shape[0], 2 * l + 1, 2 * k + 1)
 

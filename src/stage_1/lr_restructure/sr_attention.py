@@ -5,15 +5,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from utils.se3_utils import (
-    BatchedRadialNetwork, clebsch_gordan_matrix, get_spherical_harmonics, init_linear_,
+    clebsch_gordan_matrix, get_spherical_harmonics, init_linear_,
     init_sequential_, scalar_ffn, scatter_softmax, straight_through_norm,
 )
 
 
 class LRDirectSumW(nn.Module):
-    def __init__(self, radial_nets: nn.ModuleDict, max_degree: int, k_max: int):
+    def __init__(self, radial_net: nn.Module, max_degree: int, k_max: int):
         super().__init__()
-        self.radial_nets = radial_nets
+        self.radial_net = radial_net
         self.max_degree = max_degree
         self.k_max = k_max
 
@@ -64,9 +64,7 @@ class LRDirectSumW(nn.Module):
             return out
 
         r = x.norm(dim=-1, keepdim=True)
-        phi_global = torch.cat(
-            [self.radial_nets[str(l)](r) for l in range(self.max_degree + 1)], dim=0,
-        )  # (n_total, N, 1)
+        phi_global = self.radial_net(r).T.unsqueeze(-1)  # (n_total, N, 1)
 
         Y_by_j = torch.stack(
             [F.pad(get_spherical_harmonics(J, x), (0, self.max_width - (2 * J + 1)))
@@ -80,7 +78,7 @@ class LRDirectSumW(nn.Module):
         W_full = (phi_global.view(-1, N, 1, 1) * QTY_global).sum(dim=0)          
 
         f_concat = torch.cat([f[k] for k in range(self.k_max + 1)], dim=-1)
-        out_concat = torch.einsum("nij,ncj->nci", W_full, f_concat)
+        out_concat = f_concat @ W_full.transpose(-1, -2)
 
         for l in range(self.max_degree + 1):
             rs = self.row_starts[l]
@@ -115,11 +113,11 @@ class BatchedNormedPairReadout(nn.Module):
             v = self.equiv_proj[k](x.transpose(-1, -2)).transpose(-1, -2)
             norms.append(straight_through_norm(v, dim=-1, floor=self.floor))
         h0 = torch.stack(norms, dim=0)
-        h1 = torch.einsum("keh,kgh->keg", h0, self.W_h1)
+        h1 = h0 @ self.W_h1.transpose(-1, -2)
         if self.use_norms:
             h1 = F.rms_norm(h1, (h1.shape[-1],), None, None) * self.g_h1.unsqueeze(1)
         h1 = F.silu(h1)
-        out = torch.einsum("keh,koh->keo", h1, self.W_out).squeeze(-1)
+        out = (h1 @ self.W_out.transpose(-1, -2)).squeeze(-1)
         return out.sum(dim=0)
 
 
@@ -132,13 +130,10 @@ class SRAttention(nn.Module):
         self.max_degree = max_degree
         self.k_max = k_max
 
-        radial_V_sr = nn.ModuleDict()
-        for l in range(max_degree + 1):
-            n_copies = sum((l + k + 1) - abs(l - k) for k in range(k_max + 1))
-            radial_V_sr[str(l)] = BatchedRadialNetwork(
-                n_copies=n_copies, num_basis=(2 * l + 1), hidden_dim=hidden_dim,
-                radial_net_cls=radial_net, use_norms=use_norms,
-            )
+        n_total = sum(
+            (l + k + 1) - abs(l - k) for l in range(max_degree + 1) for k in range(k_max + 1)
+        )
+        radial_V_sr = radial_net(num_basis=32, hidden_dim=hidden_dim, num_heads=n_total, use_norms=use_norms)
         self.direct_sum_w = LRDirectSumW(radial_V_sr, max_degree, k_max)
 
         self.pair_readout = BatchedNormedPairReadout(2 * feature_dim, hidden_dim, k_max, use_norms=use_norms)

@@ -10,7 +10,7 @@ import torch
 torch.manual_seed(0)
 torch.set_default_dtype(torch.double)
 
-from utils.se3_utils import RadialNetwork, BatchedRadialNetwork, apply_direct_sum_W
+from utils.se3_utils import RadialNetwork, apply_direct_sum_W
 from stage_1.attention import SRAttention as OrigSRAttention
 from stage_1.lr_restructure.sr_attention import SRAttention as ForkedSRAttention, LRDirectSumW
 
@@ -18,21 +18,18 @@ ATOL = 1e-9
 RTOL = 1e-9
 
 
-def _make_radial_nets(max_degree, k_max, hidden_dim=16, seed=1):
+def _make_radial_net(max_degree, k_max, hidden_dim=16, seed=1):
     torch.manual_seed(seed)
-    radial_nets = torch.nn.ModuleDict()
-    for l in range(max_degree + 1):
-        n_copies = sum((l + k + 1) - abs(l - k) for k in range(k_max + 1))
-        radial_nets[str(l)] = BatchedRadialNetwork(
-            n_copies=n_copies, num_basis=(2 * l + 1), hidden_dim=hidden_dim, radial_net_cls=RadialNetwork,
-        )
-    return radial_nets
+    n_total = sum(
+        (l + k + 1) - abs(l - k) for l in range(max_degree + 1) for k in range(k_max + 1)
+    )
+    return RadialNetwork(num_basis=32, hidden_dim=hidden_dim, num_heads=n_total)
 
 
 def test_direct_sum_w_matches_original():
     max_degree, k_max = 2, 2
-    radial_nets = _make_radial_nets(max_degree, k_max)
-    forked = LRDirectSumW(radial_nets, max_degree, k_max)
+    radial_net = _make_radial_net(max_degree, k_max)
+    forked = LRDirectSumW(radial_net, max_degree, k_max)
 
     g = torch.Generator().manual_seed(42)
     N = 37
@@ -41,7 +38,7 @@ def test_direct_sum_w_matches_original():
     f = {k: torch.randn(N, C, 2 * k + 1, generator=g, dtype=torch.double, requires_grad=True) for k in range(k_max + 1)}
     f_clone = {k: v.detach().clone().requires_grad_() for k, v in f.items()}
 
-    out_orig = apply_direct_sum_W(f=f, x=x, radial_nets=radial_nets, max_degree=max_degree, k_max=k_max)
+    out_orig = apply_direct_sum_W(f=f, x=x, radial_nets=radial_net, max_degree=max_degree, k_max=k_max)
     out_new = forked(f_clone, x)
 
     for l in range(max_degree + 1):
@@ -53,22 +50,21 @@ def test_direct_sum_w_matches_original():
     loss_new.backward()
     for k in range(k_max + 1):
         torch.testing.assert_close(f[k].grad, f_clone[k].grad, atol=ATOL, rtol=RTOL)
-    for l in range(max_degree + 1):
-        for p_orig, p_new in zip(radial_nets[str(l)].parameters(), forked.radial_nets[str(l)].parameters()):
-            torch.testing.assert_close(p_orig.grad, p_new.grad, atol=ATOL, rtol=RTOL)
+    for p_orig, p_new in zip(radial_net.parameters(), forked.radial_net.parameters()):
+        torch.testing.assert_close(p_orig.grad, p_new.grad, atol=ATOL, rtol=RTOL)
 
 
 def test_direct_sum_w_matches_original_zero_edges():
     max_degree, k_max = 2, 2
-    radial_nets = _make_radial_nets(max_degree, k_max)
-    forked = LRDirectSumW(radial_nets, max_degree, k_max)
+    radial_net = _make_radial_net(max_degree, k_max)
+    forked = LRDirectSumW(radial_net, max_degree, k_max)
 
     N = 0
     x = torch.zeros(N, 3, dtype=torch.double)
     C = 5
     f = {k: torch.zeros(N, C, 2 * k + 1, dtype=torch.double) for k in range(k_max + 1)}
 
-    out_orig = apply_direct_sum_W(f=f, x=x, radial_nets=radial_nets, max_degree=max_degree, k_max=k_max)
+    out_orig = apply_direct_sum_W(f=f, x=x, radial_nets=radial_net, max_degree=max_degree, k_max=k_max)
     out_new = forked(f, x)
     for l in range(max_degree + 1):
         torch.testing.assert_close(out_orig[l], out_new[l], atol=ATOL, rtol=RTOL)
@@ -82,8 +78,7 @@ def test_sr_attention_matches_original():
     torch.manual_seed(11) 
     forked = ForkedSRAttention(RadialNetwork, max_degree, feature_dim, hidden_dim, k_max, edge_feat_dim)
 
-    for l in range(max_degree + 1):
-        forked.direct_sum_w.radial_nets[str(l)].load_state_dict(orig.radial_V_sr[str(l)].state_dict())
+    forked.direct_sum_w.radial_net.load_state_dict(orig.radial_V_sr.state_dict())
     forked.pair_readout.load_state_dict(orig.pair_readout.state_dict())
     forked.edge_input_norm.load_state_dict(orig.edge_input_norm.state_dict())
     forked.psi_e.load_state_dict(orig.psi_e.state_dict())
@@ -118,8 +113,7 @@ def test_sr_attention_matches_original():
         torch.testing.assert_close(f0_j_e[k].grad, f0_j_e2[k].grad, atol=ATOL, rtol=RTOL)
 
     submodule_pairs = [
-        (orig.radial_V_sr[str(l)], forked.direct_sum_w.radial_nets[str(l)]) for l in range(max_degree + 1)
-    ] + [
+        (orig.radial_V_sr, forked.direct_sum_w.radial_net),
         (orig.pair_readout, forked.pair_readout),
         (orig.edge_input_norm, forked.edge_input_norm),
         (orig.psi_e, forked.psi_e),

@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from utils.pw_bases import minimum_image
 from utils.se3_utils import (
-    BatchedEquivariantRMSNorm, BatchedGatedNonlinearity, BatchedRadialNetwork,
+    BatchedEquivariantRMSNorm, BatchedGatedNonlinearity,
     clebsch_gordan_matrix, get_spherical_harmonics, init_linear_, scalar_ffn,
     softmax_over_neighbors,
 )
@@ -50,13 +50,7 @@ class MasterBroadcastAttention(nn.Module):
             Q_lift_blocks.append(block)
         self.register_buffer("Q_lift", torch.stack(Q_lift_blocks, dim=0))  
 
-        self.radial_KV = nn.ModuleDict({
-            str(l): BatchedRadialNetwork(
-                n_copies=2, num_basis=2 * l + 1, hidden_dim=hidden_dim,
-                radial_net_cls=radial_net, use_norms=use_norms,
-            )
-            for l in degrees
-        })
+        self.radial_KV = radial_net(num_basis=32, hidden_dim=hidden_dim, num_heads=2 * len(degrees), use_norms=use_norms)
 
         self.mlp0 = scalar_ffn(feature_dim, hidden_dim, use_norms=use_norms)
         if hi_degrees:
@@ -98,7 +92,7 @@ class MasterBroadcastAttention(nn.Module):
         content_all = torch.einsum("kloc,bac->kbalo", readout_KV_w, g_a_sq)
         content_perm = content_all.permute(3, 0, 1, 2, 4).unsqueeze(-1)
 
-        phi_stack = torch.stack([self.radial_KV[str(l)](r) for l in self.degrees], dim=0,)
+        phi_stack = self.radial_KV(r).view(-1, L, 2).permute(1, 2, 0).unsqueeze(-1)  # (L, 2, N, 1)
         Y_stack = torch.zeros(L, x_rel_flat.shape[0], W, device=device, dtype=dtype)
         for l in self.degrees:
             Y_stack[l, :, :2 * l + 1] = get_spherical_harmonics(l, x_rel_flat)
