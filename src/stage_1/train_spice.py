@@ -255,7 +255,9 @@ def spice_loss(
 
 
 _GRAD_BUCKET_NAMES = [
-    "sr_psi", "sr_pairread", "sr_radial", "sr_selfnorm", "sr_selflin",
+    "sr_psi", "sr_pairread",
+    "sr_radial_in", "sr_radial_norm1", "sr_radial_mid", "sr_radial_norm2", "sr_radial_out", "sr_radial",
+    "sr_selfnorm", "sr_selflin",
     "master", "fusion",
     "other_seedradial", "other_molpropemb", "other_f0ffn", "other_molffn",
     "other_seedprojout", "other_seedprojnorm", "other_seedproj", "other_inputembed",
@@ -514,6 +516,16 @@ class SPICETrainer:
             return "sr_psi"
         if "sr_attn.pair_readout" in name:
             return "sr_pairread"
+        if "sr_attn.direct_sum_w.radial_net.net.0" in name or "radial_V_sr.net.0" in name:
+            return "sr_radial_in"
+        if "sr_attn.direct_sum_w.radial_net.net.1" in name or "radial_V_sr.net.1" in name:
+            return "sr_radial_norm1"
+        if "sr_attn.direct_sum_w.radial_net.net.3" in name or "radial_V_sr.net.3" in name:
+            return "sr_radial_mid"
+        if "sr_attn.direct_sum_w.radial_net.net.4" in name or "radial_V_sr.net.4" in name:
+            return "sr_radial_norm2"
+        if "sr_attn.direct_sum_w.radial_net.net.6" in name or "radial_V_sr.net.6" in name:
+            return "sr_radial_out"
         if "sr_attn.direct_sum_w" in name or "radial_V_sr" in name:
             return "sr_radial"
         if "W_V_self_norm" in name:
