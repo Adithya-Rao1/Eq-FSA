@@ -679,7 +679,7 @@ class SPICETrainer:
                 self._n_skipped_nonfinite += 1
                 epoch_skipped_nonfinite += 1
             else:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.get("grad_clip_norm", 1.0))
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.get("grad_clip_norm", 10.0))
                 self.optimizer.step()
                 if self.global_step < self.warmup_steps:
                     self.warmup_scheduler.step()
@@ -994,7 +994,7 @@ def main():
     parser.add_argument("--num-layers", type=int, default=4)
     parser.add_argument("--edge-cutoff", type=float, default=5.0)
     parser.add_argument("--box-padding", type=float, default=12.0, help="Vacuum spacing (Angstrom) around each molecule's auxiliary supercell")
-    parser.add_argument("--grad-clip-norm", type=float, default=1.0)
+    parser.add_argument("--grad-clip-norm", type=float, default=10.0)
     parser.add_argument("--grad-checkpoint", action="store_true", help="Wrap each EnergyLayer in torch.utils.checkpoint (use_reentrant=False) during training to cut activation memory at the same batch size, at the cost of recomputing each layer's forward during backward (~20-30%% slower per step). No numerical-precision tradeoff, unlike --bf16 (removed -- verified to corrupt forces on this model, see git history).")
     parser.add_argument("--n-max", type=int, default=1)
     parser.add_argument("--pw-e-cutoff", type=float, default=None, help="Long-range k-space energy cutoff (k_max = sqrt(2*e_cutoff)); caps |k| independent of box size. Not a reliable substitute for keeping --n-max small -- filtering high-k modes did not consistently fix instability at n_max=4 in testing")

@@ -195,7 +195,7 @@ def main():
     parser.add_argument("--num-layers", type=int, default=4)
     parser.add_argument("--edge-cutoff", type=float, default=5.0)
     parser.add_argument("--box-padding", type=float, default=12.0)
-    parser.add_argument("--grad-clip-norm", type=float, default=1.0)
+    parser.add_argument("--grad-clip-norm", type=float, default=10.0)
     parser.add_argument("--grad-checkpoint", action="store_true")
     parser.add_argument("--n-max", type=int, default=1)
     parser.add_argument("--pw-e-cutoff", type=float, default=None)

@@ -336,8 +336,6 @@ def hadamard_exp_kernel(
 ):
     exp_qi = torch.exp(q_i)
     exp_kj = torch.exp(k_j) 
-    
-
 
 def verify_cg_orthogonality(max_degree: int = 2, tol: float = 1e-5) -> None:
     print("Verifying CG matrix orthogonality...")
