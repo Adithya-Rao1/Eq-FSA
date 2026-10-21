@@ -123,7 +123,10 @@ def _instrumented_submodules_production(model: SPICEEnergyForceModel):
             yield rnet, f"layer{i}.sr_attn.radial_V_sr[{lk_key}]"
         yield layer.master_attn, f"layer{i}.master_attn"
         yield layer.master_ln, f"layer{i}.master_ln"
-        yield layer.W_V_self_linear["1"], f"layer{i}.W_V_self_linear[1]"
+        # degree 0 is always present (active_degrees = range(active_ceiling + 1), minimum [0]);
+        # degree 1 isn't guaranteed in lr_restructure once degree cycling limits a layer's
+        # active_ceiling to 0 -- degree 0 is the one key safe to hardcode in either backbone.
+        yield layer.W_V_self_linear["0"], f"layer{i}.W_V_self_linear[0]"
         yield layer.W_V_self_norm, f"layer{i}.W_V_self_norm"
         yield layer.sigma_gate, f"layer{i}.sigma_gate"
         yield layer.layer_norm_in, f"layer{i}.layer_norm_in"
@@ -162,7 +165,7 @@ def _instrumented_submodules_lr_restructure(model: SPICEEnergyForceModel):
             yield layer.broadcast, f"layer{i}.broadcast"
             yield layer.W_master_self, f"layer{i}.W_master_self"
             yield layer.master_ln, f"layer{i}.master_ln"
-        yield layer.W_V_self_linear["1"], f"layer{i}.W_V_self_linear[1]"
+        yield layer.W_V_self_linear["0"], f"layer{i}.W_V_self_linear[0]"
         yield layer.W_V_self_norm, f"layer{i}.W_V_self_norm"
         yield layer.sigma_gate, f"layer{i}.sigma_gate"
         yield layer.layer_norm_in, f"layer{i}.layer_norm_in"
