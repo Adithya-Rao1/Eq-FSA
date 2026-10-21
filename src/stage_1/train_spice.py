@@ -57,7 +57,6 @@ class SPICEEnergyForceModel(nn.Module):
         sigma: float | None = None,
         alpha_floor: float = 1e-4,
         use_norms: bool = True,
-        lazy_degree_gating: bool = False,
         use_long_range: bool = True,
     ):
         super().__init__()
@@ -82,7 +81,6 @@ class SPICEEnergyForceModel(nn.Module):
                 sigma=sigma,
                 alpha_floor=alpha_floor,
                 use_norms=use_norms,
-                lazy_degree_gating=lazy_degree_gating,
                 use_long_range=use_long_range,
             )
         elif backbone == "production":
@@ -940,7 +938,6 @@ def run_training(config: dict, device: torch.device | None = None):
         sigma=config.get("sigma"),
         alpha_floor=config.get("alpha_floor", 1e-4),
         use_norms=config.get("use_norms", True),
-        lazy_degree_gating=config.get("lazy_degree_gating", False),
         use_long_range=config.get("use_long_range", True),
     )
 
@@ -1013,7 +1010,6 @@ def main():
     parser.add_argument("--alpha-floor", type=float, default=1e-4, help="[--backbone lr_restructure only] Floor added to the learned Ewald damping alpha (softplus(alpha_param) + alpha_floor); ignored when --sigma is set")
     parser.add_argument("--use-norms", action=argparse.BooleanOptionalAction, default=True, help="[--backbone lr_restructure only] Use RMSNorm throughout the backbone; --no-use-norms strips them (ablation)")
     parser.add_argument("--use-long-range", action=argparse.BooleanOptionalAction, default=True, help="[--backbone lr_restructure only] Run the master-node/long-range channel (aggregator+update+broadcast); --no-use-long-range skips it entirely (not constructed, not called) for a local-only ablation")
-    parser.add_argument("--lazy-degree-gating", action=argparse.BooleanOptionalAction, default=False, help="[--backbone lr_restructure only] Cycle each layer's active spherical-harmonic degree ceiling per stage_1/model.py's _compute_k_max schedule, and only build/compute up to that ceiling (degrees above it pass through unchanged for that layer) instead of every layer touching every degree. Reduces parameter count and per-layer compute; default off reproduces prior lr_restructure behavior exactly.")
     parser.add_argument("--force-mode", type=str, default="conservative", choices=["conservative", "direct", "both"], help="'conservative' (default): forces via autograd.grad on positions, unchanged. 'direct': forces from SPICEEnergyForceModel's direct force head, no autograd through positions at all -- the torch.compile-friendly path, intended for pretraining. 'both': one forward pass computes direct forces and energy together, one autograd.grad call (reusing that graph) also recovers conservative forces -- PET-M-style joint training; see --lambda2-conservative/--lambda-force-match.")
     parser.add_argument("--lambda2-conservative", type=float, default=None, help="[force_mode=both only] Loss weight for the conservative force term against the DFT-labeled target. Defaults to None (term disabled) -- pass a value to enable PET-M-style joint training of both heads against the ground truth.")
     parser.add_argument("--lambda-force-match", type=float, default=0.0, help="[force_mode=both only] Loss weight for ||F_direct - F_conservative||^2, encouraging the direct head to approximate the true energy gradient (Bigi et al. 2412.11569 Sec 3.5's recommended cheap alternative to a direct Jacobian-symmetry penalty). Default 0 (off).")

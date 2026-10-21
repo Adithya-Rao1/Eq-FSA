@@ -73,13 +73,11 @@ class LREnergyModel(nn.Module):
         sigma: Optional[float] = None,
         alpha_floor: float = 1e-4,
         use_norms: bool = True,
-        lazy_degree_gating: bool = False,
         use_long_range: bool = True,
     ):
         super().__init__()
         self.max_degree = max_degree
         self.n_master_nodes = n_master_nodes
-        self.lazy_degree_gating = lazy_degree_gating
         self.use_long_range = use_long_range
         self.edge_cutoff = edge_cutoff
         self.n_max = n_max
@@ -110,16 +108,15 @@ class LREnergyModel(nn.Module):
 
         if self.use_long_range:
             self.g_a_init = nn.Parameter(torch.randn(n_master_nodes, feature_dim) * 0.1)
-
+            
         self.layers = nn.ModuleList([
             LRLayer(
                 radial_net, max_degree, feature_dim, hidden_dim, edge_cutoff, n_max, pw_e_cutoff,
-                k_max=(_compute_k_max(m, max_degree) if lazy_degree_gating else max_degree),
+                k_max=_compute_k_max(m, max_degree),
                 edge_feat_dim=edge_feat_dim, n_master_nodes=n_master_nodes,
                 num_broadcast_heads=num_broadcast_heads, rbf_num_basis=rbf_num_basis,
                 rbf_min=rbf_min, rbf_cutoff=rbf_cutoff, sigma=sigma, alpha_floor=alpha_floor,
-                use_norms=use_norms, lazy_degree_gating=lazy_degree_gating,
-                use_long_range=use_long_range,
+                use_norms=use_norms, use_long_range=use_long_range,
             )
             for m in range(num_layers)
         ])

@@ -35,7 +35,7 @@ ATOL = 1e-7
 RTOL = 1e-7
 
 
-def build_model(lazy_degree_gating: bool, sigma=None):
+def build_model(sigma=None):
     torch.manual_seed(123)
     m = LREnergyModel(
         radial_net=RadialNetwork,
@@ -50,7 +50,6 @@ def build_model(lazy_degree_gating: bool, sigma=None):
         num_broadcast_heads=2,
         edge_feat_dim=_EDGE_FEAT_DIM,
         sigma=sigma,
-        lazy_degree_gating=lazy_degree_gating,
     )
     return m.to(DTYPE).eval()
 
@@ -81,7 +80,7 @@ def test_rotation_equivariance_lazy_gated(sigma, full):
     V = make_lattice(B, g)
     mol_props = make_mol_props(B, g)
     edge_feats = make_edge_feats(B, N, g)
-    model = build_model(lazy_degree_gating=True, sigma=sigma)
+    model = build_model(sigma=sigma)
 
     R = random_rotation_matrix()
     x_rot = rotate_x(x, R)
@@ -93,21 +92,6 @@ def test_rotation_equivariance_lazy_gated(sigma, full):
     assert_f_dict_rotates(f_raw, f_tf, R, mask=mask, atol=ATOL, rtol=RTOL)
 
 
-def test_lazy_gating_off_matches_dense_bit_identical():
-    g = torch.Generator().manual_seed(7)
-    B, N = 2, 5
-    x, types_, masses, mask = make_full_species(B, N, g)
-    V = make_lattice(B, g)
-    mol_props = make_mol_props(B, g)
-    edge_feats = make_edge_feats(B, N, g)
-
-    model_off = build_model(lazy_degree_gating=False)
-    f_off = run_model(model_off, x, types_, masses, mask, V, mol_props, edge_feats)
-
-    for l in f_off:
-        assert torch.isfinite(f_off[l]).all()
-
-
 def test_degrees_above_layer_ceiling_are_untouched_passthrough():
     import stage_1.lr_restructure.layer as layer_mod
 
@@ -117,7 +101,7 @@ def test_degrees_above_layer_ceiling_are_untouched_passthrough():
     V = make_lattice(B, g)
     mol_props = make_mol_props(B, g)
     edge_feats = make_edge_feats(B, N, g)
-    model = build_model(lazy_degree_gating=True)
+    model = build_model()
 
     schedule = _k_max_schedule()
     assert schedule == [0, 1, 2, 1]

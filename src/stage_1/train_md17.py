@@ -143,7 +143,6 @@ def run_training(config: dict, device: torch.device | None = None):
         sigma=config.get("sigma"),
         alpha_floor=config.get("alpha_floor", 1e-4),
         use_norms=config.get("use_norms", True),
-        lazy_degree_gating=config.get("lazy_degree_gating", False),
         use_long_range=config.get("use_long_range", True),
     )
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -212,7 +211,6 @@ def main():
     parser.add_argument("--alpha-floor", type=float, default=1e-4)
     parser.add_argument("--use-norms", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--use-long-range", action=argparse.BooleanOptionalAction, default=True, help="[--backbone lr_restructure only] Run the master-node/long-range channel; --no-use-long-range skips it entirely (not constructed, not called) for a local-only ablation")
-    parser.add_argument("--lazy-degree-gating", action=argparse.BooleanOptionalAction, default=False, help="[--backbone lr_restructure only] Cycle each layer's active degree ceiling and only compute up to it (see train_spice.py's flag of the same name); default off reproduces prior behavior exactly.")
     parser.add_argument("--force-mode", type=str, default="conservative", choices=["conservative", "direct", "both"], help="See train_spice.py's flag of the same name. 'direct' pretraining + 'conservative' fine-tuning (two separate invocations via --resume) is the recommended compile-friendly two-stage recipe.")
     parser.add_argument("--lambda2-conservative", type=float, default=None, help="[force_mode=both only] See train_spice.py's flag of the same name.")
     parser.add_argument("--lambda-force-match", type=float, default=0.0, help="[force_mode=both only] See train_spice.py's flag of the same name.")

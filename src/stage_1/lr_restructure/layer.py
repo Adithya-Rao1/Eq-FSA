@@ -22,15 +22,14 @@ class LRLayer(nn.Module):
         edge_feat_dim: int, n_master_nodes: int, num_broadcast_heads: int = 4,
         rbf_num_basis: int = 12, rbf_min: float = 0.3, rbf_cutoff: float = 25.0,
         sigma: Optional[float] = None, alpha_floor: float = 1e-4, use_norms: bool = True,
-        lazy_degree_gating: bool = False, use_long_range: bool = True,
+        use_long_range: bool = True,
     ):
         super().__init__()
         self.max_degree = max_degree
         self.k_max = k_max
-        self.lazy_degree_gating = lazy_degree_gating
         self.use_long_range = use_long_range
 
-        active_ceiling = k_max if lazy_degree_gating else max_degree
+        active_ceiling = k_max
         self.active_ceiling = active_ceiling
         active_degrees = list(range(active_ceiling + 1))
 
