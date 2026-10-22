@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from utils.se3_utils import (
     clebsch_gordan_matrix, get_spherical_harmonics, init_linear_tensor_,
-    init_sequential_, scalar_ffn, scatter_softmax, straight_through_norm,
+    scalar_ffn, scatter_softmax, straight_through_norm,
 )
 
 
@@ -133,7 +133,8 @@ class SRAttention(nn.Module):
         self.edge_input_norm = nn.RMSNorm(1 + edge_feat_dim) if use_norms else nn.Identity()
         self.psi_e = scalar_ffn(1 + edge_feat_dim, hidden_dim, use_norms=use_norms)
         self.psi_e_out = nn.Linear(1 + edge_feat_dim, 1)
-        init_sequential_(self.psi_e_out, "leaky_relu")
+        init_linear_tensor_(self.psi_e_out.weight, "leaky_relu")
+        nn.init.zeros_(self.psi_e_out.bias)
 
     def forward(
         self,
