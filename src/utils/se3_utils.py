@@ -150,10 +150,10 @@ class RadialNetwork(nn.Module):
             norm_cls = nn.RMSNorm if use_norms else nn.Identity
             self.net = nn.Sequential(
                 nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=True),
-                # norm_cls(hidden_dim) if use_norms else norm_cls(),
+                norm_cls(hidden_dim) if use_norms else norm_cls(),
                 nn.LeakyReLU(),
                 nn.Linear(hidden_dim, hidden_dim, bias=True),
-                # norm_cls(hidden_dim) if use_norms else norm_cls(),
+                norm_cls(hidden_dim) if use_norms else norm_cls(),
                 nn.LeakyReLU(),
                 nn.Linear(hidden_dim, num_heads, bias=True),
             )
