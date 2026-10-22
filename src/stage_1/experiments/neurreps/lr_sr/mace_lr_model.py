@@ -10,7 +10,7 @@ from stage_1.lr_restructure.update import MasterNodeUpdate
 from stage_1.model import masked_mean, masked_weighted_com, seed_equivariant_features
 from utils.pw_bases import make_miller_indices, make_wavevectors, minimum_image
 from utils.se3_utils import (
-    AggregateFeatures, EquivariantRMSNorm, IrrepLinear, RadialNetwork, init_sequential_, scalar_ffn,
+    AggregateFeatures, EquivariantLinear, EquivariantRMSNorm, RadialNetwork, init_sequential_, scalar_ffn,
 )
 
 MACE_OFF_MODEL_SIZE = "small"
@@ -209,7 +209,7 @@ class MaceLRModel(nn.Module):
                 feature_dim, num_master_nodes, hidden_dim, rbf_num_basis, rbf_min, rbf_cutoff,
             )
             self.lr_update = MasterNodeUpdate(sigma=lr_sigma, alpha_floor=alpha_floor)
-            self.W_master_self = IrrepLinear(feature_dim)
+            self.W_master_self = EquivariantLinear(feature_dim, feature_dim)
             self.master_ln = EquivariantRMSNorm(feature_dim, degree=0)
             self.lr_broadcast = MasterBroadcastAttention(
                 RadialNetwork, max_degree, feature_dim, hidden_dim, num_heads=num_broadcast_heads,

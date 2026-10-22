@@ -199,14 +199,14 @@ class EnergyLayer(nn.Module):
 
         if self.g_a_is_multi_degree:
             self.W_master_self = nn.ModuleDict({
-                str(l): IrrepLinear(feature_dim) for l in range(max_degree + 1)
+                str(l): EquivariantLinear(feature_dim, feature_dim) for l in range(max_degree + 1)
             })
             self.master_ln = nn.ModuleDict({
                 str(l): (nn.Identity() if no_norms else EquivariantRMSNorm(feature_dim, degree=l))
                 for l in range(max_degree + 1)
             })
         else:
-            self.W_master_self = IrrepLinear(feature_dim)
+            self.W_master_self = EquivariantLinear(feature_dim, feature_dim)
             self.master_ln = nn.Identity() if no_norms else EquivariantRMSNorm(feature_dim, degree=0)
         self.master_attn = MasterNodeAttention(
             feature_dim, n_max, pw_e_cutoff, hidden_dim, alpha_floor=alpha_floor,
@@ -762,12 +762,12 @@ class SolventLayer(nn.Module):
 
         # Self interaction modules
         self.W_V_self_i = nn.ModuleDict({
-            str(l): IrrepLinear(feature_dim)
+            str(l): EquivariantLinear(feature_dim, feature_dim)
             for l in range(max_degree + 1)
         })
 
         self.W_V_self_j = nn.ModuleDict({
-            str(l): IrrepLinear(feature_dim)
+            str(l): EquivariantLinear(feature_dim, feature_dim)
             for l in range(max_degree + 1)
         })
 

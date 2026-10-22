@@ -15,7 +15,7 @@ from diagnostics import counters
 
 from e3nn import o3
 
-# TODO: fix EquivariantLinear, EquivariantRMSNorm, IrrepLinear, BatchedEquivariantRMSNorm, BatchedGatedNonlinearity for wasted initialization and repetition, similar to RadialNetwork and PairReadout fixes in SRAttention
+# TODO: fix BatchedGatedNonlinearity for wasted initialization and repetition, similar to RadialNetwork and PairReadout fixes in SRAttention
 
 _CG_CACHE: Dict[Tuple[int, int], Dict[int, torch.Tensor]] = {}
 _HE_NONLINEARITIES = {"relu", "leaky_relu", "silu", "gelu", "selu", "elu"}
@@ -484,17 +484,6 @@ class ContentWeightedCOM(nn.Module):
         weights_out = (weights.unsqueeze(-1) * x).sum(dim=1)
         return weights_out
 
-
-class IrrepLinear(nn.Module):
-    def __init__(self, channels, nonlinearity: str = "linear"):
-        super().__init__()
-        self.weight = nn.Linear(channels, channels, bias=False)
-        init_linear_(self.weight, nonlinearity)
-
-    def forward(self, x):
-        x = x.transpose(-1,-2)
-        x = self.weight(x)
-        return x.transpose(-1,-2)
 
 class EquivariantReadout(nn.Module):
     def __init__(self, C: int, hidden: int = 64):

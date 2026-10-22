@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 from utils.se3_utils import (
-    EquivariantLinear, EquivariantRMSNorm, IrrepLinear,
+    EquivariantLinear, EquivariantRMSNorm,
     BatchedGatedNonlinearity,
 )
 from stage_1.model import Readout
@@ -60,7 +60,7 @@ class LRLayer(nn.Module):
                 feature_dim, n_master_nodes, hidden_dim, rbf_num_basis, rbf_min, rbf_cutoff,
             )
             self.update = MasterNodeUpdate(sigma=sigma, alpha_floor=alpha_floor)
-            self.W_master_self = IrrepLinear(feature_dim)
+            self.W_master_self = EquivariantLinear(feature_dim, feature_dim)
             self.master_ln = EquivariantRMSNorm(feature_dim, degree=0) if use_norms else nn.Identity()
             self.broadcast = MasterBroadcastAttention(
                 radial_net, active_ceiling, feature_dim, hidden_dim,
