@@ -106,8 +106,8 @@ class SPICEEnergyForceModel(nn.Module):
         self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
         self.out = nn.Sequential(
-            EquivariantRMSNorm(feature_dim, degree=0) if use_norms else nn.Identity(),
-            EquivariantLinear(feature_dim, hidden_dim, nonlinearity="leaky_relu"),
+            EquivariantRMSNorm(feature_dim + 2, degree=0) if use_norms else nn.Identity(),
+            EquivariantLinear(feature_dim + 2, hidden_dim, nonlinearity="leaky_relu"),
             EquivariantRMSNorm(hidden_dim, degree=0) if use_norms else nn.Identity(),
             nn.LeakyReLU(),
             EquivariantLinear(hidden_dim, hidden_dim, nonlinearity="leaky_relu"),
@@ -180,7 +180,7 @@ class SPICEEnergyForceModel(nn.Module):
 
         u_vec = self.norm_readout1(f_pooled[1])
         u_ten = self.norm_readout2(f_pooled[2])
-        full_vec = f_pooled[0].squeeze(-1) + u_vec.unsqueeze(-1) + u_ten.unsqueeze(-1)
+        full_vec = torch.cat([f_pooled[0].squeeze(-1), u_vec.unsqueeze(-1), u_ten.unsqueeze(-1)], dim=-1)
         out = self.out(full_vec.unsqueeze(-1))
         energy = out.squeeze(-1).squeeze(-1)
 
