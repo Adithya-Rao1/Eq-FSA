@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 from utils.se3_utils import (
-    EquivariantLinear, EquivariantRMSNorm, IrrepLinear, BatchedEquivariantRMSNorm,
+    EquivariantLinear, EquivariantRMSNorm, IrrepLinear,
     BatchedGatedNonlinearity,
 )
 from stage_1.model import Readout
@@ -41,17 +41,17 @@ class LRLayer(nn.Module):
             str(l): EquivariantLinear(feature_dim, feature_dim) for l in active_degrees
         })
         self.W_V_self_norm = (
-            BatchedEquivariantRMSNorm(feature_dim, degrees=active_degrees) if use_norms else nn.Identity()
+            EquivariantRMSNorm(feature_dim, degrees=active_degrees) if use_norms else nn.Identity()
         )
         self.sigma_gate = BatchedGatedNonlinearity(feature_dim, degrees=active_degrees)
         self.layer_norm_in = (
-            BatchedEquivariantRMSNorm(feature_dim, degrees=active_degrees) if use_norms else nn.Identity()
+            EquivariantRMSNorm(feature_dim, degrees=active_degrees) if use_norms else nn.Identity()
         )
         self.layer_norm_mid = (
-            BatchedEquivariantRMSNorm(feature_dim, degrees=active_degrees) if use_norms else nn.Identity()
+            EquivariantRMSNorm(feature_dim, degrees=active_degrees) if use_norms else nn.Identity()
         )
         self.layer_norm_out = (
-            BatchedEquivariantRMSNorm(feature_dim, degrees=active_degrees) if use_norms else nn.Identity()
+            EquivariantRMSNorm(feature_dim, degrees=active_degrees) if use_norms else nn.Identity()
         )
         self.readout = Readout(feature_dim, hidden_dim, use_norms=use_norms, degrees=active_degrees)
 

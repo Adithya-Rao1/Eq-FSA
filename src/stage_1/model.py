@@ -188,7 +188,7 @@ class EnergyLayer(nn.Module):
         })
         self.W_V_self_norm = (
             nn.Identity() if no_norms else
-            BatchedEquivariantRMSNorm(feature_dim, degrees=list(range(max_degree + 1)))
+            EquivariantRMSNorm(feature_dim, degrees=list(range(max_degree + 1)))
         )
         self.sigma_gate = BatchedGatedNonlinearity(feature_dim, degrees=list(range(max_degree + 1)))
 
@@ -225,9 +225,9 @@ class EnergyLayer(nn.Module):
             self.layer_norm_mid = nn.Identity()
             self.layer_norm_out = nn.Identity()
         else:
-            self.layer_norm_in = BatchedEquivariantRMSNorm(feature_dim, degrees=norm_degrees)
-            self.layer_norm_mid = BatchedEquivariantRMSNorm(feature_dim, degrees=norm_degrees)
-            self.layer_norm_out = BatchedEquivariantRMSNorm(feature_dim, degrees=norm_degrees)
+            self.layer_norm_in = EquivariantRMSNorm(feature_dim, degrees=norm_degrees)
+            self.layer_norm_mid = EquivariantRMSNorm(feature_dim, degrees=norm_degrees)
+            self.layer_norm_out = EquivariantRMSNorm(feature_dim, degrees=norm_degrees)
 
         self.readout = Readout(feature_dim, hidden_dim, use_norms=use_norms)
 

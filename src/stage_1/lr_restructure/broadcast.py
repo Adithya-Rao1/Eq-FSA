@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from utils.pw_bases import minimum_image
 from utils.se3_utils import (
-    BatchedEquivariantRMSNorm, BatchedGatedNonlinearity,
+    EquivariantRMSNorm, BatchedGatedNonlinearity,
     clebsch_gordan_matrix, get_spherical_harmonics, init_linear_, scalar_ffn,
     softmax_over_neighbors,
 )
@@ -57,7 +57,7 @@ class MasterBroadcastAttention(nn.Module):
             self.mlp_hi_w = nn.Parameter(_stacked_linear_weight(len(hi_degrees)))
             self.gate_hi = BatchedGatedNonlinearity(feature_dim, degrees=hi_degrees)
         self.out_norm = (
-            BatchedEquivariantRMSNorm(feature_dim, degrees=degrees) if use_norms else nn.Identity()
+            EquivariantRMSNorm(feature_dim, degrees=degrees) if use_norms else nn.Identity()
         )
 
     def forward(

@@ -614,49 +614,32 @@ class EquivariantRMSNorm(nn.Module):
     def __init__(
         self,
         num_channels: int,
-        degree: int,
+        degree: Optional[int] = None,
+        degrees: Optional[list] = None,
         eps: float = 1e-8,
         floor: float = 0.5,
     ):
         super().__init__()
-        self.degree = degree
+        assert (degree is None) != (degrees is None), "pass exactly one of degree or degrees"
+        self.single_degree = degree
+        self.degrees = [degree] if degrees is None else list(degrees)
         self.eps = eps
         self.floor = floor
-        self.gamma = nn.Parameter(torch.ones(num_channels))
+        self.gamma = nn.Parameter(torch.ones(num_channels) if degrees is None else torch.ones(len(self.degrees), num_channels))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.degree == 0:
-            v = x.squeeze(-1)
-            rms = v.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
-            if counters.DIAG_ENABLED and (rms < self.eps).any():
-                counters.incr("rmsnorm_near_zero")
-            v = (v / rms) * self.gamma
-            return v.unsqueeze(-1)
-        else:
-            if counters.DIAG_ENABLED and ((x ** 2).sum(dim=-1) < self.floor ** 2).any():
-                counters.incr("eqln_deg_gt0_near_degenerate") 
-            norm, x_dir = straight_through_norm_and_direction(x, dim=-1, floor=self.floor,)
-            rms = norm.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
-            target = (norm / rms) * self.gamma
-            return x_dir * target.unsqueeze(-1)
-
-
-class BatchedEquivariantRMSNorm(nn.Module):
-    def __init__(self, num_channels: int, degrees: list, eps: float = 1e-8, floor: float = 0.5):
-        super().__init__()
-        self.degrees = list(degrees)
-        self.eps = eps
-        self.floor = floor
-        templates = [EquivariantRMSNorm(num_channels, degree=d, eps=eps, floor=floor) for d in self.degrees]
-        self.gamma = nn.Parameter(torch.stack([t.gamma.detach().clone() for t in templates]))
-
-    def forward(self, x: Dict[int, torch.Tensor]) -> Dict[int, torch.Tensor]:
+    def _forward_multi(self, x: Dict[int, torch.Tensor]) -> Dict[int, torch.Tensor]:
         norms, dirs = [], []
         for d in self.degrees:
             if d == 0:
                 norm_d = x[d].squeeze(-1)
                 dir_d = torch.ones_like(x[d])
+                if counters.DIAG_ENABLED:
+                    rms_d = norm_d.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
+                    if (rms_d < self.eps).any():
+                        counters.incr("rmsnorm_near_zero")
             else:
+                if counters.DIAG_ENABLED and ((x[d] ** 2).sum(dim=-1) < self.floor ** 2).any():
+                    counters.incr("eqln_deg_gt0_near_degenerate")
                 norm_d, dir_d = straight_through_norm_and_direction(x[d], dim=-1, floor=self.floor)
             norms.append(norm_d)
             dirs.append(dir_d)
@@ -667,6 +650,11 @@ class BatchedEquivariantRMSNorm(nn.Module):
         target = (norm_stack / rms) * gamma_view
 
         return {d: dirs[i] * target[i].unsqueeze(-1) for i, d in enumerate(self.degrees)}
+
+    def forward(self, x):
+        if self.single_degree is None:
+            return self._forward_multi(x)
+        return self._forward_multi({self.single_degree: x})[self.single_degree]
 
 
 class BatchedHighOrdFFN(nn.Module):
