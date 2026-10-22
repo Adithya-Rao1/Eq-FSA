@@ -152,10 +152,10 @@ class RadialNetwork(nn.Module):
             self.net = nn.Sequential(
                 nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=True),
                 norm_cls(hidden_dim) if use_norms else norm_cls(),
-                nn.ReLU(),
+                nn.LeakyReLU(),
                 nn.Linear(hidden_dim, hidden_dim, bias=False),
                 norm_cls(hidden_dim) if use_norms else norm_cls(),
-                nn.ReLU(),
+                nn.LeakyReLU(),
                 nn.Linear(hidden_dim, num_heads, bias=False),
             )
 
