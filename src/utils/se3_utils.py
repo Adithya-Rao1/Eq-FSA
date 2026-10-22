@@ -125,7 +125,7 @@ class RadialNetwork(nn.Module):
         cutoff_radius: float = 5.0,
         num_heads:     int = 1,
         edge_feature_dim: int = 0,
-        envelope_floor: float = 0.02,
+        envelope_floor: float = 1e-6,
         linear_readout: bool = False,
         use_norms: bool = True,
     ):
@@ -152,10 +152,10 @@ class RadialNetwork(nn.Module):
             self.net = nn.Sequential(
                 nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=True),
                 norm_cls(hidden_dim) if use_norms else norm_cls(),
-                nn.SiLU(),
+                nn.ReLU(),
                 nn.Linear(hidden_dim, hidden_dim, bias=False),
                 norm_cls(hidden_dim) if use_norms else norm_cls(),
-                nn.SiLU(),
+                nn.ReLU(),
                 nn.Linear(hidden_dim, num_heads, bias=False),
             )
 
