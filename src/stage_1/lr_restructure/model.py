@@ -194,7 +194,7 @@ class LREnergyModel(nn.Module):
             if return_layer_states:
                 layer_states.append(f)
 
-        f = self.readout(f)
+        # f = self.readout(f)
         if return_layer_states:
             return f, layer_states
         return f
