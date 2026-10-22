@@ -152,10 +152,10 @@ class RadialNetwork(nn.Module):
                 nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=True),
                 # norm_cls(hidden_dim) if use_norms else norm_cls(),
                 nn.LeakyReLU(),
-                nn.Linear(hidden_dim, hidden_dim, bias=False),
+                nn.Linear(hidden_dim, hidden_dim, bias=True),
                 # norm_cls(hidden_dim) if use_norms else norm_cls(),
                 nn.LeakyReLU(),
-                nn.Linear(hidden_dim, num_heads, bias=False),
+                nn.Linear(hidden_dim, num_heads, bias=True),
             )
 
     def _basis(self, r: torch.Tensor) -> torch.Tensor:
