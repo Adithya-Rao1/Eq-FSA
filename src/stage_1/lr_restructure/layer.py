@@ -36,6 +36,7 @@ class LRLayer(nn.Module):
         self.sr_attn = SRAttention(
             radial_net, active_ceiling, feature_dim, hidden_dim, k_max=min(k_max, active_ceiling),
             edge_feat_dim=edge_feat_dim, use_norms=use_norms, num_basis=sr_num_basis,
+            edge_cutoff=edge_cutoff,
         )
         self.W_V_self_linear = nn.ModuleDict({
             str(l): EquivariantLinear(feature_dim, feature_dim) for l in active_degrees
