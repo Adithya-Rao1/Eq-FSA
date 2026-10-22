@@ -126,11 +126,10 @@ class LRLayer(nn.Module):
             f_out_active = self.layer_norm_mid(pre_mid)
 
             f_readout_active = self.readout(f_out_active)
-            pre_out = {l: f_readout_active[l] + f_out_active[l] for l in active_degrees}
-            f_tilde_active = self.layer_norm_out(pre_out)
+            out = {l: f_readout_active[l] + f_out_active[l] for l in active_degrees}
 
             f_tilde = dict(f_in)
-            f_tilde.update(f_tilde_active)
+            f_tilde.update(out)
 
         if not self.use_long_range:
             return f_tilde, g_a_in, X_a_in
