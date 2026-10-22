@@ -677,6 +677,7 @@ class SPICETrainer:
         self.model.train()
         logger.info(f"Epoch {epoch}")
         epoch_loss, epoch_start = 0.0, time.time()
+        epoch_energy_term, epoch_force_term = 0.0, 0.0
         epoch_skipped_nonfinite = 0
 
         for batch_idx, batch in enumerate(self.train_loader):
@@ -735,6 +736,8 @@ class SPICETrainer:
 
             loss_value = float(loss.item())
             epoch_loss += loss_value
+            epoch_energy_term += float(energy_term.item())
+            epoch_force_term += float(force_term.item())
             self.global_step += 1
 
             max_steps = self.config.get("max_steps")
@@ -772,13 +775,17 @@ class SPICETrainer:
                 logger.info(f"Reached --max-steps={max_steps}, stopping epoch {epoch} early at batch_idx={batch_idx}.")
                 break
 
-        avg_loss = epoch_loss / max(batch_idx + 1, 1)
+        n_batches = max(batch_idx + 1, 1)
+        avg_loss = epoch_loss / n_batches
         if epoch_skipped_nonfinite:
             logger.info(
                 f"Epoch {epoch}: skipped {epoch_skipped_nonfinite} non-finite-gradient batches "
                 f"out of {batch_idx + 1} (cumulative: {self._n_skipped_nonfinite})."
             )
-        self._log_csv_row("train_epoch_avg", epoch, loss=avg_loss)
+        self._log_csv_row(
+            "train_epoch_avg", epoch, loss=avg_loss,
+            energy_term=epoch_energy_term / n_batches, force_term=epoch_force_term / n_batches,
+        )
         if self.device.type == "cuda":
             torch.cuda.synchronize()
         n_steps = batch_idx + 1
@@ -793,6 +800,7 @@ class SPICETrainer:
         self.model.eval()
         val_start = time.time()
         val_loss = 0.0
+        val_energy_term, val_force_term = 0.0, 0.0
         batch_times = []
         grad_ctx = torch.no_grad() if self.force_mode == "direct" else torch.enable_grad()
         with grad_ctx:
@@ -800,13 +808,19 @@ class SPICETrainer:
                 if self.device.type == "cuda":
                     torch.cuda.synchronize()
                 batch_start = time.time()
-                loss, _, _ = self._step(batch, use_compiled=False)
+                loss, energy_term, force_term = self._step(batch, use_compiled=False)
                 val_loss += float(loss.item())
+                val_energy_term += float(energy_term.item())
+                val_force_term += float(force_term.item())
                 if self.device.type == "cuda":
                     torch.cuda.synchronize()
                 batch_times.append(time.time() - batch_start)
-        avg = val_loss / max(len(self.val_loader), 1)
-        self._log_csv_row("validation", epoch, loss=avg)
+        n_val_batches = max(len(self.val_loader), 1)
+        avg = val_loss / n_val_batches
+        self._log_csv_row(
+            "validation", epoch, loss=avg,
+            energy_term=val_energy_term / n_val_batches, force_term=val_force_term / n_val_batches,
+        )
         if self.global_step >= self.warmup_steps:
             self.plateau_scheduler.step(avg)
         self.model.train()
