@@ -57,8 +57,9 @@ class SPICEEnergyForceModel(nn.Module):
         sigma: float | None = None,
         alpha_floor: float = 1e-4,
         use_long_range: bool = True,
-        # (lr_restructure backbone only -- EnergyModel/production doesn't take this yet)
+        # (lr_restructure backbone only -- EnergyModel/production doesn't take these yet)
         use_norms: bool = True,
+        sr_num_basis: int = 32,
     ):
         super().__init__()
         self.backbone = backbone
@@ -83,6 +84,7 @@ class SPICEEnergyForceModel(nn.Module):
                 alpha_floor=alpha_floor,
                 use_norms=use_norms,
                 use_long_range=use_long_range,
+                sr_num_basis=sr_num_basis,
             )
         elif backbone == "production":
             self.energy_model = EnergyModel(

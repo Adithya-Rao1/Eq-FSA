@@ -144,6 +144,7 @@ def run_training(config: dict, device: torch.device | None = None):
         alpha_floor=config.get("alpha_floor", 1e-4),
         use_norms=config.get("use_norms", True),
         use_long_range=config.get("use_long_range", True),
+        sr_num_basis=config.get("sr_num_basis", 32),
     )
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {trainable_params:,}", flush=True)
@@ -205,6 +206,7 @@ def main():
     parser.add_argument("--num-fusion-heads", type=int, default=4)
     parser.add_argument("--num-broadcast-heads", type=int, default=4)
     parser.add_argument("--rbf-num-basis", type=int, default=12)
+    parser.add_argument("--sr-num-basis", type=int, default=32, help="[--backbone lr_restructure only] Number of RBF Gaussian centers in SRAttention's radial net (RadialNetwork.num_basis)")
     parser.add_argument("--rbf-min", type=float, default=0.3)
     parser.add_argument("--rbf-cutoff", type=float, default=25.0)
     parser.add_argument("--sigma", type=float, default=None)

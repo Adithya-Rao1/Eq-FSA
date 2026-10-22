@@ -118,14 +118,14 @@ class PairReadout(nn.Module):
 class SRAttention(nn.Module):
     def __init__(
         self, radial_net, max_degree: int, feature_dim: int, hidden_dim: int,
-        k_max: int, edge_feat_dim: int, use_norms: bool = True,
+        k_max: int, edge_feat_dim: int, use_norms: bool = True, num_basis: int = 32,
     ):
         super().__init__()
         self.max_degree = max_degree
         self.k_max = k_max
 
         n_total = sum((l + k + 1) - abs(l - k) for l in range(max_degree + 1) for k in range(k_max + 1))
-        radial_V_sr = radial_net(num_basis=32, hidden_dim=hidden_dim, num_heads=n_total, use_norms=use_norms)
+        radial_V_sr = radial_net(num_basis=num_basis, hidden_dim=hidden_dim, num_heads=n_total, use_norms=use_norms)
         self.direct_sum_w = LRDirectSumW(radial_V_sr, max_degree, k_max)
 
         self.pair_readout = PairReadout(2 * feature_dim, hidden_dim, k_max, use_norms=use_norms)
