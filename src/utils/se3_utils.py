@@ -136,8 +136,8 @@ class RadialNetwork(nn.Module):
         self.envelope_floor = envelope_floor
         self.linear_readout = linear_readout
 
-        centres = torch.linspace(0.0, cutoff_radius, num_basis)
-        self.register_buffer("centres", centres)
+        centers = torch.linspace(0.0, cutoff_radius, num_basis)
+        self.register_buffer("centers", centers)
 
         width = cutoff_radius / max(num_basis - 1, 1)
         self.register_buffer(
@@ -150,16 +150,16 @@ class RadialNetwork(nn.Module):
             norm_cls = nn.RMSNorm if use_norms else nn.Identity
             self.net = nn.Sequential(
                 nn.Linear(num_basis + edge_feature_dim, hidden_dim, bias=True),
-                norm_cls(hidden_dim) if use_norms else norm_cls(),
+                # norm_cls(hidden_dim) if use_norms else norm_cls(),
                 nn.LeakyReLU(),
                 nn.Linear(hidden_dim, hidden_dim, bias=False),
-                norm_cls(hidden_dim) if use_norms else norm_cls(),
+                # norm_cls(hidden_dim) if use_norms else norm_cls(),
                 nn.LeakyReLU(),
                 nn.Linear(hidden_dim, num_heads, bias=False),
             )
 
     def _basis(self, r: torch.Tensor) -> torch.Tensor:
-        diff    = r - self.centres.unsqueeze(0)
+        diff    = r - self.centers.unsqueeze(0)
         rbf     = torch.exp(self.inv_width_sq * diff * diff)
 
         r_scaled = (r / self.cutoff_radius).clamp(max=1.0)
