@@ -132,11 +132,7 @@ class SRAttention(nn.Module):
 
         self.edge_input_norm = nn.RMSNorm(1 + edge_feat_dim) if use_norms else nn.Identity()
         self.psi_e = scalar_ffn(1 + edge_feat_dim, hidden_dim, use_norms=use_norms)
-        self.psi_e_out = nn.Sequential(
-            nn.RMSNorm(1 + edge_feat_dim) if use_norms else nn.Identity(),
-            nn.LeakyReLU(),
-            nn.Linear(1 + edge_feat_dim, 1),
-        )
+        self.psi_e_out = nn.Linear(1 + edge_feat_dim, 1)
         init_sequential_(self.psi_e_out, "leaky_relu")
 
     def forward(
@@ -151,6 +147,7 @@ class SRAttention(nn.Module):
         num_atoms: int,
         edge_valid: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[int, torch.Tensor]]:
+        
         cats = [torch.cat([f_in_i_e[k], f0_j_e[k]], dim=-2) for k in range(self.k_max + 1)]
         score = self.pair_readout(cats)
 

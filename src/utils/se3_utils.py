@@ -48,7 +48,6 @@ def scalar_ffn(
     def _norm(dim: int) -> nn.Module:
         return nn.RMSNorm(dim) if use_norms else nn.Identity()
     seq = nn.Sequential(
-        _norm(in_dim),
         nn.Linear(in_dim, hidden_dim),
         _norm(hidden_dim),
         nn.LeakyReLU(),
