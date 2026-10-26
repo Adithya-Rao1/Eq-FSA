@@ -6,7 +6,8 @@ import torch.nn as nn
 from utils.pw_bases import minimum_image
 from utils.se3_utils import (
     EquivariantLinear, GatedNonlinearity,
-    clebsch_gordan_matrix, get_spherical_harmonics, scalar_ffn, softmax_over_neighbors,
+    clebsch_gordan_matrix, get_spherical_harmonics, init_linear_tensor_, scalar_ffn,
+    softmax_over_neighbors,
 )
 
 
@@ -25,17 +26,16 @@ class MasterBroadcastAttentionReference(nn.Module):
 
         degrees = list(range(max_degree + 1))
 
-        self.qkv_self_w = nn.ParameterDict()
+        self.q_self_w = nn.ParameterDict()
         for l in degrees:
-            templates = [EquivariantLinear(feature_dim, feature_dim) for _ in range(3)]
-            self.qkv_self_w[str(l)] = nn.Parameter(
-                torch.stack([t.weight.weight.detach().clone() for t in templates])
-            )
+            w = nn.Parameter(torch.empty(feature_dim, feature_dim))
+            init_linear_tensor_(w, "linear")
+            self.q_self_w[str(l)] = w
 
-        k_templates = [EquivariantLinear(feature_dim, feature_dim) for _ in degrees]
-        v_templates = [EquivariantLinear(feature_dim, feature_dim) for _ in degrees]
-        self.readout_K_w = nn.Parameter(torch.stack([t.weight.weight.detach().clone() for t in k_templates]))
-        self.readout_V_w = nn.Parameter(torch.stack([t.weight.weight.detach().clone() for t in v_templates]))
+        self.readout_K_w = nn.Parameter(torch.empty(len(degrees), feature_dim, feature_dim))
+        init_linear_tensor_(self.readout_K_w.view(-1, feature_dim), "linear")
+        self.readout_V_w = nn.Parameter(torch.empty(len(degrees), feature_dim, feature_dim))
+        init_linear_tensor_(self.readout_V_w.view(-1, feature_dim), "linear")
 
         self.radial_KV = radial_net(num_basis=32, hidden_dim=hidden_dim, num_heads=2 * len(degrees), use_norms=use_norms)
 
@@ -59,11 +59,8 @@ class MasterBroadcastAttentionReference(nn.Module):
         H, Ch = self.num_heads, self.head_dim
 
         Q: Dict[int, torch.Tensor] = {}
-        K_self: Dict[int, torch.Tensor] = {}
-        V_self: Dict[int, torch.Tensor] = {}
         for l in range(self.max_degree + 1):
-            qkv = torch.einsum("toc,bnck->bntok", self.qkv_self_w[str(l)], f_tilde[l])
-            Q[l], K_self[l], V_self[l] = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
+            Q[l] = torch.einsum("oc,bnck->bnok", self.q_self_w[str(l)], f_tilde[l])
 
         x_rel_raw = x.unsqueeze(2) - X_a.unsqueeze(1)                         
         x_rel = minimum_image(x_rel_raw.reshape(B, N * N_a, 3), V).reshape(B, N, N_a, 3)
@@ -100,32 +97,19 @@ class MasterBroadcastAttentionReference(nn.Module):
         Q_concat = torch.cat(
             [Q[l].view(B, N, H, Ch, 2 * l + 1) for l in range(self.max_degree + 1)], dim=-1,
         )
-        Kself_concat = torch.cat(
-            [K_self[l].view(B, N, H, Ch, 2 * l + 1) for l in range(self.max_degree + 1)], dim=-1,
-        )
         Kmaster_concat = torch.cat(
             [K_lifted[l].view(B, N, N_a, H, Ch, 2 * l + 1) for l in range(self.max_degree + 1)], dim=-1,
         )
 
-        score_self = torch.einsum("bnhcd,bnhcd->bnh", Q_concat, Kself_concat) / self.scale
         score_master = torch.einsum("bnhcd,bnahcd->bnah", Q_concat, Kmaster_concat) / self.scale
 
-        scores_all = torch.cat(
-            [score_self.unsqueeze(-1), score_master.permute(0, 1, 3, 2)], dim=-1,
-        )                                                        
-        beta_all = softmax_over_neighbors(scores_all)
-        beta_self = beta_all[..., 0]                               
-        beta_master = beta_all[..., 1:].permute(0, 1, 3, 2)        
+        beta_master = softmax_over_neighbors(score_master.permute(0, 1, 3, 2)).permute(0, 1, 3, 2)
 
-        Vself_concat = torch.cat(
-            [V_self[l].view(B, N, H, Ch, 2 * l + 1) for l in range(self.max_degree + 1)], dim=-1,
-        )
         Vmaster_concat = torch.cat(
             [V_lifted[l].view(B, N, N_a, H, Ch, 2 * l + 1) for l in range(self.max_degree + 1)], dim=-1,
         )
 
-        o = beta_self.view(B, N, H, 1, 1) * Vself_concat
-        o = o + torch.einsum("bnah,bnahcd->bnhcd", beta_master, Vmaster_concat)
+        o = torch.einsum("bnah,bnahcd->bnhcd", beta_master, Vmaster_concat)
         o_flat = o.reshape(B, N, C, -1)
 
         out: Dict[int, torch.Tensor] = {}

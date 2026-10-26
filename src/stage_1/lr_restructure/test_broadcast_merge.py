@@ -21,7 +21,7 @@ RTOL = 1e-9
 def _copy_weights(old: MasterBroadcastAttentionReference, new: MasterBroadcastAttention, degrees, hi_degrees):
     with torch.no_grad():
         for l in degrees:
-            new.qkv_self_w[l].copy_(old.qkv_self_w[str(l)])
+            new.q_self_w[l].copy_(old.q_self_w[str(l)])
         new.readout_K_w.copy_(old.readout_K_w)
         new.readout_V_w.copy_(old.readout_V_w)
         new.radial_KV.load_state_dict(old.radial_KV.state_dict())
@@ -77,7 +77,7 @@ def test_broadcast_merge_matches_reference():
             torch.testing.assert_close(p_old.grad, p_new.grad, atol=ATOL, rtol=RTOL)
 
     for l in degrees:
-        torch.testing.assert_close(old.qkv_self_w[str(l)].grad, new.qkv_self_w.grad[l], atol=ATOL, rtol=RTOL)
+        torch.testing.assert_close(old.q_self_w[str(l)].grad, new.q_self_w.grad[l], atol=ATOL, rtol=RTOL)
     torch.testing.assert_close(old.readout_K_w.grad, new.readout_K_w.grad, atol=ATOL, rtol=RTOL)
     torch.testing.assert_close(old.readout_V_w.grad, new.readout_V_w.grad, atol=ATOL, rtol=RTOL)
     for i, l in enumerate(hi_degrees):

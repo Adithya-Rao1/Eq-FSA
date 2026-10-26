@@ -29,8 +29,8 @@ class MasterBroadcastAttention(nn.Module):
         self.max_width = 2 * max_degree + 1
         hi_degrees = [l for l in degrees if l > 0]
 
-        self.qkv_self_w = nn.Parameter(torch.empty(len(degrees), 3, feature_dim, feature_dim))
-        init_linear_tensor_(self.qkv_self_w.view(-1, feature_dim), "linear")
+        self.q_self_w = nn.Parameter(torch.empty(len(degrees), feature_dim, feature_dim))
+        init_linear_tensor_(self.q_self_w.view(-1, feature_dim), "linear")
 
         self.readout_K_w = nn.Parameter(torch.empty(len(degrees), feature_dim, feature_dim))
         init_linear_tensor_(self.readout_K_w.view(-1, feature_dim), "linear")
@@ -72,9 +72,8 @@ class MasterBroadcastAttention(nn.Module):
         device, dtype = x.device, x.dtype
 
         f_tilde_stack = torch.stack([F.pad(f_tilde[l], (0, W - (2 * l + 1))) for l in self.degrees], dim=0,)
-        qkv_stack = torch.einsum("ltoc,lbnck->lbntok", self.qkv_self_w, f_tilde_stack)
-        qkv_full = qkv_stack.view(L, B, N, 3, H, Ch, W)
-        Q_full, Kself_full, Vself_full = qkv_full[:, :, :, 0], qkv_full[:, :, :, 1], qkv_full[:, :, :, 2]
+        q_stack = torch.einsum("loc,lbnck->lbnok", self.q_self_w, f_tilde_stack)
+        Q_full = q_stack.view(L, B, N, H, Ch, W)
 
         x_rel_raw = x.unsqueeze(2) - X_a.unsqueeze(1)
         x_rel = minimum_image(x_rel_raw.reshape(B, N * N_a, 3), V, V_inv).reshape(B, N, N_a, 3)
@@ -103,30 +102,19 @@ class MasterBroadcastAttention(nn.Module):
         Vmaster_full = KV_lifted_stack[:, 1].view(L, B, N, N_a, H, Ch, W)
 
         Q = {l: Q_full[l, ..., :2 * l + 1] for l in self.degrees}
-        K_self = {l: Kself_full[l, ..., :2 * l + 1] for l in self.degrees}
-        V_self = {l: Vself_full[l, ..., :2 * l + 1] for l in self.degrees}
         K_lifted = {l: Kmaster_full[l, ..., :2 * l + 1] for l in self.degrees}
         V_lifted = {l: Vmaster_full[l, ..., :2 * l + 1] for l in self.degrees}
 
         Q_concat = torch.cat([Q[l] for l in self.degrees], dim=-1)
-        Kself_concat = torch.cat([K_self[l] for l in self.degrees], dim=-1)
         Kmaster_concat = torch.cat([K_lifted[l] for l in self.degrees], dim=-1)
 
-        score_self = torch.einsum("bnhcd,bnhcd->bnh", Q_concat, Kself_concat) / self.scale
         score_master = torch.einsum("bnhcd,bnahcd->bnah", Q_concat, Kmaster_concat) / self.scale
 
-        scores_all = torch.cat(
-            [score_self.unsqueeze(-1), score_master.permute(0, 1, 3, 2)], dim=-1,
-        )
-        beta_all = softmax_over_neighbors(scores_all)
-        beta_self = beta_all[..., 0]
-        beta_master = beta_all[..., 1:].permute(0, 1, 3, 2)
+        beta_master = softmax_over_neighbors(score_master.permute(0, 1, 3, 2)).permute(0, 1, 3, 2)
 
-        Vself_concat = torch.cat([V_self[l] for l in self.degrees], dim=-1)
         Vmaster_concat = torch.cat([V_lifted[l] for l in self.degrees], dim=-1)
 
-        o = beta_self.view(B, N, H, 1, 1) * Vself_concat
-        o = o + torch.einsum("bnah,bnahcd->bnhcd", beta_master, Vmaster_concat)
+        o = torch.einsum("bnah,bnahcd->bnhcd", beta_master, Vmaster_concat)
         o_flat = o.reshape(B, N, C, -1)
 
         mixed: Dict[int, torch.Tensor] = {}
