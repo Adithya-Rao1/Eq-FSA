@@ -5,6 +5,7 @@ import collections
 import csv
 import math
 import os
+import re
 import time
 from datetime import datetime, timezone
 
@@ -269,26 +270,32 @@ def spice_loss(
     return total.mean(), energy_term.mean(), force_term.mean()
 
 
-_GRAD_BUCKET_NAMES = [
-    "sr_psi", "sr_pairread",
-    "sr_radial_in", "sr_radial_norm1", "sr_radial_mid", "sr_radial_norm2", "sr_radial_out", "sr_radial",
-    "sr_selfnorm", "sr_selflin",
-    "master", "fusion",
-    "other_seedradial", "other_molpropemb", "other_f0ffn", "other_molffn",
-    "other_seedprojout", "other_seedprojnorm", "other_seedproj", "other_inputembed",
-    "other_layernorm", "other_gate", "other_readout", "other_final", "other",
-]
-_CSV_FIELDS = [
-    "timestamp", "epoch", "batch_idx", "global_step", "phase", "loss", "grad_norm",
-    *_GRAD_BUCKET_NAMES,
-    *[f"weight_{b}" for b in _GRAD_BUCKET_NAMES],
-    "energy_term", "force_term", "lr",
-    "alpha", "damping_sum_min", "Z_min", "ln_clamp_hits", "safe_inv_retries",
-    "max_force_mag", "max_abs_U",
-    "min_abs_radial", "eqln_deg_gt0_near_degenerate", "g_a_norm_max",
-    "norm_readout1_premag", "norm_readout2_premag",
-    "skipped",
-]
+def _grad_bucket_names(num_layers: int) -> list[str]:
+    return [
+        "sr_psi", "sr_pairread",
+        "sr_radial_in", "sr_radial_norm1", "sr_radial_mid", "sr_radial_norm2", "sr_radial_out", "sr_radial",
+        "sr_selfnorm", "sr_selflin",
+        *[f"master_layer{i}" for i in range(num_layers)],
+        *[f"fusion_layer{i}" for i in range(num_layers)],
+        "other_seedradial", "other_molpropemb", "other_f0ffn", "other_molffn",
+        "other_seedprojout", "other_seedprojnorm", "other_seedproj", "other_inputembed",
+        "other_layernorm", "other_gate", "other_readout", "other_final", "other",
+    ]
+
+
+def _csv_fields(num_layers: int) -> list[str]:
+    bucket_names = _grad_bucket_names(num_layers)
+    return [
+        "timestamp", "epoch", "batch_idx", "global_step", "phase", "loss", "grad_norm",
+        *bucket_names,
+        *[f"weight_{b}" for b in bucket_names],
+        "energy_term", "force_term", "lr",
+        "alpha", "damping_sum_min", "Z_min", "ln_clamp_hits", "safe_inv_retries",
+        "max_force_mag", "max_abs_U",
+        "min_abs_radial", "eqln_deg_gt0_near_degenerate", "g_a_norm_max",
+        "norm_readout1_premag", "norm_readout2_premag",
+        "skipped",
+    ]
 
 
 class SPICETrainer:
@@ -308,6 +315,10 @@ class SPICETrainer:
         self.global_step = 0
         self.diag = bool(config.get("diagnostics", False))
         self._last_batch_stats: dict = {}
+        num_layers = config["num_layers"]
+        self._bucket_names = _grad_bucket_names(num_layers)
+        self._csv_fields = _csv_fields(num_layers)
+        self._EMPTY_BUCKETS = {b: 0.0 for b in self._bucket_names}
         self._setup_csv_logging()
         self._setup_training()
         self._setup_diagnostics()
@@ -347,7 +358,7 @@ class SPICETrainer:
         ckpt_dir = self.config.get("ckpt_dir", ".")
         self.provenance = ProvenanceLogger(os.path.join(ckpt_dir, "provenance.jsonl"))
         self.drift = DriftDetector(
-            _GRAD_BUCKET_NAMES,
+            self._bucket_names,
             decay=self.config.get("diag_ema_decay", 0.98),
             k=self.config.get("diag_drift_k", 6.0),
         )
@@ -368,7 +379,7 @@ class SPICETrainer:
         self.csv_path = csv_path
         write_header = not (os.path.exists(csv_path) and os.path.getsize(csv_path) > 0)
         self._csv_file = open(csv_path, "a", newline="")
-        self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=_CSV_FIELDS)
+        self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=self._csv_fields)
         if write_header:
             self._csv_writer.writeheader()
             self._csv_file.flush()
@@ -395,8 +406,8 @@ class SPICETrainer:
             "phase": phase,
             "loss": loss,
             "grad_norm": grad_norm,
-            **{b: (buckets or {}).get(b) for b in _GRAD_BUCKET_NAMES},
-            **{f"weight_{b}": (weight_buckets or {}).get(b) for b in _GRAD_BUCKET_NAMES},
+            **{b: (buckets or {}).get(b) for b in self._bucket_names},
+            **{f"weight_{b}": (weight_buckets or {}).get(b) for b in self._bucket_names},
             "energy_term": energy_term,
             "force_term": force_term,
             "lr": lr,
@@ -554,16 +565,18 @@ class SPICETrainer:
             return "sr_selflin"
         if "sr_attn" in name:
             return "sr_radial"  
+        layer_match = re.search(r"\.layers\.(\d+)\.", name)
+        layer_idx = layer_match.group(1) if layer_match else ""
         if ("master_attn" in name or "W_master_self" in name or "master_pool" in name
             or "master_expand" in name
             or ".aggregator." in name or "master_ln" in name
         ):
-            return "master"
+            return f"master_layer{layer_idx}" if layer_match else "master"
         if (
             "master_fusion" in name
             or ".broadcast." in name or ".update." in name
         ):
-            return "fusion"
+            return f"fusion_layer{layer_idx}" if layer_match else "fusion"
 
         if "seed_radial_net" in name:
             return "other_seedradial"
@@ -634,7 +647,6 @@ class SPICETrainer:
             "norm_readout2_premag": mag_stats.get("norm_readout2.equiv_proj"),
         }
 
-    _EMPTY_BUCKETS = {b: 0.0 for b in _GRAD_BUCKET_NAMES}
     _EMPTY_RISK_SCALARS = {
         "alpha": None, "damping_sum_min": None, "Z_min": None, "ln_clamp_hits": 0,
         "safe_inv_retries": 0, "min_abs_radial": None, "eqln_deg_gt0_near_degenerate": 0,
