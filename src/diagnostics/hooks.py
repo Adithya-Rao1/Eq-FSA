@@ -162,7 +162,6 @@ def _instrumented_submodules_lr_restructure(model: SPICEEnergyForceModel):
         yield layer.W_V_self_linear["0"], f"layer{i}.W_V_self_linear[0]"
         yield layer.W_V_self_norm, f"layer{i}.W_V_self_norm"
         yield layer.sigma_gate, f"layer{i}.sigma_gate"
-        yield layer.layer_norm_in, f"layer{i}.layer_norm_in"
         for l, ffn in layer.readout.ffn.items():
             yield ffn, f"layer{i}.readout.ffn{l}"
 
