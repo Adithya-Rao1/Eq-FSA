@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from utils.se3_utils import (
     clebsch_gordan_matrix, get_spherical_harmonics, init_linear_tensor_,
-    scalar_ffn, scatter_softmax,
+    scalar_ffn, scatter_softmax, straight_through_norm,
 )
 
 
@@ -87,14 +87,32 @@ class LRDirectSumW(nn.Module):
 
 
 class PairReadout(nn.Module):
-    def __init__(self, feature_dim: int, k_max: int):
+    def __init__(self, C: int, hidden: int, k_max: int, floor: float = 0.5, use_norms: bool = True):
         super().__init__()
         self.k_max = k_max
-        self.scale = feature_dim ** -0.5
+        self.floor = floor
+        self.use_norms = use_norms
+        self.max_width = 2 * k_max + 1
 
-    def forward(self, f_i: Dict[int, torch.Tensor], f_j: Dict[int, torch.Tensor]) -> torch.Tensor:
-        score = sum((f_i[k] * f_j[k]).sum(dim=-1).sum(dim=-1) for k in range(self.k_max + 1))
-        return score * self.scale
+        self.W_equiv_proj = nn.Parameter(torch.empty(k_max + 1, hidden, C))
+        self.W_h1 = nn.Parameter(torch.empty(k_max + 1, hidden, hidden))
+        self.W_out = nn.Parameter(torch.empty(k_max + 1, 1, hidden))
+        for i in range(k_max + 1):
+            init_linear_tensor_(self.W_equiv_proj[i], "linear")
+            init_linear_tensor_(self.W_h1[i], "silu")
+            init_linear_tensor_(self.W_out[i], "linear")
+        self.g_h1 = nn.Parameter(torch.ones(k_max + 1, hidden))
+
+    def forward(self, cats: List[torch.Tensor]) -> torch.Tensor:
+        cats_padded = torch.stack([F.pad(x, (0, self.max_width - x.shape[-1])) for x in cats], dim=0,)  # (k_max+1, E, C, max_width)
+        v = torch.einsum("khc,kecw->kehw", self.W_equiv_proj, cats_padded)  # (k_max+1, E, hidden, max_width)
+        h0 = straight_through_norm(v, dim=-1, floor=self.floor)  # (k_max+1, E, hidden)
+        h1 = h0 @ self.W_h1.transpose(-1, -2)
+        if self.use_norms:
+            h1 = F.rms_norm(h1, (h1.shape[-1],), None, None) * self.g_h1.unsqueeze(1)
+        h1 = F.silu(h1)
+        out = (h1 @ self.W_out.transpose(-1, -2)).squeeze(-1)
+        return out.sum(dim=0)
 
 class SRAttention(nn.Module):
     def __init__(
@@ -113,7 +131,7 @@ class SRAttention(nn.Module):
         )
         self.direct_sum_w = LRDirectSumW(radial_V_sr, max_degree, k_max)
 
-        self.pair_readout = PairReadout(feature_dim, k_max)
+        self.pair_readout = PairReadout(2 * feature_dim, hidden_dim, k_max, use_norms=use_norms)
 
         self.edge_input_norm = nn.RMSNorm(1 + edge_feat_dim) if use_norms else nn.Identity()
         self.psi_e = scalar_ffn(1 + edge_feat_dim, hidden_dim, use_norms=use_norms)
@@ -134,7 +152,8 @@ class SRAttention(nn.Module):
         edge_valid: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[int, torch.Tensor]]:
         
-        score = self.pair_readout(f_in_i_e, f0_j_e)
+        cats = [torch.cat([f_in_i_e[k], f0_j_e[k]], dim=-2) for k in range(self.k_max + 1)]
+        score = self.pair_readout(cats)
 
         dist = x_rel_e.norm(dim=-1, keepdim=True)
         edge_feats = self.edge_input_norm(torch.cat([dist, edge_feat_e], dim=-1))
