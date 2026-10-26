@@ -137,9 +137,9 @@ class LRLayer(nn.Module):
 
         with torch.profiler.record_function("lr_broadcast"):
             f_next_active = self.broadcast(
-                {l: f_tilde[l] for l in active_degrees}, g_a_out, X_a_new, x_wrapped, node_mask, V, V_inv,
+                {l: f_in_active[l] for l in active_degrees}, g_a_out, X_a_new, x_wrapped, node_mask, V, V_inv,
             )
             f_next = dict(f_tilde)
-            f_next.update(f_next_active)
+            f_next.update({l: f_tilde[l] + f_next_active[l] for l in active_degrees})
 
         return f_next, g_a_out, X_a_new

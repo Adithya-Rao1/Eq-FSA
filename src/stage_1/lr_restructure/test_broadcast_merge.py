@@ -30,8 +30,6 @@ def _copy_weights(old: MasterBroadcastAttentionReference, new: MasterBroadcastAt
             new.mlp_hi_w[i].copy_(old.mlp_hi[str(l)].weight.weight)
             new.gate_hi.W_gate[i].copy_(old.gate_hi[str(l)].gate_lin.weight)
             new.gate_hi.b_gate[i].copy_(old.gate_hi[str(l)].gate_lin.bias)
-        for i, l in enumerate(degrees):
-            new.out_norm.gamma[i].copy_(old.out_norm[str(l)].gamma)
 
 
 def test_broadcast_merge_matches_reference():
@@ -86,8 +84,6 @@ def test_broadcast_merge_matches_reference():
         torch.testing.assert_close(old.mlp_hi[str(l)].weight.weight.grad, new.mlp_hi_w.grad[i], atol=ATOL, rtol=RTOL)
         torch.testing.assert_close(old.gate_hi[str(l)].gate_lin.weight.grad, new.gate_hi.W_gate.grad[i], atol=ATOL, rtol=RTOL)
         torch.testing.assert_close(old.gate_hi[str(l)].gate_lin.bias.grad, new.gate_hi.b_gate.grad[i], atol=ATOL, rtol=RTOL)
-    for i, l in enumerate(degrees):
-        torch.testing.assert_close(old.out_norm[str(l)].gamma.grad, new.out_norm.gamma.grad[i], atol=ATOL, rtol=RTOL)
 
 
 def test_broadcast_merge_zero_n_master_nodes_edge_case():

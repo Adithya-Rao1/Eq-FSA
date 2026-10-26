@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from utils.pw_bases import minimum_image
 from utils.se3_utils import (
-    EquivariantLinear, EquivariantRMSNorm, GatedNonlinearity,
+    EquivariantLinear, GatedNonlinearity,
     clebsch_gordan_matrix, get_spherical_harmonics, scalar_ffn, softmax_over_neighbors,
 )
 
@@ -44,10 +44,6 @@ class MasterBroadcastAttentionReference(nn.Module):
             str(l): EquivariantLinear(feature_dim, feature_dim) for l in degrees if l > 0
         })
         self.gate_hi = nn.ModuleDict({str(l): GatedNonlinearity(feature_dim) for l in degrees if l > 0})
-        self.out_norm = nn.ModuleDict({
-            str(l): (EquivariantRMSNorm(feature_dim, degree=l) if use_norms else nn.Identity())
-            for l in degrees
-        })
 
     def forward(
         self,
@@ -141,6 +137,6 @@ class MasterBroadcastAttentionReference(nn.Module):
                 mixed = self.mlp0(o_l.squeeze(-1)).unsqueeze(-1)
             else:
                 mixed = self.gate_hi[str(l)](self.mlp_hi[str(l)](o_l))
-            out[l] = self.out_norm[str(l)](mixed)
+            out[l] = mixed
             row_start = row_end
         return out
