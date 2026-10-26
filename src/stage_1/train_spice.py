@@ -105,7 +105,8 @@ class SPICEEnergyForceModel(nn.Module):
             )
         else:
             raise ValueError(f"Unknown backbone: {backbone!r} (expected 'lr_restructure' or 'production')")
-        self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
+
+        """self.norm_readout1 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
         self.norm_readout2 = EquivariantNormReadout(C=feature_dim, hidden=hidden_dim)
         self.out = nn.Sequential(
             EquivariantRMSNorm(feature_dim + 2, degree=0) if use_norms else nn.Identity(),
@@ -119,6 +120,16 @@ class SPICEEnergyForceModel(nn.Module):
             EquivariantRMSNorm(hidden_dim, degree=0) if use_norms else nn.Identity(),
             nn.LeakyReLU(),
             EquivariantLinear(hidden_dim, 1),
+        )"""
+
+        self.final_out = nn.Sequential(
+            nn.Linear(3 * feature_dim, hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_dim, 1)
         )
 
         self.direct_force_proj = EquivariantLinear(feature_dim, 1)
@@ -180,11 +191,13 @@ class SPICEEnergyForceModel(nn.Module):
         )
         f_pooled = {l: masked_mean(f[l], mask) for l in f}
 
-        u_vec = self.norm_readout1(f_pooled[1])
-        u_ten = self.norm_readout2(f_pooled[2])
-        full_vec = torch.cat([f_pooled[0].squeeze(-1), u_vec.unsqueeze(-1), u_ten.unsqueeze(-1)], dim=-1)
-        out = self.out(full_vec.unsqueeze(-1))
-        energy = out.squeeze(-1).squeeze(-1)
+        # u_vec = self.norm_readout1(f_pooled[1])
+        # u_ten = self.norm_readout2(f_pooled[2])
+
+        f_contract = {l: (f_pooled[l]**2).sum(dim=-1, keepdim=False) for l in [1, 2]}
+        full_vec = torch.cat([f_pooled[0].squeeze(-1), f_contract[1], f_contract[2]], dim=-1) # [B, 3 * feat_dim]
+        energy = self.final_out(full_vec).squeeze(-1) #[B,]
+        # energy = out.squeeze(-1).squeeze(-1)
 
         if force_mode == "energy_only":
             return energy
@@ -575,7 +588,7 @@ class SPICETrainer:
             return "other_gate"
         if ".readout." in name:
             return "other_readout"
-        if "norm_readout" in name or name.startswith("out."):
+        if "final_out" in name:
             return "other_final"
         return "other"
 
@@ -617,9 +630,6 @@ class SPICETrainer:
             "min_abs_radial": min_abs_radial,
             "eqln_deg_gt0_near_degenerate": counter_snap.get("eqln_deg_gt0_near_degenerate", 0),
             "g_a_norm_max": max(g_a_norms) if g_a_norms else None,
-            # max|.| of norm_readout{1,2}'s pre-norm equiv_proj output (the straight_through_norm
-            # input) -- checks whether it's collapsed toward 0, the floor-dominated dead-gradient
-            # attractor discussed re: backbone gradient starvation.
             "norm_readout1_premag": mag_stats.get("norm_readout1.equiv_proj"),
             "norm_readout2_premag": mag_stats.get("norm_readout2.equiv_proj"),
         }
