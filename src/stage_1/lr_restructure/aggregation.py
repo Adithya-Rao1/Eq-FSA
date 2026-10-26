@@ -5,59 +5,40 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from utils.pw_bases import minimum_image
-from utils.se3_utils import softmax_over_neighbors, init_linear_
+from utils.se3_utils import softmax_over_neighbors, init_linear_tensor_
 
 from stage_1.lr_restructure.rbf import LogSpacedRBF
 
 
-class _PerNodeHead(nn.Module):
-    def __init__(self, feature_dim: int, hidden_dim: int, num_rbf: int):
-        super().__init__()
-        self.A_Q = nn.Linear(feature_dim, hidden_dim)
-        self.A_K = nn.Linear(feature_dim, hidden_dim)
-        self.A_E = nn.Linear(num_rbf, hidden_dim)
-        self.u = nn.Linear(hidden_dim, 1, bias=False)
-        self.A_V = nn.Linear(feature_dim, feature_dim)
-        self.h_gain = nn.Linear(num_rbf, 1, bias=False)
-        for lin in (self.A_Q, self.A_K, self.A_E, self.A_V):
-            init_linear_(lin, "leaky_relu")
-        init_linear_(self.u, "linear")
-        init_linear_(self.h_gain, "linear")
-
-
-class _BatchedPerNodeHeads(nn.Module):
+class NodeHeads(nn.Module):
     def __init__(self, feature_dim: int, n_master_nodes: int, hidden_dim: int, num_rbf: int):
         super().__init__()
-        templates = [_PerNodeHead(feature_dim, hidden_dim, num_rbf) for _ in range(n_master_nodes)]
-        self.A_Q_w = nn.Parameter(torch.stack([t.A_Q.weight.detach().clone() for t in templates]))
-        self.A_Q_b = nn.Parameter(torch.stack([t.A_Q.bias.detach().clone() for t in templates]))
-        self.A_K_w = nn.Parameter(torch.stack([t.A_K.weight.detach().clone() for t in templates]))
-        self.A_K_b = nn.Parameter(torch.stack([t.A_K.bias.detach().clone() for t in templates]))
-        self.A_E_w = nn.Parameter(torch.stack([t.A_E.weight.detach().clone() for t in templates]))
-        self.A_E_b = nn.Parameter(torch.stack([t.A_E.bias.detach().clone() for t in templates]))
-        self.u_w = nn.Parameter(torch.stack([t.u.weight.detach().clone() for t in templates]))
-        self.A_V_w = nn.Parameter(torch.stack([t.A_V.weight.detach().clone() for t in templates]))
-        self.A_V_b = nn.Parameter(torch.stack([t.A_V.bias.detach().clone() for t in templates]))
-        self.h_gain_w = nn.Parameter(torch.stack([t.h_gain.weight.detach().clone() for t in templates]))
+        self.A_Q_weight = nn.Parameter(torch.empty(n_master_nodes, hidden_dim, feature_dim))
+        self.A_Q_bias = nn.Parameter(torch.zeros(n_master_nodes, hidden_dim))
+        self.A_K_weight = nn.Parameter(torch.empty(n_master_nodes, hidden_dim, feature_dim))
+        self.A_K_bias = nn.Parameter(torch.zeros(n_master_nodes, hidden_dim))
+        self.A_E_weight = nn.Parameter(torch.empty(n_master_nodes, hidden_dim, num_rbf))
+        self.A_E_bias = nn.Parameter(torch.zeros(n_master_nodes, hidden_dim))
+        self.A_V_weight = nn.Parameter(torch.empty(n_master_nodes, feature_dim, feature_dim))
+        self.A_V_bias = nn.Parameter(torch.zeros(n_master_nodes, feature_dim))
+        self.u_weight = nn.Parameter(torch.empty(n_master_nodes, 1, hidden_dim))
+        self.h_gain_weight = nn.Parameter(torch.empty(n_master_nodes, 1, num_rbf))
+        for w in (self.A_Q_weight, self.A_K_weight, self.A_E_weight, self.A_V_weight):
+            init_linear_tensor_(w.view(-1, w.shape[-1]), "leaky_relu")
+        for w in (self.u_weight, self.h_gain_weight):
+            init_linear_tensor_(w.view(-1, w.shape[-1]), "linear")
 
     def forward(
         self, g_a: torch.Tensor, f_n: torch.Tensor, e: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        hidden_dim = self.A_K_w.shape[1]
-        q = torch.einsum("ahc,bac->bah", self.A_Q_w, g_a) + self.A_Q_b
-
-        KV_w = torch.cat([self.A_K_w, self.A_V_w], dim=1)
-        kv = torch.einsum("ahc,bnc->banh", KV_w, f_n)
-        k = kv[..., :hidden_dim] + self.A_K_b.unsqueeze(1)
-        v = kv[..., hidden_dim:] + self.A_V_b.unsqueeze(1)
-
-        EG_w = torch.cat([self.A_E_w, self.h_gain_w], dim=1)
-        eg = torch.einsum("ahk,bank->banh", EG_w, e)
-        ee = eg[..., :hidden_dim] + self.A_E_b.unsqueeze(1)
-        gain = eg[..., hidden_dim:].squeeze(-1)
+        q = torch.einsum("ahc,bac->bah", self.A_Q_weight, g_a) + self.A_Q_bias
+        k = torch.einsum("ahc,bnc->banh", self.A_K_weight, f_n) + self.A_K_bias.unsqueeze(1)
+        v = torch.einsum("ahc,bnc->banh", self.A_V_weight, f_n) + self.A_V_bias.unsqueeze(1)
+        ee = torch.einsum("ahk,bank->banh", self.A_E_weight, e) + self.A_E_bias.unsqueeze(1)
+        gain = torch.einsum("ahk,bank->banh", self.h_gain_weight, e).squeeze(-1)
 
         h = F.leaky_relu(q.unsqueeze(2) + k + ee)
-        s = torch.einsum("aoh,banh->bano", self.u_w, h).squeeze(-1)
+        s = torch.einsum("aoh,banh->bano", self.u_weight, h).squeeze(-1)
         return s, v, gain
 
 
@@ -69,7 +50,7 @@ class MasterNodeAggregator(nn.Module):
         super().__init__()
         self.n_master_nodes = n_master_nodes
         self.rbf = LogSpacedRBF(rbf_num_basis, rbf_min, rbf_cutoff)
-        self.heads = _BatchedPerNodeHeads(feature_dim, n_master_nodes, hidden_dim, rbf_num_basis)
+        self.heads = NodeHeads(feature_dim, n_master_nodes, hidden_dim, rbf_num_basis)
 
     def forward(
         self, g_a: torch.Tensor, f_n: torch.Tensor, x: torch.Tensor, X_a: torch.Tensor,
