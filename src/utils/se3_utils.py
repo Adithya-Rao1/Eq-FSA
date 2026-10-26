@@ -124,7 +124,7 @@ class RadialNetwork(nn.Module):
         cutoff_radius: float = 5.0,
         num_heads:     int = 1,
         edge_feature_dim: int = 0,
-        envelope_floor: float = 1e-6,
+        envelope_floor: float = 1e-8,
         linear_readout: bool = False,
         use_norms: bool = True,
     ):
@@ -497,14 +497,14 @@ class EquivariantReadout(nn.Module):
         return x.squeeze(-1)        
 
 def straight_through_norm(
-    x: torch.Tensor, dim: int = -1, keepdim: bool = False, floor: float = 0.5,
+    x: torch.Tensor, dim: int = -1, keepdim: bool = False, floor: float = 1e-8,
 ) -> torch.Tensor:
     sq = (x ** 2).sum(dim=dim, keepdim=True)
     norm = torch.sqrt(sq + floor ** 2)
     return norm if keepdim else norm.squeeze(dim)
 
 def straight_through_norm_and_direction(
-    x: torch.Tensor, dim: int = -1, floor: float = 0.5,
+    x: torch.Tensor, dim: int = -1, floor: float = 1e-8,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     sq = (x ** 2).sum(dim=dim, keepdim=True)
     norm = torch.sqrt(sq + floor ** 2)
@@ -512,7 +512,7 @@ def straight_through_norm_and_direction(
     return norm.squeeze(dim), direction
 
 class GatedNonlinearity(nn.Module):
-    def __init__(self, num_channels: int, floor: float = 0.5):
+    def __init__(self, num_channels: int, floor: float = 1e-8):
         super().__init__()
         self.floor = floor
         self.gate_lin = nn.Linear(num_channels, num_channels)
@@ -524,7 +524,7 @@ class GatedNonlinearity(nn.Module):
 
 
 class BatchedGatedNonlinearity(nn.Module):
-    def __init__(self, num_channels: int, degrees: list, floor: float = 0.5):
+    def __init__(self, num_channels: int, degrees: list, floor: float = 1e-8):
         super().__init__()
         self.degrees = list(degrees)
         self.floor = floor
@@ -542,7 +542,7 @@ class BatchedGatedNonlinearity(nn.Module):
         return {d: x[d] * gate[i].unsqueeze(-1) for i, d in enumerate(self.degrees)}
 
 class EquivariantNormReadout(nn.Module):
-    def __init__(self, C: int, hidden: int = 64, floor: float = 0.5, out_dim: int | None = None):
+    def __init__(self, C: int, hidden: int = 64, floor: float = 1e-8, out_dim: int | None = None):
         super().__init__()
         self.floor = floor
         self.equiv_proj = nn.Linear(C, hidden, bias=False)
@@ -562,7 +562,7 @@ class EquivariantNormReadout(nn.Module):
 
 
 class DirectionAwareNormReadout(nn.Module):
-    def __init__(self, C: int, degree: int, hidden: int = 64, floor: float = 0.5, out_dim: int | None = None):
+    def __init__(self, C: int, degree: int, hidden: int = 64, floor: float = 1e-8, out_dim: int | None = None):
         super().__init__()
         self.degree = degree
         self.floor = floor
@@ -606,7 +606,7 @@ class EquivariantRMSNorm(nn.Module):
         degree: Optional[int] = None,
         degrees: Optional[list] = None,
         eps: float = 1e-8,
-        floor: float = 0.5,
+        floor: float = 1e-8,
     ):
         super().__init__()
         assert (degree is None) != (degrees is None), "pass exactly one of degree or degrees"
@@ -649,7 +649,7 @@ class EquivariantRMSNorm(nn.Module):
 class BatchedHighOrdFFN(nn.Module):
     def __init__(
         self, feature_dim: int, hidden_dim: int, degree: int, n_copies: int,
-        floor: float = 0.5, eps: float = 1e-8, in_dim: int | None = None, use_norms: bool = True,
+        floor: float = 1e-8, eps: float = 1e-8, in_dim: int | None = None, use_norms: bool = True,
     ):
         super().__init__()
         self.degree = degree

@@ -273,6 +273,7 @@ _CSV_FIELDS = [
     "alpha", "damping_sum_min", "Z_min", "ln_clamp_hits", "safe_inv_retries",
     "max_force_mag", "max_abs_U",
     "min_abs_radial", "eqln_deg_gt0_near_degenerate", "g_a_norm_max",
+    "norm_readout1_premag", "norm_readout2_premag",
     "skipped",
 ]
 
@@ -369,7 +370,9 @@ class SPICETrainer:
         ln_clamp_hits: int | None = None, safe_inv_retries: int | None = None,
         max_force_mag: float | None = None, max_abs_U: float | None = None,
         min_abs_radial: float | None = None, eqln_deg_gt0_near_degenerate: int | None = None,
-        g_a_norm_max: float | None = None, skipped: int | None = None,
+        g_a_norm_max: float | None = None,
+        norm_readout1_premag: float | None = None, norm_readout2_premag: float | None = None,
+        skipped: int | None = None,
     ):
         row = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -394,6 +397,8 @@ class SPICETrainer:
             "min_abs_radial": min_abs_radial,
             "eqln_deg_gt0_near_degenerate": eqln_deg_gt0_near_degenerate,
             "g_a_norm_max": g_a_norm_max,
+            "norm_readout1_premag": norm_readout1_premag,
+            "norm_readout2_premag": norm_readout2_premag,
             "skipped": skipped,
         }
         self._csv_writer.writerow(row)
@@ -602,6 +607,7 @@ class SPICETrainer:
                     g_a_norms.append(layer._diag_g_a_norm)
         counter_snap = counters.snapshot_and_reset()
         min_abs_radial = getattr(self.model.energy_model, "_diag_stats", {}).get("min_abs_radial")
+        mag_stats = self.mag_tracker.stats if self.mag_tracker is not None else {}
         return {
             "alpha": min(alphas) if alphas else None,
             "damping_sum_min": min(damping_mins) if damping_mins else None,
@@ -611,13 +617,18 @@ class SPICETrainer:
             "min_abs_radial": min_abs_radial,
             "eqln_deg_gt0_near_degenerate": counter_snap.get("eqln_deg_gt0_near_degenerate", 0),
             "g_a_norm_max": max(g_a_norms) if g_a_norms else None,
+            # max|.| of norm_readout{1,2}'s pre-norm equiv_proj output (the straight_through_norm
+            # input) -- checks whether it's collapsed toward 0, the floor-dominated dead-gradient
+            # attractor discussed re: backbone gradient starvation.
+            "norm_readout1_premag": mag_stats.get("norm_readout1.equiv_proj"),
+            "norm_readout2_premag": mag_stats.get("norm_readout2.equiv_proj"),
         }
 
     _EMPTY_BUCKETS = {b: 0.0 for b in _GRAD_BUCKET_NAMES}
     _EMPTY_RISK_SCALARS = {
         "alpha": None, "damping_sum_min": None, "Z_min": None, "ln_clamp_hits": 0,
         "safe_inv_retries": 0, "min_abs_radial": None, "eqln_deg_gt0_near_degenerate": 0,
-        "g_a_norm_max": None,
+        "g_a_norm_max": None, "norm_readout1_premag": None, "norm_readout2_premag": None,
     }
 
     def _diag_step_record(self, epoch: int, batch_idx: int) -> dict:
@@ -764,6 +775,8 @@ class SPICETrainer:
                         "min_abs_radial": diag_record["min_abs_radial"],
                         "eqln_deg_gt0_near_degenerate": diag_record["eqln_deg_gt0_near_degenerate"],
                         "g_a_norm_max": diag_record["g_a_norm_max"],
+                        "norm_readout1_premag": diag_record["norm_readout1_premag"],
+                        "norm_readout2_premag": diag_record["norm_readout2_premag"],
                     })
                 self._log_csv_row(
                     "train_batch", epoch, batch_idx=batch_idx, loss=loss_value,

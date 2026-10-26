@@ -131,7 +131,9 @@ def _instrumented_submodules_production(model: SPICEEnergyForceModel):
             yield ffn, f"layer{i}.readout.ffn{l}"
 
     yield model.norm_readout1, "norm_readout1"
+    yield model.norm_readout1.equiv_proj, "norm_readout1.equiv_proj"
     yield model.norm_readout2, "norm_readout2"
+    yield model.norm_readout2.equiv_proj, "norm_readout2.equiv_proj"
     yield model.out, "out"
 
 
@@ -169,7 +171,9 @@ def _instrumented_submodules_lr_restructure(model: SPICEEnergyForceModel):
             yield ffn, f"layer{i}.readout.ffn{l}"
 
     yield model.norm_readout1, "norm_readout1"
+    yield model.norm_readout1.equiv_proj, "norm_readout1.equiv_proj"
     yield model.norm_readout2, "norm_readout2"
+    yield model.norm_readout2.equiv_proj, "norm_readout2.equiv_proj"
     yield model.out, "out"
 
 
