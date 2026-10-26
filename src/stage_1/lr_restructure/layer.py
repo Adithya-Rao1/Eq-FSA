@@ -46,13 +46,6 @@ class LRLayer(nn.Module):
         )
         self.sigma_gate = BatchedGatedNonlinearity(feature_dim, degrees=active_degrees)
 
-        self.layer_norm_in = (
-            EquivariantRMSNorm(feature_dim, degrees=active_degrees) if use_norms else nn.Identity()
-        )
-        self.layer_norm_mid = (
-            EquivariantRMSNorm(feature_dim, degrees=active_degrees) if use_norms else nn.Identity()
-        )
-        
         self.readout = Readout(feature_dim, hidden_dim, use_norms=use_norms, degrees=active_degrees)
 
         if self.use_long_range:
@@ -90,7 +83,6 @@ class LRLayer(nn.Module):
         active_degrees = range(self.active_ceiling + 1)
 
         with torch.profiler.record_function("lr_local_sr"):
-            # f_in_active = self.layer_norm_in({l: f_in[l] for l in active_degrees})
             f_in_active = {l: f_in[l] for l in active_degrees}
 
             receiver_flat = edge_b * N + edge_i
@@ -124,7 +116,6 @@ class LRLayer(nn.Module):
             neighbor_terms = self.sigma_gate(neighbor_raws)
 
             f_out_active = {l: f_in_active[l] + self_terms[l] + neighbor_terms[l] for l in active_degrees}
-            # f_out_active = self.layer_norm_mid(pre_mid)
 
             f_readout_active = self.readout(f_out_active)
             out = {l: f_readout_active[l] + f_out_active[l] for l in active_degrees}
