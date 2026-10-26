@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from utils.pw_bases import minimum_image
 from utils.se3_utils import (
     EquivariantRMSNorm, BatchedGatedNonlinearity,
-    clebsch_gordan_matrix, get_spherical_harmonics, init_linear_, scalar_ffn,
+    clebsch_gordan_matrix, get_spherical_harmonics, init_linear_tensor_, scalar_ffn,
     softmax_over_neighbors,
 )
 
@@ -30,16 +30,13 @@ class MasterBroadcastAttention(nn.Module):
         self.max_width = 2 * max_degree + 1
         hi_degrees = [l for l in degrees if l > 0]
 
-        def _stacked_linear_weight(n: int) -> torch.Tensor:
-            templates = [nn.Linear(feature_dim, feature_dim, bias=False) for _ in range(n)]
-            for lin in templates:
-                init_linear_(lin, "linear")
-            return torch.stack([t.weight.detach().clone() for t in templates])
+        self.qkv_self_w = nn.Parameter(torch.empty(len(degrees), 3, feature_dim, feature_dim))
+        init_linear_tensor_(self.qkv_self_w.view(-1, feature_dim), "linear")
 
-        self.qkv_self_w = nn.Parameter(torch.stack([_stacked_linear_weight(3) for _ in degrees], dim=0)) 
-
-        self.readout_K_w = nn.Parameter(_stacked_linear_weight(len(degrees)))
-        self.readout_V_w = nn.Parameter(_stacked_linear_weight(len(degrees)))
+        self.readout_K_w = nn.Parameter(torch.empty(len(degrees), feature_dim, feature_dim))
+        init_linear_tensor_(self.readout_K_w.view(-1, feature_dim), "linear")
+        self.readout_V_w = nn.Parameter(torch.empty(len(degrees), feature_dim, feature_dim))
+        init_linear_tensor_(self.readout_V_w.view(-1, feature_dim), "linear")
 
         Q_lift_blocks = []
         for l in degrees:
@@ -54,7 +51,8 @@ class MasterBroadcastAttention(nn.Module):
 
         self.mlp0 = scalar_ffn(feature_dim, hidden_dim, use_norms=use_norms)
         if hi_degrees:
-            self.mlp_hi_w = nn.Parameter(_stacked_linear_weight(len(hi_degrees)))
+            self.mlp_hi_w = nn.Parameter(torch.empty(len(hi_degrees), feature_dim, feature_dim))
+            init_linear_tensor_(self.mlp_hi_w.view(-1, feature_dim), "linear")
             self.gate_hi = BatchedGatedNonlinearity(feature_dim, degrees=hi_degrees)
         self.out_norm = (
             EquivariantRMSNorm(feature_dim, degrees=degrees) if use_norms else nn.Identity()
