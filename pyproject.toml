@@ -42,4 +42,4 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["stage_1*", "stage_2*", "diagnostics*", "utils*", "log_setup*"]
+include = ["stage_1*", "stage_2*", "diagnostics*", "utils*", "log_setup*", "baselines*"]
