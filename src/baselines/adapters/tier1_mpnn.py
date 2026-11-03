@@ -89,9 +89,9 @@ def _load_checkpoint(path: str, model, optimizer) -> tuple[int, int]:
 
 
 def _build_dataloader(cfg: CommonConfig, split: str):
-    from baselines.datasets.api import load_split  # type: ignore[import-not-found]
+    from baselines.adapters.dataset_loading import load_split
 
-    dataset = load_split(cfg.dataset, cfg.split, split)
+    dataset = load_split(cfg.dataset, cfg.split, split, cfg.data_root)
     return torch.utils.data.DataLoader(
         dataset,
         batch_size=cfg.batch_size,

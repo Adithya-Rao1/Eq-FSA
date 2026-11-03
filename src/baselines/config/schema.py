@@ -9,6 +9,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dataset", type=str, required=True)
     parser.add_argument("--split", type=str, required=True, help="split convention name, e.g. molecule_95_5, rmd17_fixed_1000")
+    parser.add_argument("--data-root", type=str, default=None, help="dataset root dir (or file path for ani1x/spice)")
     parser.add_argument("--run-dir", type=str, required=True)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--num-workers", type=int, default=8)
@@ -26,6 +27,7 @@ class CommonConfig:
     dataset: str
     split: str
     run_dir: str
+    data_root: str | None = None
     device: str = "cuda"
     num_workers: int = 8
     batch_size: int = 32
