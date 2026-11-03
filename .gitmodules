@@ -1,3 +1,21 @@
 [submodule "src/stage_1/solvatum"]
 	path = src/stage_1/solvatum
 	url = https://github.com/hille721/solvatum.git
+[submodule "src/baselines/codebases/schnetpack"]
+	path = src/baselines/codebases/schnetpack
+	url = https://github.com/atomistic-machine-learning/schnetpack
+[submodule "src/baselines/codebases/torchani"]
+	path = src/baselines/codebases/torchani
+	url = https://github.com/aiqm/torchani
+[submodule "src/baselines/codebases/aimnetcentral"]
+	path = src/baselines/codebases/aimnetcentral
+	url = https://github.com/zubatyuk/aimnetcentral
+[submodule "src/baselines/codebases/nequip"]
+	path = src/baselines/codebases/nequip
+	url = https://github.com/mir-group/nequip
+[submodule "src/baselines/codebases/allegro"]
+	path = src/baselines/codebases/allegro
+	url = https://github.com/mir-group/allegro
+[submodule "src/baselines/codebases/mace"]
+	path = src/baselines/codebases/mace
+	url = https://github.com/ACEsuit/mace

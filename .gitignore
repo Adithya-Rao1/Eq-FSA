@@ -17,3 +17,4 @@ CLAUDE.md
 *.png
 *.pdf
 /src/stage_1/lr_restructure/poster
+*.venv_agent2
