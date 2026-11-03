@@ -1,3 +1,9 @@
 [submodule "src/stage_1/solvatum"]
 	path = src/stage_1/solvatum
 	url = https://github.com/hille721/solvatum.git
+[submodule "src/baselines/codebases/fairchem"]
+	path = src/baselines/codebases/fairchem
+	url = https://github.com/facebookresearch/fairchem
+[submodule "src/baselines/codebases/orb-models"]
+	path = src/baselines/codebases/orb-models
+	url = https://github.com/orbital-materials/orb-models
