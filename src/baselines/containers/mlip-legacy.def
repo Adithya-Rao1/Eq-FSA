@@ -1,0 +1,78 @@
+# Singularity 3.7 definition file for the "legacy" MLIP baseline family: SchNetPack (modern
+# 2.x release, SchNet+PaiNN), torchani, aimnetcentral. Def-file syntax/sections per the Sylabs
+# Singularity 3.7 user guide: https://docs.sylabs.io/guides/3.7/user-guide/definition_files.html
+# and build command: https://docs.sylabs.io/guides/3.7/user-guide/build_a_container.html
+#
+# CityUHK Burgundy facts baked into this file's design (see this project's Burgundy task brief):
+# no sudo anywhere on the cluster (build elsewhere with sudo, SFTP the .sif to $HOME/scratch/),
+# Singularity 3.7 (not Apptainer) at the fixed path /usr/bin/singularity on compute nodes, no
+# outbound internet from a running job. Code at src/baselines/codebases/{schnetpack,torchani,
+# aimnetcentral} is added as git submodules by a sibling agent on another branch -- not present
+# in this worktree, referenced here only by the path it is documented to land at.
+
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:24.08-py3
+# Pin rationale: NGC pytorch:24.08-py3 ships Python 3.10 / CUDA 12.5 with a CUDA-matched torch
+# build already installed. We deliberately do NOT reinstall torch on top of it -- this repo's
+# own src/stage_1/experiments/CLAUDE.md documents a real incident where an unrelated pip install
+# silently bumped a pinned torch and broke a CUDA-dependent extension (torchvision::nms missing
+# after an unwanted torch 2.5.0->2.6.0 drift). Every OTHER package below is pinned to an exact
+# version chosen to be compatible with whatever torch/numpy this base tag ships, not to match any
+# other image in this repo -- each of the 4 mlip-*.def images is an independently pinned, fully
+# isolated environment by design (avoids exactly the numpy/torch/schnetpack conflicts documented
+# in src/stage_1/experiments/CLAUDE.md from cramming every baseline into one shared env).
+
+%post
+    set -euo pipefail
+
+    # numpy pinned below 2.x: schnetpack/torchani-era code commonly references numpy aliases
+    # (np.int, np.bool, ...) removed in numpy 2.x, same failure mode already documented in this
+    # repo's src/stage_1/experiments/CLAUDE.md for the (different) legacy schnetpack==0.3 pin.
+    pip install --no-cache-dir \
+        numpy==1.26.4 \
+        schnetpack==2.0.4 \
+        torchani==2.2.4 \
+        aimnetcentral==0.2.1
+
+    # ---- this project's own package (src/baselines) -------------------------------------------
+    # We deliberately do NOT `pip install -e .` here. The repo (and therefore src/baselines/
+    # pyproject.toml) does not exist inside the build -- per this project's own design, the repo
+    # is bind-mounted at job run time so that code changes never require an image rebuild. See
+    # %environment below: PYTHONPATH is pointed at /work/src, the exact --bind target path used
+    # by every slurm/templates/*.sbatch.tmpl (--bind "$WORKDIR:/work"). Because pyproject.toml
+    # already declares package-dir={"":"src"}, this is import-equivalent to an editable install
+    # for this pure-Python package, without needing pip/setuptools build tooling to run inside a
+    # job that this cluster's admin confirms has no outbound internet.
+
+    # ---- image digest: build-time placeholder only --------------------------------------------
+    # A .sif's own content digest cannot be computed from inside its own build -- the digest is a
+    # hash of the finished, assembled image, which does not exist yet while %post is running. We
+    # bake an explicit placeholder so nothing downstream mistakes this for a real digest. The REAL
+    # sha256 is computed by containers/build_and_verify.sh AFTER the build finishes, and written
+    # to a sidecar file next to the .sif on the host (<image>.sif.sha256) -- never inside this
+    # immutable squashfs image, since there is no supported way to reopen a built .sif read-write
+    # to patch a value in afterward. Every slurm/templates/*.sbatch.tmpl bind-mounts that sidecar
+    # file over this exact path at job run time, so baselines/provenance/env_manifest.py's
+    # `_CONTAINER_DIGEST_FILE` constant (="/opt/image_digest.txt") keeps working completely
+    # unmodified: it just reads whatever is at that path at run time, placeholder or real digest.
+    mkdir -p /opt
+    echo "UNVERIFIED-BUILD" > /opt/image_digest.txt
+
+%environment
+    export LC_ALL=C
+    export PYTHONPATH=/work/src:${PYTHONPATH:-}
+    export NVIDIA_VISIBLE_DEVICES=all
+    export CUDA_CACHE_DISABLE=0
+
+%labels
+    Project EqFSA
+    Family mlip-legacy
+    Contains schnetpack-2.0.4 torchani-2.2.4 aimnetcentral-0.2.1
+
+%help
+    EqFSA baseline container: SchNetPack (2.x, SchNet+PaiNN) + torchani + aimnetcentral.
+    Run via (never submitted automatically -- always a printed/handed-off command, per this
+    project's standing rule):
+        singularity exec --nv --bind <repo>:/work --bind <image>.sif.sha256:/opt/image_digest.txt:ro \
+            --pwd /work <image>.sif \
+            python -m baselines.adapters.tier0_legacy --model {schnet,painn,ani2x,aimnet2} ...

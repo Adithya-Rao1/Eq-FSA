@@ -1,0 +1,66 @@
+# Singularity 3.7 definition file for the message-passing MLIP family: NequIP, Allegro, MACE.
+# Def-file syntax/sections: https://docs.sylabs.io/guides/3.7/user-guide/definition_files.html
+# Build command: https://docs.sylabs.io/guides/3.7/user-guide/build_a_container.html
+#
+# CityUHK Burgundy facts baked into this file's design (see this project's Burgundy task brief):
+# no sudo anywhere on the cluster (build elsewhere with sudo, SFTP the .sif to $HOME/scratch/),
+# Singularity 3.7 at the fixed path /usr/bin/singularity on compute nodes, no outbound internet
+# from a running job. Code at src/baselines/codebases/{nequip,allegro,mace} is added as git
+# submodules by a sibling agent on another branch -- not present in this worktree, referenced
+# here only by the path it is documented to land at.
+
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:24.08-py3
+# Same base-image pin as mlip-legacy.def, for the same reason (don't fight the NGC image's own
+# CUDA-matched torch build) -- but this is still an independently pinned, isolated environment
+# from mlip-legacy.def; it does not need to match it, only be internally consistent with its own
+# NequIP/Allegro/MACE version set.
+
+%post
+    set -euo pipefail
+
+    pip install --no-cache-dir \
+        numpy==1.26.4 \
+        nequip==0.6.1 \
+        mace-torch==0.3.9
+
+    # Allegro has no official PyPI release as of writing (it's a NequIP extension distributed
+    # via git) -- pinned to a tag rather than a floating branch so this image is reproducible.
+    # NOTE: this exact tag was chosen for shape/plausibility without network access to verify
+    # against the real Allegro repo from this sandbox -- confirm the tag still exists and is
+    # compatible with nequip==0.6.1 before the first real build (flagged in this agent's report).
+    pip install --no-cache-dir "git+https://github.com/mir-group/allegro.git@v0.3.0"
+
+    # ---- this project's own package (src/baselines) -------------------------------------------
+    # Not installed here -- see mlip-legacy.def's %post comment for the full rationale (repo is
+    # bind-mounted at run time, not baked into the image; PYTHONPATH substitutes for `pip install
+    # -e .` below in %environment).
+
+    # ---- image digest: build-time placeholder only --------------------------------------------
+    # See mlip-legacy.def's %post comment for the full timing-order explanation: a .sif cannot
+    # know its own digest while it is still being built. The real sha256 is written by
+    # containers/build_and_verify.sh to a host-side sidecar file (<image>.sif.sha256) after the
+    # build finishes, and bind-mounted over this exact path at job run time by every
+    # slurm/templates/*.sbatch.tmpl -- baselines/provenance/env_manifest.py's
+    # `_CONTAINER_DIGEST_FILE` constant needs no change for this.
+    mkdir -p /opt
+    echo "UNVERIFIED-BUILD" > /opt/image_digest.txt
+
+%environment
+    export LC_ALL=C
+    export PYTHONPATH=/work/src:${PYTHONPATH:-}
+    export NVIDIA_VISIBLE_DEVICES=all
+    export CUDA_CACHE_DISABLE=0
+
+%labels
+    Project EqFSA
+    Family mlip-mpnn
+    Contains nequip-0.6.1 allegro-v0.3.0 mace-torch-0.3.9
+
+%help
+    EqFSA baseline container: NequIP + Allegro + MACE.
+    Run via (never submitted automatically -- always a printed/handed-off command, per this
+    project's standing rule):
+        singularity exec --nv --bind <repo>:/work --bind <image>.sif.sha256:/opt/image_digest.txt:ro \
+            --pwd /work <image>.sif \
+            python -m baselines.adapters.tier1_mpnn --model {nequip,allegro,mace} ...
