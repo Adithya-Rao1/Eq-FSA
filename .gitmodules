@@ -19,3 +19,9 @@
 [submodule "src/baselines/codebases/mace"]
 	path = src/baselines/codebases/mace
 	url = https://github.com/ACEsuit/mace
+[submodule "src/baselines/codebases/fairchem"]
+	path = src/baselines/codebases/fairchem
+	url = https://github.com/facebookresearch/fairchem
+[submodule "src/baselines/codebases/orb-models"]
+	path = src/baselines/codebases/orb-models
+	url = https://github.com/orbital-materials/orb-models
