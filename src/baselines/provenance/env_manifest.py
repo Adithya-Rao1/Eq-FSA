@@ -12,7 +12,7 @@ from typing import Any
 
 import torch
 
-# Used in each Singularity image at build time (containers/build_and_verify.sh); 
+# Used in each Singularity image at build time (containers/build_and_verify.sh);
 # Absent when running outside a container (e.g. local dev).
 _CONTAINER_DIGEST_FILE = "/opt/image_digest.txt"
 

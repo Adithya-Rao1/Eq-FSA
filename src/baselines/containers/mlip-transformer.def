@@ -1,0 +1,51 @@
+# Singularity 3.7 definition file for the transformer-style MLIP family: fairchem
+# (Equiformer/EquiformerV2). Def-file syntax/sections:
+# https://docs.sylabs.io/guides/3.7/user-guide/definition_files.html
+# Build command: https://docs.sylabs.io/guides/3.7/user-guide/build_a_container.html
+#
+# CityUHK Burgundy facts baked into this file's design (see this project's Burgundy task brief):
+# no sudo anywhere on the cluster (build elsewhere with sudo, SFTP the .sif to $HOME/scratch/),
+# Singularity 3.7 at the fixed path /usr/bin/singularity on compute nodes, no outbound internet
+# from a running job. Code at src/baselines/codebases/fairchem is added as a git submodule by a
+# sibling agent on another branch -- not present in this worktree, referenced here only by the
+# path it is documented to land at.
+
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:24.08-py3
+# Same base-image pin as the other 3 images, same reason (don't fight the NGC image's own
+# CUDA-matched torch build) -- independently pinned/isolated from them otherwise; fairchem's
+# Equiformer/EquiformerV2 stack is the only thing that needs to be internally consistent here.
+
+%post
+    set -euo pipefail
+
+    pip install --no-cache-dir \
+        numpy==1.26.4 \
+        fairchem-core==1.2.0
+
+    # ---- this project's own package (src/baselines) -------------------------------------------
+    # Not installed here -- see mlip-legacy.def's %post comment for the full rationale.
+
+    # ---- image digest: build-time placeholder only --------------------------------------------
+    # See mlip-legacy.def's %post comment for the full timing-order explanation.
+    mkdir -p /opt
+    echo "UNVERIFIED-BUILD" > /opt/image_digest.txt
+
+%environment
+    export LC_ALL=C
+    export PYTHONPATH=/work/src:${PYTHONPATH:-}
+    export NVIDIA_VISIBLE_DEVICES=all
+    export CUDA_CACHE_DISABLE=0
+
+%labels
+    Project EqFSA
+    Family mlip-transformer
+    Contains fairchem-core-1.2.0
+
+%help
+    EqFSA baseline container: fairchem (Equiformer / EquiformerV2).
+    Run via (never submitted automatically -- always a printed/handed-off command, per this
+    project's standing rule):
+        singularity exec --nv --bind <repo>:/work --bind <image>.sif.sha256:/opt/image_digest.txt:ro \
+            --pwd /work <image>.sif \
+            python -m baselines.adapters.tier2_transformer --model {equiformer,equiformerv2} ...
