@@ -1,15 +1,8 @@
 from __future__ import annotations
-# Tier 0 (legacy/invariant) MLIP baselines: a thin CLI -> native-trainer adapter, one function per
-# model. SchNet -- Schutt, Arbabzadah, Chmiela, Tkatchenko, Muller, NeurIPS 2017, arXiv:1706.08566
-# (continuous-filter convolutions, no angular info). PaiNN -- Schutt, Unke, Gastegger, ICML 2021,
-# arXiv:2102.03150 (degree-1 equivariant message passing). Both are built from model classes in the
-# schnetpack submodule (pinned to its v2.2.0 release, commit 4c967da8, 2025-12-19) -- this is
-# SchNetPack's current/modern release, not the schnetpack==0.3 pin that `FieldSchNetBaseline`
-# (src/stage_1/experiments/CLAUDE.md) needs for an unrelated tool; the two never share an
-# environment. ANI-2x -- Devereux/Smith/Isayev et al., JCTC 2020 (fixed Behler-Parrinello symmetry
-# functions), via the torchani submodule (pinned to tag 2.9.0, commit 6bdf4905, 2026-09-03).
-# AIMNet2 -- Anstine, Zubatyuk, Isayev, Chem. Sci. 16, 10228 (2025) (explicit charge handling), via
-# the aimnetcentral submodule (pinned to tag v0.1.0, commit 31897cc2, 2026-02-04).
+# SchNet -- Schutt, Arbabzadah, Chmiela, Tkatchenko, Muller, NeurIPS 2017, arXiv:1706.08566
+# PaiNN -- Schutt, Unke, Gastegger, ICML 2021, arXiv:2102.03150 
+# ANI-2x -- Devereux/Smith/Isayev et al., JCTC 2020 
+# AIMNet2 -- Anstine, Zubatyuk, Isayev, Chem. Sci. 16, 10228 (2025)
 
 import argparse
 import dataclasses
@@ -64,8 +57,7 @@ def _is_distributed() -> bool:
 
 
 def _wrap_ddp(model: torch.nn.Module, device: torch.device) -> torch.nn.Module:
-    # Single-node only: torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE sets RANK/
-    # WORLD_SIZE/LOCAL_RANK; no multi-node rendezvous is wired up here on purpose.
+    # Single-node only: torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE sets RANK/WORLD_SIZE/LOCAL_RANK
     import torch.distributed as dist
     from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -96,11 +88,6 @@ def _load_checkpoint(path: str, model, optimizer) -> tuple[int, int]:
 
 
 def _build_dataloader(cfg: CommonConfig, split: str):
-    # baselines.datasets is owned by a sibling agent on a separate branch and does not exist in
-    # this worktree; this is the agreed integration seam. It is assumed to yield batches already
-    # collated into each library's native tensor format (schnetpack input-dict keys for
-    # schnet/painn, (species, coordinates) for ani2x, the aimnet "coord"/"numbers"/"charge" dict
-    # for aimnet2) -- exact collation is the datasets module's responsibility, not this adapter's.
     from baselines.datasets.api import load_split  # type: ignore[import-not-found]
 
     dataset = load_split(cfg.dataset, cfg.split, split)
@@ -116,10 +103,6 @@ def _build_dataloader(cfg: CommonConfig, split: str):
         generator=dataloader_generator(cfg.seed),
     )
 
-
-# ---------------------------------------------------------------------------
-# SchNet / PaiNN (schnetpack)
-# ---------------------------------------------------------------------------
 
 def build_schnet_painn_model(model_name: str, args: argparse.Namespace) -> torch.nn.Module:
     import schnetpack.nn as snn
@@ -153,11 +136,7 @@ def build_schnet_painn_model(model_name: str, args: argparse.Namespace) -> torch
 def _schnet_painn_loss(model: torch.nn.Module, batch: dict) -> torch.Tensor:
     import schnetpack.properties as properties
 
-    # schnetpack's output modules write predictions back into the SAME dict under the SAME
-    # property keys the dataset's ground truth arrived under (Atomwise(output_key=properties.
-    # energy) does `inputs[properties.energy] = ...` in place) -- so the targets must be snapshotted
-    # before calling the model, or `batch[properties.energy]` silently becomes the model's own
-    # prediction and the loss is identically zero regardless of how wrong the model is.
+    # targets must be recorded before calling the model, or `batch[properties.energy]` becomes the model's prediction
     energy_target = batch[properties.energy].clone()
     forces_target = batch[properties.forces].clone()
     out = model(batch)
@@ -182,20 +161,13 @@ def _train_schnet_painn(model_name: str, cfg: CommonConfig, args: argparse.Names
         for batch in train_loader:
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
             optimizer.zero_grad(set_to_none=True)
-            # AMP is opt-in (default off) and NOT numerically verified for this model's
-            # forces-via-autograd path -- train_spice.py found bf16 corrupted forces for its own
-            # architecture, so check forces against an fp32 run before trusting --amp here.
+            # TODO: train_spice.py found bf16 corrupted forces for its own architecture, so check forces against an fp32 run before running --amp
             with torch.autocast(device_type=device.type, enabled=cfg.amp):
                 loss = _schnet_painn_loss(model, batch)
             loss.backward()
             optimizer.step()
             global_step += 1
         _save_checkpoint(paths.checkpoint(f"{model_name}_epoch{epoch}"), epoch, global_step, model, optimizer, cfg, args)
-
-
-# ---------------------------------------------------------------------------
-# ANI-2x (torchani)
-# ---------------------------------------------------------------------------
 
 def build_ani2x_model(args: argparse.Namespace) -> torch.nn.Module:
     from torchani.arch import Assembler
@@ -207,8 +179,6 @@ def build_ani2x_model(args: argparse.Namespace) -> torch.nn.Module:
         model.requires_grad_(True)
         return model
 
-    # Same architecture/featurization as the public ANI-2x, but trained from scratch (no
-    # pretrained state dict loaded) -- appropriate for a from-scratch Tier-0 legacy baseline.
     asm = Assembler(periodic_table_index=True)
     asm.set_symbols(SYMBOLS_2X)
     asm.set_global_cutoff_fn("cosine")
@@ -251,29 +221,18 @@ def _train_ani2x(cfg: CommonConfig, args: argparse.Namespace, paths: RunPaths) -
         _save_checkpoint(paths.checkpoint(f"ani2x_epoch{epoch}"), epoch, global_step, model, optimizer, cfg, args)
 
 
-# ---------------------------------------------------------------------------
-# AIMNet2 (aimnetcentral)
-# ---------------------------------------------------------------------------
-
 def build_aimnet2_model(args: argparse.Namespace) -> torch.nn.Module:
     import aimnet
     from aimnet.config import load_yaml, build_module
 
-    # Ambiguous-mapping note: aimnetcentral's own CLI drives model construction through a full
-    # omegaconf training config (aimnet.train.utils.build_model(cfg)), not a bare model yaml. This
-    # builds the model sub-graph directly from the submodule's packaged aimnet2.yaml via the
-    # lower-level aimnet.config.build_module -- confirm this matches the trained-checkpoint shape
-    # the aimnetcentral CLI itself produces before trusting cross-loading of weights.
+    # Building aimnet model sub-graph directly from the submodule's packaged aimnet2.yaml via aimnet.config.build_module
     cfg_path = args.aimnet2_config or os.path.join(os.path.dirname(aimnet.__file__), "models", "aimnet2.yaml")
     model_cfg = load_yaml(cfg_path)
     return build_module(model_cfg)
 
 
 def _aimnet2_loss(model: torch.nn.Module, batch: dict, device: torch.device) -> torch.Tensor:
-    # Ambiguous-mapping note: AIMNet2Base.prepare_input only documents the *input* keys
-    # (coord/numbers/charge + optional neighbor-matrix/cell keys); the output dict's energy/force
-    # key names are set by the concrete aimnet.models.aimnet2.AIMNet2 forward() and should be
-    # double-checked against that module before trusting these literal key names at scale.
+    # TODO: double-check output keys for forces and energies 
     data = {k: v.to(device, non_blocking=True) for k, v in batch.items() if k != "energy_target" and k != "forces_target"}
     data["coord"] = data["coord"].requires_grad_(True)
     data = model.prepare_input(data)

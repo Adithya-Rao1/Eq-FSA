@@ -1,13 +1,7 @@
 from __future__ import annotations
-# Tier 1 (core equivariant message-passing) MLIP baselines: a thin CLI -> native-trainer adapter,
-# one function per model. NequIP -- Batzner et al., Nat. Commun. 13, 2453 (2022),
-# arXiv:2101.03164 (full E(3)-equivariant tensor-feature message passing), via the nequip
-# submodule (pinned to tag v0.19.1, commit 27d9d218, 2026-08-30). Allegro -- Musaelian et al.,
-# Nat. Commun. 2023, arXiv:2204.05249 (strictly local, no message passing, scales to huge
-# systems), via the allegro submodule (pinned to tag v0.8.3, commit 8bd074c8, 2026-05-27) -- built
-# on the same nequip.data.AtomicDataDict / nequip.nn.GraphModel plumbing as NequIP itself. MACE --
-# Batatia et al., NeurIPS 2022, arXiv:2206.07697 (higher-body-order equivariant messages, only 2
-# MP layers), via the mace submodule (pinned to tag v0.3.17, commit e37c8583, 2026-10-19).
+# NequIP -- Batzner et al., Nat. Commun. 13, 2453 (2022), arXiv:2101.03164 submodule (pinned to tag v0.19.1, commit 27d9d218, 2026-08-30). 
+# Allegro -- Musaelian et al., Nat. Commun. 2023, arXiv:2204.05249 (pinned to tag v0.8.3, commit 8bd074c8, 2026-05-27) 
+# MACE -- Batatia et al., NeurIPS 2022, arXiv:2206.07697 (pinned to tag v0.3.17, commit e37c8583, 2026-10-19).
 
 import argparse
 import dataclasses
@@ -64,8 +58,7 @@ def _is_distributed() -> bool:
 
 
 def _wrap_ddp(model: torch.nn.Module, device: torch.device) -> torch.nn.Module:
-    # Single-node only: torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE sets RANK/
-    # WORLD_SIZE/LOCAL_RANK; no multi-node rendezvous is wired up here on purpose.
+    # Single-node only: torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE sets RANK/WORLD_SIZE/LOCAL_RANK
     import torch.distributed as dist
     from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -96,12 +89,6 @@ def _load_checkpoint(path: str, model, optimizer) -> tuple[int, int]:
 
 
 def _build_dataloader(cfg: CommonConfig, split: str):
-    # baselines.datasets is owned by a sibling agent on a separate branch and does not exist in
-    # this worktree; this is the agreed integration seam. It is assumed to yield batches already
-    # collated into each library's native format: nequip.data.AtomicDataDict-shaped dicts for
-    # nequip/allegro (both share that plumbing), and mace.data.AtomicData-derived
-    # torch_geometric Batch objects for mace. Exact collation is the datasets module's
-    # responsibility, not this adapter's.
     from baselines.datasets.api import load_split  # type: ignore[import-not-found]
 
     dataset = load_split(cfg.dataset, cfg.split, split)
@@ -118,16 +105,8 @@ def _build_dataloader(cfg: CommonConfig, split: str):
     )
 
 
-# ---------------------------------------------------------------------------
-# NequIP
-# ---------------------------------------------------------------------------
-
 def _ensure_nequip_global_state(cfg: CommonConfig | None) -> None:
-    # nequip >=0.19 refuses to build ANY model (NequIPGNNModel or AllegroModel, both go through
-    # nequip.model.utils) until nequip.utils.global_state.set_global_state() has run once; that
-    # call also reseeds everything via pytorch-lightning's seed_everything(123, ...) as a side
-    # effect, which would silently stomp this repo's own set_seed(cfg.seed) if called afterwards.
-    # Call it, then re-apply our own seed so cfg.seed (not nequip's hardcoded 123) wins.
+    # nequip >=0.19 need to run nequip.utils.global_state.set_global_state() once before any model.
     from nequip.utils.global_state import set_global_state, global_state_initialized
 
     if not global_state_initialized():
@@ -146,7 +125,7 @@ def build_nequip_model(args: argparse.Namespace, cfg: CommonConfig | None = None
         num_layers=args.num_layers,
         l_max=args.l_max,
         num_features=args.hidden_dim,
-        seed=0,  # nequip's own init seed knob; global reproducibility still comes from set_seed()
+        seed=0, 
         model_dtype="float32",
         avg_num_neighbors=args.avg_num_neighbors,
     )
@@ -156,9 +135,7 @@ def _nequip_allegro_loss(model: torch.nn.Module, batch: dict, device: torch.devi
     from nequip.data import AtomicDataDict
 
     data = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
-    # Same pitfall as schnetpack (see tier0_legacy._schnet_painn_loss): nequip/allegro's
-    # AtomicDataDict ground truth and model output share the same TOTAL_ENERGY_KEY/FORCE_KEY, and
-    # GraphModel writes its prediction back into the same dict -- snapshot the targets first.
+    # capture target first to prevent overwriting it as nequip/allegro's AtomicDataDict ground truth and model output share the same TOTAL_ENERGY_KEY/FORCE_KEY
     energy_target = data[AtomicDataDict.TOTAL_ENERGY_KEY].clone()
     force_target = data[AtomicDataDict.FORCE_KEY].clone()
     out = model(data)
@@ -182,9 +159,7 @@ def _train_nequip_or_allegro(model_name: str, cfg: CommonConfig, args: argparse.
         model.train()
         for batch in train_loader:
             optimizer.zero_grad(set_to_none=True)
-            # AMP is opt-in (default off) and NOT numerically verified for this model's
-            # forces-via-autograd path -- train_spice.py found bf16 corrupted forces for its own
-            # architecture, so check forces against an fp32 run before trusting --amp here.
+            # TODO: test against fp32 before trusting amp
             with torch.autocast(device_type=device.type, enabled=cfg.amp):
                 loss = _nequip_allegro_loss(model, batch, device)
             loss.backward()
@@ -193,14 +168,10 @@ def _train_nequip_or_allegro(model_name: str, cfg: CommonConfig, args: argparse.
         _save_checkpoint(paths.checkpoint(f"{model_name}_epoch{epoch}"), epoch, global_step, model, optimizer, cfg, args)
 
 
-# ---------------------------------------------------------------------------
-# Allegro
-# ---------------------------------------------------------------------------
-
 def build_allegro_model(args: argparse.Namespace, cfg: CommonConfig | None = None) -> torch.nn.Module:
     from allegro.model import AllegroModel
 
-    _ensure_nequip_global_state(cfg)  # Allegro is built on the same nequip global-state machinery
+    _ensure_nequip_global_state(cfg) 
     return AllegroModel(
         r_max=args.cutoff,
         type_names=_type_names(args),
@@ -208,24 +179,14 @@ def build_allegro_model(args: argparse.Namespace, cfg: CommonConfig | None = Non
         num_layers=args.num_layers,
         num_scalar_features=args.hidden_dim,
         num_tensor_features=max(args.hidden_dim // 4, 1),
-        seed=0,  # allegro's own init seed knob; global reproducibility still comes from set_seed()
+        seed=0, 
         model_dtype="float32",
         avg_num_neighbors=args.avg_num_neighbors,
     )
 
 
-# ---------------------------------------------------------------------------
-# MACE
-# ---------------------------------------------------------------------------
-
 def build_mace_model(args: argparse.Namespace) -> torch.nn.Module:
-    # Ambiguous-mapping note: unlike nequip/allegro's config-style builder functions, mace.modules
-    # MACE is instantiated with a large, low-level kwarg surface (atomic_energies and
-    # avg_num_neighbors in particular are normally fit from real training-set statistics, not
-    # guessed). The placeholders below (zero self-energies, args.avg_num_neighbors) are only
-    # adequate for a structural/gradient-flow smoke test, not for a real run -- recompute them
-    # from the actual split (mace.modules.utils.compute_average_E0s /
-    # compute_avg_num_neighbors) before training for real.
+    # TODO: recompute self-energies and args.avg_num_neighbors from the actual split (mace.modules.utils.compute_average_E0s /compute_avg_num_neighbors) before real training.
     import numpy as np
     from e3nn import o3
     from mace.modules import MACE, interaction_classes
@@ -254,8 +215,7 @@ def build_mace_model(args: argparse.Namespace) -> torch.nn.Module:
 
 def _mace_loss(model: torch.nn.Module, batch: dict, device: torch.device) -> torch.Tensor:
     data = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
-    # Same pitfall as schnetpack/nequip above: snapshot targets before the forward pass in case
-    # MACE's output dict construction reuses/overwrites the input dict's "energy"/"forces" keys.
+    # Same problem as schnetpack/nequip above
     energy_target = data["energy"].clone()
     force_target = data["forces"].clone()
     out = model(data, training=True)
