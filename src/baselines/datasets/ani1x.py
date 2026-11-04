@@ -1,4 +1,6 @@
-# ANI-1x / ANI-1ccx loader. Smith et al., J. Chem. Phys. 148, 241733 (2018) (ANI-1x) / Sci. Data 7, 134 (2020) (ANI-1ccx). 
+# ANI-1x / ANI-1ccx loader. Smith et al., J. Chem. Phys. 148, 241733 (2018) (ANI-1x) / Sci. Data 7, 134 (2020) (ANI-1ccx).
+# Split is by HDF5 group (= chemical formula)
+# Every conformer of a molecule lands on one side and sequence-aware models cannot leak across splits --> whole formulas held out for stricter OOD testing
 from __future__ import annotations
 
 import os
@@ -11,6 +13,7 @@ import torch
 from torch.utils.data import Dataset
 
 from baselines.config.units import BOHR_TO_ANGSTROM
+from baselines.datasets.splits import molecule_level_split
 from baselines.datasets.units_check import to_ev_angstrom
 
 ANI1X_DEFAULT_ENERGY_KEY = "wb97x_dz.energy"
@@ -33,9 +36,9 @@ class ANI1xSample:
 
 def _iter_groups(
     h5_path: str, energy_key: str, forces_key: str | None,
-) -> Iterator[tuple[np.ndarray, np.ndarray, float, np.ndarray | None]]:
+) -> Iterator[tuple[str, np.ndarray, np.ndarray, float, np.ndarray | None]]:
     with h5py.File(h5_path, "r") as fh:
-        for grp in fh.values():
+        for group_name, grp in fh.items():
             if energy_key not in grp or "coordinates" not in grp or "atomic_numbers" not in grp:
                 continue
             atomic_numbers = np.asarray(grp["atomic_numbers"])
@@ -54,7 +57,7 @@ def _iter_groups(
                     f = forces_all[c]
                 else:
                     f = None
-                yield atomic_numbers, coords[c], float(e), f
+                yield group_name, atomic_numbers, coords[c], float(e), f
 
 
 class ANI1xDataset(Dataset):
@@ -85,7 +88,8 @@ def load_ani1x(
         )
 
     samples: list[ANI1xSample] = []
-    for atomic_numbers, coords, energy_hartree, force_hartree_ang in _iter_groups(h5_path, energy_key, forces_key):
+    group_names: list[str] = []
+    for group_name, atomic_numbers, coords, energy_hartree, force_hartree_ang in _iter_groups(h5_path, energy_key, forces_key):
         positions = torch.from_numpy(coords).float()  # already Angstrom
 
         if force_hartree_ang is not None:
@@ -95,6 +99,7 @@ def load_ani1x(
             forces_raw = torch.zeros_like(positions)
         energy_ev, forces_ev = to_ev_angstrom(torch.tensor(energy_hartree), forces_raw, "hartree_bohr")
 
+        group_names.append(group_name)
         samples.append(
             ANI1xSample(
                 positions=positions,
@@ -104,11 +109,8 @@ def load_ani1x(
             )
         )
 
-    n = len(samples)
-    perm = torch.randperm(n, generator=torch.Generator().manual_seed(seed)).tolist()
-    n_train = round(n * ANI1X_TRAIN_FRAC)
-    n_val = round(n * ANI1X_VAL_FRAC)
-    train = ANI1xDataset([samples[i] for i in perm[:n_train]])
-    val = ANI1xDataset([samples[i] for i in perm[n_train : n_train + n_val]])
-    test = ANI1xDataset([samples[i] for i in perm[n_train + n_val :]])
+    train_groups, val_groups, test_groups = molecule_level_split(group_names, ANI1X_TRAIN_FRAC, ANI1X_VAL_FRAC, seed)
+    train = ANI1xDataset([s for s, g in zip(samples, group_names) if g in train_groups])
+    val = ANI1xDataset([s for s, g in zip(samples, group_names) if g in val_groups])
+    test = ANI1xDataset([s for s, g in zip(samples, group_names) if g in test_groups])
     return train, val, test

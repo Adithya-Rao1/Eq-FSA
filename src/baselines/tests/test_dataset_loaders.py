@@ -528,28 +528,65 @@ def test_load_ani1x_skips_nonfinite_and_incomplete_groups_and_sums_to_ten(tmp_pa
     ani1x = _ani1x_module()
     _write_ani1x_fixture(tmp_path / "ani.h5")
     train, val, test = ani1x.load_ani1x(str(tmp_path / "ani.h5"))
-    # 4 valid in A + 6 in B = 10: round(10*0.8) = 8 train, round(10*0.1) = 1 val, 1 test.
-    assert (len(train), len(val), len(test)) == (8, 1, 1)
+    # 4 valid in A + 6 in B = 10 conformers. The split is by formula group, and with 2 groups round(2*0.8) = 2 train groups, round(2*0.1) = 0 val, 0 test, so both groups (all 10 conformers) go to train.
+    assert (len(train), len(val), len(test)) == (10, 0, 0)
 
 
-def test_load_ani1x_split_is_conformer_level_seeded_permutation(tmp_path):
+ANI_GROUP_COUNT = 10
+ANI_CONFORMERS_PER_GROUP = 3
+
+
+def _write_ani1x_many_group_fixture(path: Path) -> None:
+    # Group g holds conformers with sample numbers 3g..3g+2, so _sample_k(item) // 3 recovers the group.
+    h5py = pytest.importorskip("h5py")
+    with h5py.File(path, "w") as fh:
+        for g in range(ANI_GROUP_COUNT):
+            coords, energies, forces, _ = _ani_conformers(g * ANI_CONFORMERS_PER_GROUP, 2, ["ok"] * ANI_CONFORMERS_PER_GROUP)
+            grp = fh.create_group(f"G{g}")
+            grp.create_dataset("atomic_numbers", data=np.array([1, 1], dtype=np.uint8))
+            grp.create_dataset("coordinates", data=coords)
+            grp.create_dataset(ANI_ENERGY_KEY, data=energies)
+            grp.create_dataset(ANI_FORCES_KEY, data=forces)
+
+
+def _groups_per_split(splits) -> list[list[int]]:
+    return [[_sample_k(d[i]) // ANI_CONFORMERS_PER_GROUP for i in range(len(d))] for d in splits]
+
+
+def test_load_ani1x_split_keeps_every_group_in_exactly_one_split(tmp_path):
     ani1x = _ani1x_module()
-    _write_ani1x_fixture(tmp_path / "ani.h5")
+    _write_ani1x_many_group_fixture(tmp_path / "ani.h5")
+    groups = _groups_per_split(ani1x.load_ani1x(str(tmp_path / "ani.h5")))
+    sets = [set(g) for g in groups]
+    # No formula group may appear in two splits (conformers of one molecule must never straddle train/test).
+    assert sets[0] & sets[1] == set() and sets[0] & sets[2] == set() and sets[1] & sets[2] == set()
+    assert sets[0] | sets[1] | sets[2] == set(range(ANI_GROUP_COUNT))
+    # Every group is present with all of its conformers, not a subset.
+    for g in range(ANI_GROUP_COUNT):
+        assert sum(g_list.count(g) for g_list in groups) == ANI_CONFORMERS_PER_GROUP
+
+
+def test_load_ani1x_group_split_matches_seeded_shuffle_of_sorted_group_names(tmp_path):
+    ani1x = _ani1x_module()
+    _write_ani1x_many_group_fixture(tmp_path / "ani.h5")
     train, val, test = ani1x.load_ani1x(str(tmp_path / "ani.h5"))
-    perm = _expected_permutation(10, seed=0)
-    ks = [[_sample_k(d[i]) for i in range(len(d))] for d in (train, val, test)]
-    assert ks == [perm[:8], perm[8:9], perm[9:]]
-    assert sorted(sum(ks, [])) == list(range(10))
+    # order = G7 G8 G1 G5 G3 G4 G2 G0 | G9 | G6 -> round(10*0.8) = 8 train, round(10*0.1) = 1 val, 1 test.
+    train_groups, val_groups, test_groups = (set(g) for g in _groups_per_split((train, val, test)))
+    assert train_groups == {7, 8, 1, 5, 3, 4, 2, 0}
+    assert val_groups == {9}
+    assert test_groups == {6}
+    assert (len(train), len(val), len(test)) == (8 * ANI_CONFORMERS_PER_GROUP, ANI_CONFORMERS_PER_GROUP, ANI_CONFORMERS_PER_GROUP)
 
 
 def test_load_ani1x_deterministic_and_seed_sensitive(tmp_path):
     ani1x = _ani1x_module()
-    _write_ani1x_fixture(tmp_path / "ani.h5")
+    _write_ani1x_many_group_fixture(tmp_path / "ani.h5")
     path = str(tmp_path / "ani.h5")
-    first = [[_sample_k(d[i]) for i in range(len(d))] for d in ani1x.load_ani1x(path)]
-    second = [[_sample_k(d[i]) for i in range(len(d))] for d in ani1x.load_ani1x(path)]
-    other = [[_sample_k(d[i]) for i in range(len(d))] for d in ani1x.load_ani1x(path, seed=1)]
+    first = _groups_per_split(ani1x.load_ani1x(path))
+    second = _groups_per_split(ani1x.load_ani1x(path))
+    other = _groups_per_split(ani1x.load_ani1x(path, seed=1))
     assert first == second
+    assert {g for g in other[1]} == {1} and {g for g in other[2]} == {2}  # seed 1: val group G1, test group G2 (hand-derived)
     assert first != other
 
 
@@ -592,7 +629,8 @@ def test_load_ani1x_without_forces_key_yields_energy_only_samples(tmp_path):
     train, val, test = ani1x.load_ani1x(str(tmp_path / "ani.h5"), forces_key=None)
     # NaN forces no longer disqualify a conformer: A keeps 5 (only NaN energy / NaN coords drop), B has 6, C has 2 = 13.
     assert len(train) + len(val) + len(test) == 13
-    assert (len(train), len(val), len(test)) == (10, 1, 2)
+    # 3 groups (A:5, B:6, C:2 conformers): round(3*0.8) = 2 train groups, round(3*0.1) = 0 val, 1 test. Seed 0 shuffles the sorted names A,B,C to A,C,B, so train = A + C = 7 and test = B = 6.
+    assert (len(train), len(val), len(test)) == (7, 0, 6)
     assert all("forces" not in d[i] for d in (train, val, test) for i in range(len(d)))
 
 
