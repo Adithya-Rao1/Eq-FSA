@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader, Dataset, TensorDataset
 from baselines.provenance.seeding import (
     capture_rng_state,
     dataloader_generator,
+    reseed_dataloader_for_epoch,
     restore_rng_state,
     seed_worker,
     set_seed,
@@ -280,3 +281,67 @@ def test_seed_worker_with_real_multiprocess_dataloader_is_reproducible_and_disti
 
 def test_seed_worker_with_real_multiprocess_dataloader_changes_with_loader_seed():
     assert _worker_rows(seed=7).tolist() != _worker_rows(seed=8).tolist()
+
+
+RESUME_EPOCHS = 4
+RESUME_AT_EPOCH = 2
+
+
+def _epoch_order(loader: DataLoader) -> list[int]:
+    return [int(x) for batch in loader for x in batch[0]]
+
+
+def _epoch_loader(seed: int, num_workers: int = 0) -> DataLoader:
+    return DataLoader(
+        TensorDataset(torch.arange(DATASET_SIZE)), batch_size=4, shuffle=True, num_workers=num_workers,
+        generator=dataloader_generator(seed), worker_init_fn=seed_worker,
+    )
+
+
+def test_resumed_loader_reproduces_the_uninterrupted_run_epoch_order():
+    continuous = _epoch_loader(7)
+    uninterrupted = []
+    for epoch in range(RESUME_EPOCHS):
+        reseed_dataloader_for_epoch(continuous, 7, epoch)
+        uninterrupted.append(_epoch_order(continuous))
+    # A resumed process builds a brand-new loader and starts its epoch loop at the checkpointed epoch.
+    resumed = _epoch_loader(7)
+    for epoch in range(RESUME_AT_EPOCH, RESUME_EPOCHS):
+        reseed_dataloader_for_epoch(resumed, 7, epoch)
+        assert _epoch_order(resumed) == uninterrupted[epoch]
+
+
+def test_resumed_loader_with_workers_reproduces_the_uninterrupted_run_epoch_order():
+    continuous = _epoch_loader(7, num_workers=2)
+    reseed_dataloader_for_epoch(continuous, 7, RESUME_AT_EPOCH)
+    expected = _epoch_order(continuous)
+    resumed = _epoch_loader(7, num_workers=2)
+    reseed_dataloader_for_epoch(resumed, 7, RESUME_AT_EPOCH)
+    assert _epoch_order(resumed) == expected
+
+
+def test_epoch_orders_differ_across_epochs_and_across_seeds():
+    loader = _epoch_loader(0)
+    orders = []
+    for epoch in range(RESUME_EPOCHS):
+        reseed_dataloader_for_epoch(loader, 0, epoch)
+        orders.append(_epoch_order(loader))
+        assert sorted(orders[-1]) == list(range(DATASET_SIZE))
+    assert len({tuple(o) for o in orders}) == RESUME_EPOCHS
+    other = _epoch_loader(1)
+    reseed_dataloader_for_epoch(other, 1, 1)
+    assert _epoch_order(other) != orders[1]
+
+
+def test_seed_epoch_pairs_do_not_alias_each_other():
+    # (seed=0, epoch=1) and (seed=1, epoch=0) must not share a shuffle, which a naive seed + epoch would cause.
+    a, b = _epoch_loader(0), _epoch_loader(1)
+    reseed_dataloader_for_epoch(a, 0, 1)
+    reseed_dataloader_for_epoch(b, 1, 0)
+    assert _epoch_order(a) != _epoch_order(b)
+
+
+def test_reseed_dataloader_for_epoch_requires_an_explicit_generator():
+    loader = DataLoader(TensorDataset(torch.arange(DATASET_SIZE)), batch_size=4, shuffle=True)
+    with pytest.raises(ValueError, match="generator"):
+        reseed_dataloader_for_epoch(loader, 0, 0)

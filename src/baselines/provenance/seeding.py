@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # Worker-seeding pattern follows PyTorch's reproducibility docs at pytorch.org/docs/stable/notes/randomness.html#dataloader.
 
+import hashlib
 import os
 import random
 from typing import Any
@@ -33,6 +34,13 @@ def dataloader_generator(seed: int) -> torch.Generator:
     g = torch.Generator()
     g.manual_seed(seed)
     return g
+
+
+def reseed_dataloader_for_epoch(loader: torch.utils.data.DataLoader, seed: int, epoch: int) -> None:
+    if loader.generator is None:
+        raise ValueError("loader needs an explicit generator (built via dataloader_generator) to be reseeded per epoch")
+    digest = hashlib.sha256(f"{seed}:{epoch}".encode()).digest()
+    loader.generator.manual_seed(int.from_bytes(digest[:4], "little"))
 
 
 def capture_rng_state() -> dict[str, Any]:

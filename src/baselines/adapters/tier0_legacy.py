@@ -16,6 +16,7 @@ from baselines.provenance.seeding import (
     set_seed,
     seed_worker,
     dataloader_generator,
+    reseed_dataloader_for_epoch,
     capture_rng_state,
     restore_rng_state,
 )
@@ -157,6 +158,7 @@ def _train_schnet_painn(model_name: str, cfg: CommonConfig, args: argparse.Names
 
     train_loader = _build_dataloader(cfg, "train")
     for epoch in range(start_epoch, args.epochs):
+        reseed_dataloader_for_epoch(train_loader, cfg.seed, epoch)
         model.train()
         for batch in train_loader:
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
@@ -210,6 +212,7 @@ def _train_ani2x(cfg: CommonConfig, args: argparse.Namespace, paths: RunPaths) -
 
     train_loader = _build_dataloader(cfg, "train")
     for epoch in range(start_epoch, args.epochs):
+        reseed_dataloader_for_epoch(train_loader, cfg.seed, epoch)
         model.train()
         for batch in train_loader:
             optimizer.zero_grad(set_to_none=True)
@@ -255,6 +258,7 @@ def _train_aimnet2(cfg: CommonConfig, args: argparse.Namespace, paths: RunPaths)
 
     train_loader = _build_dataloader(cfg, "train")
     for epoch in range(start_epoch, args.epochs):
+        reseed_dataloader_for_epoch(train_loader, cfg.seed, epoch)
         model.train()
         for batch in train_loader:
             optimizer.zero_grad(set_to_none=True)

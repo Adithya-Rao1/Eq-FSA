@@ -15,6 +15,7 @@ from baselines.provenance.seeding import (
     set_seed,
     seed_worker,
     dataloader_generator,
+    reseed_dataloader_for_epoch,
     capture_rng_state,
     restore_rng_state,
 )
@@ -156,6 +157,7 @@ def _train_nequip_or_allegro(model_name: str, cfg: CommonConfig, args: argparse.
 
     train_loader = _build_dataloader(cfg, "train")
     for epoch in range(start_epoch, args.epochs):
+        reseed_dataloader_for_epoch(train_loader, cfg.seed, epoch)
         model.train()
         for batch in train_loader:
             optimizer.zero_grad(set_to_none=True)
@@ -236,6 +238,7 @@ def _train_mace(cfg: CommonConfig, args: argparse.Namespace, paths: RunPaths) ->
 
     train_loader = _build_dataloader(cfg, "train")
     for epoch in range(start_epoch, args.epochs):
+        reseed_dataloader_for_epoch(train_loader, cfg.seed, epoch)
         model.train()
         for batch in train_loader:
             optimizer.zero_grad(set_to_none=True)
