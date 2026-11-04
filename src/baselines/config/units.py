@@ -11,7 +11,9 @@ Number = TypeVar("Number", bound=Union[float, np.ndarray, torch.Tensor])
 
 HARTREE_TO_EV: float = 27.211386245988
 BOHR_TO_ANGSTROM: float = 0.529177210903
-KCAL_PER_MOL_TO_EV: float = 0.04336410424180011  # 4184 J / mol, via Avogadro + elementary charge
+_AVOGADRO_PER_MOL: float = 6.02214076e23
+_ELEMENTARY_CHARGE_C: float = 1.602176634e-19
+KCAL_PER_MOL_TO_EV: float = 4184.0 / (_AVOGADRO_PER_MOL * _ELEMENTARY_CHARGE_C)
 
 
 def hartree_to_ev(energy: Number) -> Number:
