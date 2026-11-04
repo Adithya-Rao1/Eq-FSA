@@ -81,7 +81,7 @@ def _save_checkpoint(path: str, epoch: int, global_step: int, model, optimizer, 
 
 def _load_checkpoint(path: str, model, optimizer) -> tuple[int, int]:
     raw_model = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-    ckpt = torch.load(path, map_location="cpu")
+    ckpt = torch.load(path, map_location="cpu", weights_only=True)  # safe unpickler: the checkpoint holds only tensors and builtins
     raw_model.load_state_dict(ckpt["model_state_dict"])
     optimizer.load_state_dict(ckpt["optimizer_state_dict"])
     restore_rng_state(ckpt["rng_state"])

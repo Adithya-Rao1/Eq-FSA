@@ -36,9 +36,11 @@ def dataloader_generator(seed: int) -> torch.Generator:
 
 
 def capture_rng_state() -> dict[str, Any]:
+    # numpy's state holds an ndarray, which torch.load(weights_only=True) (the default since torch 2.6) refuses to unpickle, so it is stored as builtin types; np.random.set_state restores the list form bit-exactly.
+    algorithm, keys, pos, has_gauss, cached_gaussian = np.random.get_state()
     state: dict[str, Any] = {
         "torch": torch.get_rng_state(),
-        "numpy": np.random.get_state(),
+        "numpy": (algorithm, keys.tolist(), int(pos), int(has_gauss), float(cached_gaussian)),
         "python": random.getstate(),
     }
     if torch.cuda.is_available():
