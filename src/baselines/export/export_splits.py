@@ -20,10 +20,15 @@ def _subsample(n: int, max_n: int | None, seed: int) -> list[int]:
     return sorted(np.random.default_rng(seed).permutation(n)[:max_n].tolist())
 
 
-def _frames(dataset, indices: list[int]):
+def _frames(dataset, indices: list[int], seen: dict | None = None):
+    # seen (optional) accumulates the element set and the distinct compositions of what is actually written.
     for i in indices:
         item = dataset[i]
         forces = item.get("forces")
+        if seen is not None:
+            numbers = sorted(item["atomic_numbers"].tolist())
+            seen["elements"].update(numbers)
+            seen["compositions"].add(tuple(numbers))
         yield {
             "atomic_numbers": item["atomic_numbers"].tolist(),
             "positions": item["x"].double().numpy(),
@@ -50,15 +55,22 @@ def export_splits(
         "dataset": dataset, "split": split, "data_root": data_root, "units": {"energy": "eV", "length": "Angstrom", "forces": "eV/Angstrom"},
         "keys": {"energy": ENERGY_KEY, "forces": FORCES_KEY}, "subset_seed": subset_seed, "splits": {},
     }
+    seen: dict = {"elements": set(), "compositions": set()}
     for name, ds in zip(SPLIT_NAMES, splits):
         kept = _subsample(len(ds), limits[name], subset_seed)
         path = os.path.join(out_dir, f"{name}.xyz")
-        written = write_extxyz(path, _frames(ds, kept))
+        written = write_extxyz(path, _frames(ds, kept, seen))
         has_forces = bool(written) and "forces" in ds[kept[0]]
         record["splits"][name] = {
             "file": f"{name}.xyz", "n_source": len(ds), "n": written, "max_n": limits[name], "has_forces": has_forces,
             "indices": kept if written != len(ds) else "all", "sha256": _sha256(path),
         }
+    # Wrappers need the element list up front 
+    from ase.data import chemical_symbols
+
+    record["atomic_numbers"] = sorted(seen["elements"])
+    record["species"] = [chemical_symbols[z] for z in record["atomic_numbers"]]
+    record["fixed_composition"] = len(seen["compositions"]) <= 1
     with open(os.path.join(out_dir, "split.json"), "w") as f:
         json.dump(record, f, indent=1)
     return record

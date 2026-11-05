@@ -147,3 +147,17 @@ def test_cli_main_prints_and_writes(tmp_path, monkeypatch, capsys):
     rc = es.main(["--dataset", "qm9", "--split", "s", "--data-root", "root", "--out-dir", str(tmp_path), "--max-train", "3"])
     assert rc == 0
     assert "train: 3 of 10" in capsys.readouterr().out
+
+
+def test_split_json_records_species_and_fixed_composition(tmp_path, monkeypatch):
+    _patch(monkeypatch)  # every fake frame is O, H, H... atomic numbers [6, 1, 8]
+    rec = es.export_splits("rmd17:aspirin", "s", "root", str(tmp_path))
+    assert rec["atomic_numbers"] == [1, 6, 8] and rec["species"] == ["H", "C", "O"]
+    assert rec["fixed_composition"] is True
+
+
+def test_varying_composition_is_detected(tmp_path, monkeypatch):
+    ds = _patch(monkeypatch)
+    ds["val"].items[0]["atomic_numbers"] = torch.tensor([6, 1, 7])
+    rec = es.export_splits("qm9", "s", "root", str(tmp_path))
+    assert rec["fixed_composition"] is False and rec["species"] == ["H", "C", "N", "O"]
