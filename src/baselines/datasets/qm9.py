@@ -59,7 +59,7 @@ def parse_qm9_molecule_file(path: str) -> QM9Molecule:
     return QM9Molecule(
         positions=torch.tensor(positions, dtype=torch.float32),
         atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
-        energy=energy_ev.float(),
+        energy=energy_ev,  # float64: a scalar per sample, and float32 cannot resolve a ~1e4 eV total better than ~1 meV
     )
 
 

@@ -45,3 +45,9 @@ def load_split(dataset: str, split: str, which: str, data_root: str | None) -> D
     if not data_root:
         raise ValueError("--data-root is required to load a dataset")
     return _load_all(dataset, split, data_root)[_SPLIT_INDEX[which]]
+
+
+def load_splits(dataset: str, split: str, data_root: str | None) -> tuple[Dataset, Dataset, Dataset]:
+    if not data_root:
+        raise ValueError("--data-root is required to load a dataset")
+    return _load_all(dataset, split, data_root)

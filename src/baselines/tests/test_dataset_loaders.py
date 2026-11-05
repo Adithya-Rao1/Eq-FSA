@@ -23,6 +23,7 @@ HARTREE_EV = 27.211386245988
 KCAL_PER_MOL_EV = 4184.0 / (6.02214076e23 * 1.602176634e-19)
 
 
+RTOL_F64_ENERGY = 1e-14
 RTOL_F32_ONE_CONVERSION = 2e-7
 # ANI-1x forces conversion
 RTOL_F32_TWO_STEP = 5e-7
@@ -87,9 +88,9 @@ def test_parse_qm9_molecule_file_positions_numbers_and_energy(tmp_path):
     assert mol.positions.dtype == torch.float32
     assert mol.positions.shape == (5, 3)
     assert torch.equal(mol.positions, torch.tensor(QM9_ATOMS_METHANE_LIKE_PARSED, dtype=torch.float32))
-    assert mol.energy.dtype == torch.float32
+    assert mol.energy.dtype == torch.float64
     assert mol.energy.shape == ()
-    _close(mol.energy.item(), -40.47893 * HARTREE_EV, RTOL_F32_ONE_CONVERSION)
+    _close(mol.energy.item(), -40.47893 * HARTREE_EV, RTOL_F64_ENERGY)
 
 
 def test_parse_qm9_molecule_file_handles_fortran_style_star_caret_exponents(tmp_path):
@@ -104,7 +105,7 @@ def test_parse_qm9_molecule_file_reads_u0_not_neighbouring_columns(tmp_path):
     # U, H, G, Cv deliberately differ wildly from U0.
     _write_qm9_xyz(path, [("H", ("0", "0", "0"))], "-0.5", extra_props=["-111.0", "-222.0", "-333.0", "444.0"])
     mol = qm9.parse_qm9_molecule_file(str(path))
-    _close(mol.energy.item(), -0.5 * HARTREE_EV, RTOL_F32_ONE_CONVERSION)
+    _close(mol.energy.item(), -0.5 * HARTREE_EV, RTOL_F64_ENERGY)
 
 
 def test_parse_qm9_molecule_file_maps_all_five_elements(tmp_path):
@@ -213,8 +214,8 @@ def test_load_qm9_energy_is_converted_hartree_to_ev_and_files_sorted_by_name(tmp
     perm = _expected_permutation(5, seed=0)
     everything = [d[i] for d in (train, val, test) for i in range(len(d))]
     for item, molecule_index in zip(everything, perm):
-        _close(item["energy"].item(), -(1.0 + molecule_index) * HARTREE_EV, RTOL_F32_ONE_CONVERSION)
-        assert item["energy"].dtype == torch.float32
+        _close(item["energy"].item(), -(1.0 + molecule_index) * HARTREE_EV, RTOL_F64_ENERGY)
+        assert item["energy"].dtype == torch.float64
 
 
 def test_load_qm9_ignores_non_xyz_files(tmp_path):
@@ -297,7 +298,7 @@ def test_load_rmd17_converts_kcal_per_mol_to_ev_and_kcal_per_mol_angstrom_to_ev_
     arrays = _synthetic_trajectory(RMD17_N_FRAMES, RMD17_N_ATOMS)
     item = train[3]  # frame 6
     assert _frame_of(item) == 6
-    _close(item["energy"].item(), arrays["E"][6] * KCAL_PER_MOL_EV, RTOL_F32_ONE_CONVERSION)
+    _close(item["energy"].item(), arrays["E"][6] * KCAL_PER_MOL_EV, RTOL_F64_ENERGY)
     _close(item["forces"].numpy(), arrays["F"][6] * KCAL_PER_MOL_EV, RTOL_F32_ONE_CONVERSION)
     # Hand check: E[6] = 1.5 kcal/mol -> 0.0650 eV; F[6][0, 0] = -6.0 kcal/mol/A -> -0.2602 eV/A.
     assert item["energy"].item() == pytest.approx(1.5 * 0.0433641, rel=1e-6, abs=0.0)
@@ -313,7 +314,7 @@ def test_load_rmd17_item_dtypes_shapes_and_positions_are_not_converted(tmp_path)
     assert item["x"].dtype == torch.float32 and item["x"].shape == (RMD17_N_ATOMS, 3)
     assert torch.equal(item["x"], torch.from_numpy(arrays["R"][1]).float())
     assert item["atomic_numbers"].dtype == torch.long and item["atomic_numbers"].tolist() == RMD17_ATOMIC_NUMBERS
-    assert item["energy"].shape == () and item["energy"].dtype == torch.float32
+    assert item["energy"].shape == () and item["energy"].dtype == torch.float64
     assert item["forces"].shape == (RMD17_N_ATOMS, 3) and item["forces"].dtype == torch.float32
 
 
@@ -440,7 +441,7 @@ def test_load_md22_converts_units_and_flattens_energy_shape(tmp_path):
     item = train[0]
     frame = _frame_of(item)
     assert item["energy"].shape == ()
-    _close(item["energy"].item(), arrays["E"][frame, 0] * KCAL_PER_MOL_EV, RTOL_F32_ONE_CONVERSION)
+    _close(item["energy"].item(), arrays["E"][frame, 0] * KCAL_PER_MOL_EV, RTOL_F64_ENERGY)
     _close(item["forces"].numpy(), arrays["F"][frame] * KCAL_PER_MOL_EV, RTOL_F32_ONE_CONVERSION)
     assert torch.equal(item["x"], torch.from_numpy(arrays["R"][frame]).float())
     assert item["atomic_numbers"].dtype == torch.long and item["atomic_numbers"].tolist() == [8, 1]
@@ -600,9 +601,9 @@ def test_load_ani1x_energy_is_hartree_to_ev_and_forces_are_hartree_per_angstrom_
             item = dataset[i]
             k = _sample_k(item)
             # ANI forces are Hartree/Angstrom, so only the energy factor applies --> no Bohr factor can apply.
-            _close(item["energy"].item(), _energy_hartree(k) * HARTREE_EV, RTOL_F32_TWO_STEP)
+            _close(item["energy"].item(), _energy_hartree(k) * HARTREE_EV, RTOL_F64_ENERGY)
             _close(item["forces"].numpy(), np.full(item["forces"].shape, 2.0 * _energy_hartree(k) * HARTREE_EV), RTOL_F32_TWO_STEP)
-            assert item["energy"].dtype == torch.float32 and item["forces"].dtype == torch.float32
+            assert item["energy"].dtype == torch.float64 and item["forces"].dtype == torch.float32
             assert item["energy"].shape == ()
             checked += 1
     assert checked == 10

@@ -77,7 +77,6 @@ def load_md22(root: str, molecule: str, seed: int = MD22_SPLIT_SEED) -> tuple[Da
     forces_raw = torch.from_numpy(np.asarray(data["F"])).float()            
 
     energies, forces = to_ev_angstrom(energies_raw, forces_raw, "kcal_mol_angstrom")
-    energies = energies.float()  # converted in float64 (kcal/mol totals reach ~1e5), rounded to float32 once
 
     n = positions.shape[0]
     n_train = min(MD22_TRAIN_SIZE[molecule], n)

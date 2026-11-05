@@ -104,7 +104,7 @@ def load_ani1x(
             ANI1xSample(
                 positions=positions,
                 atomic_numbers=torch.from_numpy(atomic_numbers).long(),
-                energy=energy_ev.float(),
+                energy=energy_ev,  # float64, see qm9.py
                 forces=forces_ev.float() if force_hartree_ang is not None else None,
             )
         )
