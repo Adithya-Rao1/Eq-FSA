@@ -74,14 +74,31 @@ def test_checkpoint_round_trip_restores_weights_optimizer_counters_and_returns_t
 
     fresh_model, fresh_optimizer = _make_state(init_seed=2)
     assert not _weights_equal(model, fresh_model)
-    epoch, global_step = adapter._load_checkpoint(path, fresh_model, fresh_optimizer)
+    start_epoch, global_step = adapter._load_checkpoint(path, fresh_model, fresh_optimizer)
 
-    assert (epoch, global_step) == (2, 14)
+    # The checkpoint was written at the end of epoch 2, so training resumes at epoch 3; global_step is already post-increment.
+    assert (start_epoch, global_step) == (3, 14)
     assert _weights_equal(model, fresh_model)
     for saved, loaded in zip(_momentum_buffers(optimizer), _momentum_buffers(fresh_optimizer)):
         assert torch.equal(saved, loaded)
     assert fresh_optimizer.param_groups[0]["lr"] == optimizer.param_groups[0]["lr"] == 0.1
     assert fresh_optimizer.param_groups[0]["momentum"] == 0.9
+
+
+@pytest.mark.parametrize("adapter, model_name", ADAPTERS, ids=ADAPTER_IDS)
+def test_resume_never_repeats_the_checkpointed_epoch(adapter, model_name, tmp_path):
+    args, cfg = _parse_args(adapter, model_name, tmp_path)
+    total_epochs = 3
+    for finished_epoch in range(total_epochs):
+        path = RunPaths(str(tmp_path)).ensure().checkpoint(f"{model_name}_epoch{finished_epoch}")
+        model, optimizer = _make_state(init_seed=1)
+        adapter._save_checkpoint(path, finished_epoch, finished_epoch + 1, model, optimizer, cfg, args)
+        fresh_model, fresh_optimizer = _make_state(init_seed=2)
+        start_epoch, _ = adapter._load_checkpoint(path, fresh_model, fresh_optimizer)
+        # Same loop shape as the training functions: range(start_epoch, epochs) must exclude every epoch up to the checkpointed one.
+        ran_after = list(range(start_epoch, total_epochs))
+        assert ran_after == list(range(finished_epoch + 1, total_epochs))
+        assert not set(ran_after) & set(range(finished_epoch + 1))
 
 
 @pytest.mark.parametrize("adapter, model_name", ADAPTERS, ids=ADAPTER_IDS)

@@ -54,7 +54,7 @@ def parse_qm9_molecule_file(path: str) -> QM9Molecule:
         positions.append(coords)
 
     # QM9 has no forces --> dummy zero tensor is fed through so energy still goes through the project-wide convention instead of calling hartree_to_ev directly.
-    energy_ev, _ = to_ev_angstrom(torch.tensor(u0_hartree), torch.zeros(n_atoms, 3), "hartree_bohr")
+    energy_ev, _ = to_ev_angstrom(torch.tensor(u0_hartree, dtype=torch.float64), torch.zeros(n_atoms, 3), "hartree_bohr")  # float64 until the final .float(): totals are ~1e4 eV
 
     return QM9Molecule(
         positions=torch.tensor(positions, dtype=torch.float32),

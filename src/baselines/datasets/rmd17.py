@@ -62,10 +62,11 @@ def load_rmd17(root: str, molecule: str, split_index: int = 0) -> tuple[Dataset,
     data = np.load(npz_path)
     positions = torch.from_numpy(np.asarray(data["R"])).float()           
     atomic_numbers = torch.from_numpy(np.asarray(data["z"])).long()
-    energies_raw = torch.from_numpy(np.asarray(data["E"])).float().reshape(-1)  
+    energies_raw = torch.from_numpy(np.asarray(data["E"])).double().reshape(-1)  
     forces_raw = torch.from_numpy(np.asarray(data["F"])).float()  
 
     energies, forces = to_ev_angstrom(energies_raw, forces_raw, "kcal_mol_angstrom")
+    energies = energies.float()  # converted in float64 (kcal/mol totals reach ~1e5), rounded to float32 once
 
     train_idx, test_idx = rmd17_fixed_indices(molecule, split_index, root=root)
     train = RMD17Dataset(positions, atomic_numbers, energies, forces, train_idx)

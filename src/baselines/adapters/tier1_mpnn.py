@@ -86,7 +86,8 @@ def _load_checkpoint(path: str, model, optimizer) -> tuple[int, int]:
     raw_model.load_state_dict(ckpt["model_state_dict"])
     optimizer.load_state_dict(ckpt["optimizer_state_dict"])
     restore_rng_state(ckpt["rng_state"])
-    return ckpt["epoch"], ckpt["global_step"]
+    # "epoch" is the epoch that had just finished when saved; return the first epoch still to run so resume does not repeat it.
+    return ckpt["epoch"] + 1, ckpt["global_step"]
 
 
 def _build_dataloader(cfg: CommonConfig, split: str):

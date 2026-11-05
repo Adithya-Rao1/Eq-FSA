@@ -97,7 +97,7 @@ def load_ani1x(
             forces_raw = torch.from_numpy(force_hartree_ang).float() * BOHR_TO_ANGSTROM
         else:
             forces_raw = torch.zeros_like(positions)
-        energy_ev, forces_ev = to_ev_angstrom(torch.tensor(energy_hartree), forces_raw, "hartree_bohr")
+        energy_ev, forces_ev = to_ev_angstrom(torch.tensor(energy_hartree, dtype=torch.float64), forces_raw, "hartree_bohr")  # float64 until the final .float()
 
         group_names.append(group_name)
         samples.append(
