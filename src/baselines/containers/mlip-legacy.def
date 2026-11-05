@@ -30,6 +30,9 @@ From: nvcr.io/nvidia/pytorch:24.08-py3
     # repo's src/stage_1/experiments/CLAUDE.md for the (different) legacy schnetpack==0.3 pin.
     pip install --no-cache-dir \
         numpy==1.26.4 \
+        h5py==3.11.0 \
+        rdkit==2024.3.5 \
+        pytest==8.3.3 \
         schnetpack==2.0.4 \
         torchani==2.2.4 \
         aimnetcentral==0.2.1

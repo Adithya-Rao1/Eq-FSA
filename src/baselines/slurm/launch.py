@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-# Renders (never submits) Slurm sbatch scripts for this project's baseline model adapters, for
-# CityUHK Burgundy. Template mechanism: stdlib string.Template, per this project's own
-# no-new-dependency request -- https://docs.python.org/3/library/string.html#template-strings.
-# Sbatch directive shape and the singularity exec invocation follow the cluster admin's own
-# known-working skeleton (fixed /usr/bin/singularity path, --nv, one node per job, srun) from
-# this project's Burgundy task brief. Standing rule (repo CLAUDE.md): heavy/remote actions are
-# always handed off as exact commands for the user to run themselves, never executed here --
-# this module must never call subprocess with "sbatch" (see test_slurm_launch.py's source grep).
+# Renders  Slurm sbatch scripts for CityUHK Burgundy. 
+# Template mechanism: stdlib string.Template, https://docs.python.org/3/library/string.html#template-strings.
+# Sbatch directive shape and the singularity exec invocation follow fixed /usr/bin/singularity path, --nv, one node per job, srun
 
 import argparse
 import os
@@ -29,8 +24,6 @@ class TierSpec(NamedTuple):
     needs_mode: bool
 
 
-# Fixed adapter CLI contract (owned by sibling agents on other branches; given to this agent as
-# an unchangeable interface -- see this project's Burgundy task brief):
 #   python -m baselines.adapters.tier0_legacy      --model {schnet,painn,ani2x,aimnet2} ...
 #   python -m baselines.adapters.tier1_mpnn        --model {nequip,allegro,mace} ...
 #   python -m baselines.adapters.tier2_transformer --model {equiformer,equiformerv2} ...
@@ -46,9 +39,7 @@ TIER_SPECS: dict[str, TierSpec] = {
     ),
 }
 
-# Known Burgundy partitions and a conservative default walltime for each, per the cluster admin
-# (see task brief). An unlisted partition is still allowed (the cluster may grow new ones) but
-# then --time becomes required since there is no sensible default to fall back on.
+# Known Burgundy partitions 
 _PARTITION_DEFAULT_TIME = {
     "debugq": "00:30:00",        # 2h cap, no GPU -- sanity checks only
     "gpu_a40-test": "02:00:00",  # 12h cap -- quick smoke tests
@@ -101,6 +92,8 @@ def render_sbatch(
     mem: str = "32G",
     time: str | None = None,
     extra_sbatch_directives: str = "",
+    data_dir: str | None = None,
+    repo_dir: str | None = None,
 ) -> str:
     if job_type not in _TEMPLATE_FILENAMES:
         raise ValueError(f"unknown job_type {job_type!r}; expected one of {sorted(_TEMPLATE_FILENAMES)}")
@@ -120,14 +113,6 @@ def render_sbatch(
     with open(template_path) as f:
         template_text = f.read()
 
-    # safe_substitute, not substitute: the rendered script is bash, which uses the exact same
-    # "$IDENTIFIER" syntax we do for our own placeholders (e.g. the template's own `$IMAGE`,
-    # `$WORKDIR`, `$SLURM_CPUS_PER_TASK` bash variables). Strict substitute() would raise KeyError
-    # on every one of those, since string.Template can't tell them apart from an unresolved
-    # placeholder of ours. safe_substitute() leaves anything not in `mapping` untouched; the
-    # TPL_ prefix on every key below is a second, belt-and-suspenders safeguard so a real bash
-    # variable name can never accidentally collide with (and get silently replaced by) one of
-    # our own placeholders.
     mapping = {
         "TPL_JOB_NAME": job_name,
         "TPL_PARTITION": partition,
@@ -141,6 +126,12 @@ def render_sbatch(
         "TPL_ADAPTER_MODULE": spec.module,
         "TPL_ADAPTER_ARGS": adapter_args,
         "TPL_EXTRA_SBATCH_DIRECTIVES": extra_sbatch_directives,
+        # read-only repo checkout at /repo and dataset mount at /data; adapters are pointed at paths under /data via --data-root
+        "TPL_EXTRA_BINDS": " ".join(
+            bind for bind in (f'--bind "{repo_dir}:/repo:ro"' if repo_dir else "", f'--bind "{data_dir}:/data:ro"' if data_dir else "") if bind
+        ),
+        # the image's %environment prepends its own /work/src (the run dir, not the repo) to whatever PYTHONPATH arrives here
+        "TPL_EXTRA_ENV": 'export SINGULARITYENV_PYTHONPATH="/repo/src"' if repo_dir else "",
     }
     return Template(template_text).safe_substitute(mapping)
 
@@ -170,6 +161,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--gpus", type=int, default=1)
     p.add_argument("--mem", default="32G")
     p.add_argument("--time", default=None, help="overrides the partition's default walltime")
+    p.add_argument("--data-dir", default=None, help="host dataset directory, bind-mounted read-only at /data")
+    p.add_argument("--repo-dir", default=None, help="host checkout of this repo, bind-mounted read-only at /repo and put on PYTHONPATH")
     p.add_argument("--out", default=None, help="output path for the rendered .sbatch file")
     return p
 
@@ -192,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
         gpus=args.gpus,
         mem=args.mem,
         time=args.time,
+        data_dir=args.data_dir,
+        repo_dir=args.repo_dir,
     )
     out_path = args.out or os.path.join(args.run_dir, "slurm", f"{args.tier}_{args.model}_{args.job_type}.sbatch")
     write_script(script, out_path)

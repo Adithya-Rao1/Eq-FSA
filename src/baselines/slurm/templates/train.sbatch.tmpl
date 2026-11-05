@@ -34,10 +34,26 @@ mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK"
 
+# Chain-safe: when this job is one of several dependent copies (sbatch --dependency=afterany), a finished run exits at once and an
+# interrupted one resumes from its newest checkpoint, so hitting the 5-day walltime cap needs no manual requeue.
+if [[ -f "$WORKDIR/checkpoints/checkpoint_final.pt" ]]; then
+    echo "run already complete: $WORKDIR/checkpoints/checkpoint_final.pt -- nothing to do."
+    exit 0
+fi
+RESUME_ARG=""
+LATEST_CKPT="$(ls -t "$WORKDIR"/checkpoints/checkpoint_*.pt 2>/dev/null | head -n 1 || true)"
+if [[ -n "$LATEST_CKPT" ]]; then
+    RESUME_ARG="--resume $LATEST_CKPT"
+    echo "resuming from $LATEST_CKPT"
+fi
+
+# The repo checkout is bind-mounted at /repo (see TPL_EXTRA_BINDS) and put on PYTHONPATH; the image only carries the third-party libraries.
+$TPL_EXTRA_ENV
 srun /usr/bin/singularity exec \
     --nv \
     --bind "$WORKDIR:/work" \
     --bind "$DIGEST_SIDECAR:/opt/image_digest.txt:ro" \
+    $TPL_EXTRA_BINDS \
     --pwd /work \
     "$IMAGE" \
-    python -m $TPL_ADAPTER_MODULE $TPL_ADAPTER_ARGS
+    python -m $TPL_ADAPTER_MODULE $TPL_ADAPTER_ARGS $RESUME_ARG

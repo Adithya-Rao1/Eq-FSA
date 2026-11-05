@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-# Checkpoint-and-requeue wrapper for CityUHK Burgundy's 5-day walltime cap (per this project's
-# Burgundy task brief: "longer work needs checkpoint-and-requeue"). Only ever prints/generates
-# the `scontrol requeue` / `sbatch --dependency=afterany:` commands -- never executes them,
-# matching this project's standing rule that remote/Slurm actions are handed off to the user to
-# run themselves (repo CLAUDE.md). Slurm docs: https://slurm.schedmd.com/scontrol.html (requeue),
+# Slurm docs: https://slurm.schedmd.com/scontrol.html (requeue),
 # https://slurm.schedmd.com/sbatch.html#OPT_dependency (afterany chaining).
 
 import argparse
@@ -19,11 +15,7 @@ _DESCRIPTION = "Check a run's checkpoint/walltime state and print/generate the r
 
 
 def is_training_complete(run_dir: str) -> bool:
-    # Design assumption, made without visibility into the sibling agents' adapter code (not
-    # present in this worktree): "complete" is defined here as a checkpoint tagged "final"
-    # existing, via RunPaths.checkpoint("final"). Flag this against the real adapters' actual
-    # completion convention once they land -- if they signal completion differently, this
-    # function (and only this function) needs to change.
+    # "complete" is defined here as a checkpoint tagged "final" existing, via RunPaths.checkpoint("final").
     return Path(RunPaths(run_dir).checkpoint("final")).exists()
 
 
@@ -37,8 +29,7 @@ def latest_checkpoint(run_dir: str) -> str | None:
 
 
 def slurm_time_left_seconds(job_id: str) -> int | None:
-    # Local Slurm client query (squeue) -- a cluster-internal command, not an outbound-internet
-    # call, so this is safe to run from inside a job on Burgundy's internal-only network.
+    # Local Slurm client query (squeue)
     try:
         completed = subprocess.run(
             ["squeue", "-h", "-j", job_id, "-o", "%L"],
@@ -50,8 +41,7 @@ def slurm_time_left_seconds(job_id: str) -> int | None:
 
 
 def _parse_slurm_time_left(raw: str) -> int | None:
-    # Slurm's "%L" (time left) format is "[D-]HH:MM:SS" -- the day segment is only present once
-    # at least one full day remains.
+    # Slurm's "%L" (time left) format is "[D-]HH:MM:SS"
     if not raw:
         return None
     try:
@@ -78,6 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--digest-sidecar", default=None)
     p.add_argument("--mode", default=None, choices=["zero_shot", "fine_tune"], help="tier3_foundation only")
     p.add_argument("--extra-adapter-args", default="")
+    p.add_argument("--data-dir", default=None, help="host dataset directory, mounted read-only at /data (as in launch.py)")
+    p.add_argument("--repo-dir", default=None, help="host repo checkout, mounted read-only at /repo (as in launch.py)")
     p.add_argument("--requeue-threshold-seconds", type=int, default=900, help="requeue once remaining walltime drops below this")
     p.add_argument("--chain-mode", choices=["requeue", "chain"], default="requeue",
                     help="'requeue': print `scontrol requeue` for the SAME allocation. "
@@ -108,8 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     resume_arg = f"--resume {checkpoint}" if checkpoint else ""
     extra_adapter_args = " ".join(part for part in (args.extra_adapter_args, resume_arg) if part)
 
-    # Literal placeholder text when not actually running inside a job (e.g. this is being tested
-    # standalone) -- the user fills in their real $SLURM_JOB_ID when they run the printed command.
+    # Literal placeholder text when not actually running inside a job --> fill in real $SLURM_JOB_ID when running command.
     job_id_display = job_id or "$SLURM_JOB_ID"
 
     if args.chain_mode == "requeue":
@@ -131,6 +122,8 @@ def main(argv: list[str] | None = None) -> int:
         mode=args.mode,
         extra_adapter_args=extra_adapter_args,
         extra_sbatch_directives=f"#SBATCH --dependency=afterany:{job_id_display}",
+        data_dir=args.data_dir,
+        repo_dir=args.repo_dir,
     )
     write_script(script, out_path)
     print(f"[requeue_chain] wrote dependent sbatch script: {out_path}")

@@ -71,7 +71,12 @@ def energy_drift(times_fs: np.ndarray, total_energy_ev: np.ndarray, n_atoms: int
     e = np.asarray(total_energy_ev, dtype=np.float64)
     if t.shape != e.shape or t.ndim != 1 or t.size < 2:
         raise ValueError("times and energies must be 1D, equal length, with at least 2 samples")
-    slope = float(np.polyfit(t, e, 1)[0])
+    # Closed-form centered least-squares slope --> centering first makes a constant exactly zero and matches a long-double reference to the last bit on linear data.
+    t_centered = t - t.mean()
+    time_variance = (t_centered * t_centered).sum()
+    if time_variance == 0.0:
+        raise ValueError("times must not all be equal")
+    slope = float((t_centered * (e - e.mean())).sum() / time_variance)
     duration = float(t[-1] - t[0])
     mean_abs = float(abs(e.mean()))
     return {

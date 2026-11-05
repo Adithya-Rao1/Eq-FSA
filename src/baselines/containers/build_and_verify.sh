@@ -13,10 +13,10 @@ IMAGES=(mlip-legacy mlip-mpnn mlip-transformer mlip-foundation)
 
 # One import check per library each image is supposed to carry, plus the shared torch/cuda check run separately below.
 declare -A SMOKE_IMPORTS=(
-  [mlip-legacy]="import schnetpack; import torchani; import aimnetcentral"
-  [mlip-mpnn]="import nequip; import allegro; import mace"
-  [mlip-transformer]="import fairchem"
-  [mlip-foundation]="import mace; import orb_models; import fairchem; import huggingface_hub"
+  [mlip-legacy]="import schnetpack; import torchani; import aimnetcentral; import h5py; import rdkit; import pytest"
+  [mlip-mpnn]="import nequip; import allegro; import mace; import h5py; import rdkit; import pytest"
+  [mlip-transformer]="import fairchem; import h5py; import rdkit; import pytest"
+  [mlip-foundation]="import mace; import orb_models; import fairchem; import huggingface_hub; import pytest"
 )
 
 build_one() {

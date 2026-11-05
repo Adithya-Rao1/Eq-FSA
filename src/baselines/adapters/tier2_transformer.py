@@ -62,7 +62,7 @@ def _build_dataloader(dataset, cfg: CommonConfig, shuffle: bool):
 def _build_equiformer(cfg: CommonConfig):
     # Original Equiformer (v1) is not pip-installable
     raise NotImplementedError(
-        "To support --model equiformer, add `git submodule add https://github.com/atomicarchitects/"
+        "Equiformer v1 is not pip-installable. To support --model equiformer, add `git submodule add https://github.com/atomicarchitects/"
         "equiformer src/baselines/codebases/equiformer` and wire a dispatch path here first."
     )
 

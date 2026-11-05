@@ -169,6 +169,8 @@ def _train_nequip_or_allegro(model_name: str, cfg: CommonConfig, args: argparse.
             optimizer.step()
             global_step += 1
         _save_checkpoint(paths.checkpoint(f"{model_name}_epoch{epoch}"), epoch, global_step, model, optimizer, cfg, args)
+    # slurm/requeue_chain.py and the train template treat checkpoint_final.pt as "this run is done"; on resume past the last epoch this just rewrites it.
+    _save_checkpoint(paths.checkpoint("final"), args.epochs - 1, global_step, model, optimizer, cfg, args)
 
 
 def build_allegro_model(args: argparse.Namespace, cfg: CommonConfig | None = None) -> torch.nn.Module:
@@ -249,6 +251,8 @@ def _train_mace(cfg: CommonConfig, args: argparse.Namespace, paths: RunPaths) ->
             optimizer.step()
             global_step += 1
         _save_checkpoint(paths.checkpoint(f"mace_epoch{epoch}"), epoch, global_step, model, optimizer, cfg, args)
+    # slurm/requeue_chain.py and the train template treat checkpoint_final.pt as "this run is done"; on resume past the last epoch this just rewrites it.
+    _save_checkpoint(paths.checkpoint("final"), args.epochs - 1, global_step, model, optimizer, cfg, args)
 
 
 def main() -> None:

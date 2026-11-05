@@ -171,6 +171,8 @@ def _train_schnet_painn(model_name: str, cfg: CommonConfig, args: argparse.Names
             optimizer.step()
             global_step += 1
         _save_checkpoint(paths.checkpoint(f"{model_name}_epoch{epoch}"), epoch, global_step, model, optimizer, cfg, args)
+    # slurm/requeue_chain.py and the train template treat checkpoint_final.pt as "this run is done"; on resume past the last epoch this just rewrites it.
+    _save_checkpoint(paths.checkpoint("final"), args.epochs - 1, global_step, model, optimizer, cfg, args)
 
 def build_ani2x_model(args: argparse.Namespace) -> torch.nn.Module:
     from torchani.arch import Assembler
@@ -223,6 +225,8 @@ def _train_ani2x(cfg: CommonConfig, args: argparse.Namespace, paths: RunPaths) -
             optimizer.step()
             global_step += 1
         _save_checkpoint(paths.checkpoint(f"ani2x_epoch{epoch}"), epoch, global_step, model, optimizer, cfg, args)
+    # slurm/requeue_chain.py and the train template treat checkpoint_final.pt as "this run is done"; on resume past the last epoch this just rewrites it.
+    _save_checkpoint(paths.checkpoint("final"), args.epochs - 1, global_step, model, optimizer, cfg, args)
 
 
 def build_aimnet2_model(args: argparse.Namespace) -> torch.nn.Module:
@@ -269,6 +273,8 @@ def _train_aimnet2(cfg: CommonConfig, args: argparse.Namespace, paths: RunPaths)
             optimizer.step()
             global_step += 1
         _save_checkpoint(paths.checkpoint(f"aimnet2_epoch{epoch}"), epoch, global_step, model, optimizer, cfg, args)
+    # slurm/requeue_chain.py and the train template treat checkpoint_final.pt as "this run is done"; on resume past the last epoch this just rewrites it.
+    _save_checkpoint(paths.checkpoint("final"), args.epochs - 1, global_step, model, optimizer, cfg, args)
 
 
 def main() -> None:

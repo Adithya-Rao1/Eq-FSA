@@ -21,6 +21,9 @@ From: nvcr.io/nvidia/pytorch:24.08-py3
 
     pip install --no-cache-dir \
         numpy==1.26.4 \
+        h5py==3.11.0 \
+        rdkit==2024.3.5 \
+        pytest==8.3.3 \
         fairchem-core==1.2.0
 
     # ---- this project's own package (src/baselines) -------------------------------------------
