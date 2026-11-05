@@ -24,7 +24,23 @@ From: nvcr.io/nvidia/pytorch:24.08-py3
         h5py==3.11.0 \
         rdkit==2024.3.5 \
         pytest==8.3.3 \
+        scipy==1.14.1 \
+        e3nn==0.6.0 \
+        torch-geometric==2.6.1 \
         fairchem-core==1.2.0
+
+    # fairchem-core==1.2.0 imports packages it does not declare as dependencies. Found by installing it in a clean environment:
+    #  - torch_geometric        (listed above);
+    #  - torch_scatter, torch_sparse, torch_cluster: compiled PyG extensions, imported eagerly because fairchem's setup_imports loads
+    #    every model file (DimeNet++ needs torch_sparse, the non-periodic graph path needs torch_cluster);
+    #  - scipy<1.15: fairchem uses scipy.special.sph_harm, removed in newer SciPy (pinned above).
+    # The three extensions are built from source against THIS image's torch rather than installed from PyG's prebuilt wheels, because
+    # the NGC torch is a pre-release 2.5 build whose ABI the wheels were not built for. UNTESTED: this block has not been built (the
+    # local checks used the prebuilt CPU wheels against torch 2.5.1). TORCH_CUDA_ARCH_LIST covers the Burgundy GPUs: V100=7.0,
+    # A100=8.0, A40=8.6. If this step fails, fall back to the wheel index for torch 2.5.0 + cu124.
+    export FORCE_CUDA=1
+    export TORCH_CUDA_ARCH_LIST="7.0;8.0;8.6"
+    pip install --no-cache-dir --no-build-isolation torch-scatter torch-sparse torch-cluster
 
     # ---- this project's own package (src/baselines) -------------------------------------------
     # Not installed here -- see mlip-legacy.def's %post comment for the full rationale.
