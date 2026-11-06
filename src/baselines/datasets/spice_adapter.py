@@ -31,12 +31,18 @@ def load_spice_molecule_split(
     train_frac: float = SPICE_TRAIN_FRAC,
     val_frac: float = SPICE_VAL_FRAC,
     seed: int = SPICE_SPLIT_SEED,
+    val_from_train_frac: float = 0.0,
     **spice_dataset_kwargs: object,
 ) -> tuple[Dataset, Dataset, Dataset]:
     full = SPICEDataset(hdf5_paths, subsets=subsets, **spice_dataset_kwargs)
     molecule_ids = _molecule_ids(full)
 
     train_mols, val_mols, test_mols = molecule_level_split(molecule_ids, train_frac, val_frac, seed)
+
+    if val_from_train_frac:
+        if val_frac:
+            raise ValueError("val_from_train_frac and val_frac are mutually exclusive")
+        train_mols, val_mols, _ = molecule_level_split(sorted(train_mols, key=repr), 1.0 - val_from_train_frac, val_from_train_frac, seed + 1)
 
     train_idx = [i for i, m in enumerate(molecule_ids) if m in train_mols]
     val_idx = [i for i, m in enumerate(molecule_ids) if m in val_mols]

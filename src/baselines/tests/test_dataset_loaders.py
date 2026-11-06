@@ -370,6 +370,32 @@ def test_load_rmd17_reads_the_published_rmd17_npz_key_names(tmp_path):
     assert len(train) == 1000
 
 
+def test_rmd17_val_suffix_carves_50_validation_frames_out_of_train_and_leaves_test_alone(tmp_path):
+    from baselines.adapters import dataset_loading
+
+    _write_rmd17_fixture(tmp_path)
+    plain_train, _, plain_test = rmd17.load_rmd17(str(tmp_path), "aspirin")
+    dataset_loading._load_all.cache_clear()
+    train, val, test = dataset_loading.load_splits("rmd17:aspirin", "rmd17_split_0_val50", str(tmp_path))
+    assert (len(train), len(val), len(test)) == (950, 50, 1000)
+    frames = lambda ds: {_frame_of(ds[i]) for i in range(len(ds))}  # noqa: E731
+    assert frames(train).isdisjoint(frames(val))
+    assert frames(train) | frames(val) == frames(plain_train)
+    assert frames(test) == frames(plain_test)
+    dataset_loading._load_all.cache_clear()
+    again = dataset_loading.load_splits("rmd17:aspirin", "rmd17_split_0_val50", str(tmp_path))
+    assert frames(again[1]) == frames(val)
+    dataset_loading._load_all.cache_clear()
+
+
+def test_carve_validation_frames_rejects_degenerate_sizes():
+    from baselines.datasets.splits import carve_validation_frames
+
+    for bad in (0, 10, 11):
+        with pytest.raises(ValueError, match="n_val"):
+            carve_validation_frames(list(range(10)), bad)
+
+
 MD22_N_ATOMS = 2
 
 

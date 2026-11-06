@@ -119,6 +119,26 @@ def test_spice_split_matches_molecule_level_split_with_default_seed_zero():
     assert expected_val == set() and len(val) == 0
 
 
+def test_spice_val_from_train_holds_out_training_molecules_and_leaves_test_unchanged():
+    identities = _interleaved_identities()
+    with _spice_adapter_with_stub(identities) as (adapter, _):
+        plain_train, _, plain_test = adapter.load_spice_molecule_split("/fake/spice.hdf5")
+        train, val, test = adapter.load_spice_molecule_split("/fake/spice.hdf5", val_from_train_frac=0.05)
+    assert test.indices == plain_test.indices 
+    train_mols, val_mols = set(_molecules_in(train, identities)), set(_molecules_in(val, identities))
+    plain_train_mols = set(_molecules_in(plain_train, identities))
+    assert len(val_mols) == round(0.05 * 95) and train_mols.isdisjoint(val_mols)
+    assert train_mols | val_mols == plain_train_mols  
+    assert len(val) == len(val_mols) * CONFORMERS_PER_MOLECULE  # whole molecules, all conformers together
+    assert sorted(train.indices + val.indices + test.indices) == list(range(len(identities)))
+
+
+def test_spice_val_from_train_is_mutually_exclusive_with_val_frac():
+    with _spice_adapter_with_stub(_interleaved_identities()) as (adapter, _):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            adapter.load_spice_molecule_split("/fake/spice.hdf5", train_frac=0.9, val_frac=0.05, val_from_train_frac=0.05)
+
+
 def test_spice_split_indices_are_ascending_and_subsets_share_the_full_dataset():
     identities = _interleaved_identities()
     with _spice_adapter_with_stub(identities) as (adapter, stub_cls):

@@ -4,6 +4,8 @@ import os
 import random
 from typing import Hashable, Sequence
 
+from torch.utils.data import Dataset, Subset
+
 RMD17_MOLECULES: tuple[str, ...] = (
     "aspirin", "benzene", "ethanol", "malonaldehyde", "naphthalene",
     "salicylic", "toluene", "uracil", "paracetamol", "azobenzene",
@@ -32,6 +34,19 @@ def molecule_level_split(
     val_ids = unique_ids[n_train : n_train + n_val]
     test_ids = unique_ids[n_train + n_val :]
     return set(train_ids), set(val_ids), set(test_ids)
+
+
+RMD17_VAL_SEED = 0
+
+
+def carve_validation_frames(train: Dataset, n_val: int, seed: int = RMD17_VAL_SEED) -> tuple[Dataset, Dataset]:
+    n = len(train)
+    if not 0 < n_val < n:
+        raise ValueError(f"n_val must be in (0, {n}), got {n_val}")
+    held = sorted(random.Random(seed).sample(range(n), n_val))
+    held_set = set(held)
+    keep = [i for i in range(n) if i not in held_set]
+    return Subset(train, keep), Subset(train, held)
 
 
 def _rmd17_split_paths(root: str, split_index: int) -> tuple[str, str]:

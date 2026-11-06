@@ -3,8 +3,6 @@
 #
 # --dataset: "qm9" | "ani1x" | "spice" | "rmd17:<molecule>" | "md22:<molecule>"
 # --data-root: dataset root dir (qm9/rmd17/md22) or file path (ani1x .h5, spice .hdf5)
-# --split: only rMD17 has more than one published split; "rmd17_split_<k>" picks index k (default 0).
-#          Other datasets use the fixed seeds/fractions defined in their loader modules.
 from __future__ import annotations
 
 import re
@@ -26,6 +24,9 @@ def _load_all(dataset: str, split: str, data_root: str) -> tuple[Dataset, Datase
         return load_ani1x(data_root)
     if name == "spice":
         from baselines.datasets.spice_adapter import load_spice_molecule_split
+        match = re.fullmatch(r"molecule_95_5_val(\d+)", split)
+        if match:  
+            return load_spice_molecule_split(data_root, val_from_train_frac=int(match.group(1)) / 100)
         return load_spice_molecule_split(data_root)
     if name in ("rmd17", "md22"):
         if not molecule:
@@ -34,8 +35,12 @@ def _load_all(dataset: str, split: str, data_root: str) -> tuple[Dataset, Datase
             from baselines.datasets.md22 import load_md22
             return load_md22(data_root, molecule)
         from baselines.datasets.rmd17 import load_rmd17
-        match = re.fullmatch(r"rmd17_split_(\d+)", split)
-        return load_rmd17(data_root, molecule, int(match.group(1)) if match else 0)
+        match = re.fullmatch(r"rmd17_split_(\d+)(?:_val(\d+))?", split)
+        train, val, test = load_rmd17(data_root, molecule, int(match.group(1)) if match else 0)
+        if match and match.group(2):  
+            from baselines.datasets.splits import carve_validation_frames
+            train, val = carve_validation_frames(train, int(match.group(2)))
+        return train, val, test
     raise ValueError(f"unknown dataset {dataset!r}; expected qm9, ani1x, spice, rmd17:<mol> or md22:<mol>")
 
 
