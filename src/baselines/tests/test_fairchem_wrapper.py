@@ -144,3 +144,12 @@ def test_resume_loads_the_checkpoint(tmp_path, monkeypatch, capfd):
     assert fw.run(data, run, 0, epochs=2, **kw) == 0
     out = capfd.readouterr()
     assert "Loading checkpoint from" in out.out + out.err
+
+
+def test_cli_exposes_ema_decay_and_loss_coefficients_with_unchanged_defaults():
+    from baselines.trainers import fairchem_wrapper as fw
+
+    a = fw.build_parser().parse_args(["--data-dir", "d", "--run-dir", "r"])
+    assert (a.ema_decay, a.energy_coeff, a.forces_coeff) == (0.999, 2.0, 100.0)  # the values build_config used prior to these flags
+    b = fw.build_parser().parse_args(["--data-dir", "d", "--run-dir", "r", "--ema-decay", "0.99", "--energy-coeff", "20", "--forces-coeff", "10"])
+    assert (b.ema_decay, b.energy_coeff, b.forces_coeff) == (0.99, 20.0, 10.0)

@@ -225,13 +225,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--lr", type=float, default=4e-4)
     p.add_argument("--cutoff", type=float, default=5.0)
+    p.add_argument("--ema-decay", type=float, default=0.999, help="EMA weight decay; the saved/evaluated weights lag by ~1/(1-decay) steps")
+    p.add_argument("--energy-coeff", type=float, default=2.0)
+    p.add_argument("--forces-coeff", type=float, default=100.0)
     p.add_argument("--dry-run", action="store_true", help="build databases and config, print the command, do not train")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
-    return run(a.data_dir, a.run_dir, a.seed, a.dry_run, cutoff=a.cutoff, device=a.device, epochs=a.epochs, batch_size=a.batch_size, lr=a.lr)
+    return run(a.data_dir, a.run_dir, a.seed, a.dry_run, cutoff=a.cutoff, device=a.device, epochs=a.epochs, batch_size=a.batch_size, lr=a.lr,
+               ema_decay=a.ema_decay, energy_coeff=a.energy_coeff, forces_coeff=a.forces_coeff)
 
 
 if __name__ == "__main__":
