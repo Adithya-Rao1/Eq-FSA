@@ -21,7 +21,7 @@ trainer -> `evaluation/run_eval.py` scores val and test with one shared ASE eval
 | Hyperparameters | **placeholders** (EquiformerV2 12 layers / lmax 4, NequIP / Allegro / SchNetPack sizes and learning rates). `--epochs` defaults to 1 on purpose |
 | ANI-1x subset sizes | **placeholder** 100,000 / 10,000 / 10,000 (`campaign.ANI1X_CAPS`), seeded (`SUBSET_SEED = 0`), same for every model. ANI-1x filename `ani1x-release.h5` is an assumption (`--ani1x-file`) |
 | NequIP energy-only (QM9) scaling | `global_rescale_scale: dataset_total_energy_std`; effect on accuracy untested |
-| rMD17 | **npz key names unverified** (CLAUDE.md issue 3): the loader reads `R,z,E,F`; the published files are believed to use `coords,nuclear_charges,energies,forces`. Check before any rMD17 export |
+| rMD17 | keys verified 2026-11-06 on the real malonaldehyde file (`coords, nuclear_charges, energies, forces`); loader fixed, and molecule `salicylic_acid` renamed `salicylic` to match the file. Other 9 molecules not yet inspected |
 | Classical FF on large MD22 molecules | graph is inferred from geometry (RDKit); expect the 370-atom nanotube to be **skipped** (limit 200 atoms), and AM1-BCC on stachyose / AT-AT-CG-CG / buckyball-catcher is untested. Skips are counted in `metrics.json` (`n_molecules_skipped`, `skipped_reasons`) |
 | CPU partition | `stingy` is an **assumption** for the CPU-only export / classical jobs (`--cpu-partition`); its default walltime here is 5 h and may be too short for the SPICE export and the SPICE classical run (`--time`) |
 | Retired, unscheduled code | `adapters/tier0_legacy.py`, `tier1_mpnn.py`, `tier2_transformer.py` (stub), `tier3_foundation.py`, `md/`, `containers/mlip-foundation.def`: still in the tree with their tests, **not used by the campaign**. Safe to delete if you agree |
@@ -64,7 +64,7 @@ singularity exec $B ~/scratch/mlip-classical.sif  python -m pytest baselines/tes
 ```
 Measured on a Mac: mpnn set ~2 min, schnetpack ~30 s, fairchem ~30 s, classical ~15 s. Do **not** run the whole `baselines/tests`
 directory in one go: locally, `test_seeding.py::test_seed_worker_with_real_multiprocess_dataloader_changes_with_loader_seed` (a 2-worker DataLoader test of the retired loops) never returns on macOS; every other file finishes in seconds. Cause unconfirmed (maybe macOS spawn vs Linux fork), so tell me if it also hangs on the server.
-`test_dataset_loaders.py` has one expected failure until CLAUDE.md issue 3 is resolved (`test_load_rmd17_reads_the_published_rmd17_npz_key_names`).
+`test_dataset_loaders.py` should now pass fully (the rMD17 key issue is fixed).
 
 ### 5. Smoke test (15 min walltime each, `gpu_a40-test`)
 ```
@@ -79,7 +79,7 @@ Imports the wrappers and checks CUDA. It does not train anything.
 python3 -m baselines.slurm.campaign --phase phase1_export --scratch-root $HOME/scratch --out-dir $HOME/scratch/campaign
 bash $HOME/scratch/campaign/submit_phase1_export.sh     # 20 jobs
 ```
-Wait for these to finish: a training job stops with `no export at ...` if its export is missing. **Check the rMD17 keys (CLAUDE.md issue 3) first.**
+Wait for these to finish: a training job stops with `no export at ...` if its export is missing. The rMD17 keys are resolved (CLAUDE.md issue 3).
 Exports written by an older revision lack the `smiles` tag that the classical SPICE run needs; re-export if in doubt (delete the export dir).
 Time: unmeasured.
 

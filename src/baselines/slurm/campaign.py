@@ -52,7 +52,7 @@ MD22_SPLIT = "md22_fixed"
 ANI1X_SPLIT = "ani1x_group"
 ANI1X_CAPS = (100_000, 10_000, 10_000)
 SUBSET_SEED = 0
-RMD17_NOTE = "rMD17 npz key names are unverified (CLAUDE.md open issue 3): the export will fail until that is checked"
+RMD17_NOTE = "rMD17 loader keys verified against malonaldehyde npz"
 
 
 @dataclass(frozen=True)

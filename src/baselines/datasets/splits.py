@@ -6,7 +6,7 @@ from typing import Hashable, Sequence
 
 RMD17_MOLECULES: tuple[str, ...] = (
     "aspirin", "benzene", "ethanol", "malonaldehyde", "naphthalene",
-    "salicylic_acid", "toluene", "uracil", "paracetamol", "azobenzene",
+    "salicylic", "toluene", "uracil", "paracetamol", "azobenzene",
 )
 RMD17_NUM_SPLITS = 5
 RMD17_TRAIN_SIZE = 1000

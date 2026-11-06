@@ -262,7 +262,10 @@ def _write_split_files(root: Path, split_index: int, train: list[int], test: lis
 def _write_rmd17_fixture(root: Path, molecule: str = "aspirin") -> None:
     (root / "npz_data").mkdir(parents=True)
     arrays = _synthetic_trajectory(RMD17_N_FRAMES, RMD17_N_ATOMS)
-    np.savez(root / "npz_data" / f"rmd17_{molecule}.npz", R=arrays["R"], z=arrays["z"], E=arrays["E"], F=arrays["F"])
+    np.savez(
+        root / "npz_data" / f"rmd17_{molecule}.npz",
+        nuclear_charges=arrays["z"], coords=arrays["R"], energies=arrays["E"], forces=arrays["F"],
+    )
     even, odd = list(range(0, RMD17_N_FRAMES, 2)), list(range(1, RMD17_N_FRAMES, 2))
     _write_split_files(root, 0, train=even, test=odd)
     _write_split_files(root, 2, train=odd, test=even)
@@ -352,8 +355,6 @@ def test_load_rmd17_out_of_range_split_index_raises_value_error(tmp_path):
 
 
 def test_load_rmd17_reads_the_published_rmd17_npz_key_names(tmp_path):
-    # rMD17 figshare archive's npz files documented as keyed nuclear_charges / coords / energies / forces (not the sGDML R/z/E/F).
-    # TODO: test if this fails with KeyError: 'R' --> rmd17.load_rmd17 only works on synthetic data; confirm with np.load(real_file).files.
     (tmp_path / "npz_data").mkdir()
     arrays = _synthetic_trajectory(RMD17_N_FRAMES, RMD17_N_ATOMS)
     np.savez(
