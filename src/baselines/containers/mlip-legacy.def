@@ -23,7 +23,7 @@ From: nvcr.io/nvidia/pytorch:24.08-py3
 # in src/stage_1/experiments/CLAUDE.md from cramming every baseline into one shared env).
 
 %post
-    set -euo pipefail
+    set -eu
 
     # numpy pinned below 2.x: schnetpack/torchani-era code commonly references numpy aliases
     # (np.int, np.bool, ...) removed in numpy 2.x, same failure mode already documented in this

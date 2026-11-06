@@ -17,7 +17,7 @@ From: nvcr.io/nvidia/pytorch:24.08-py3
 # NequIP/Allegro/MACE version set.
 
 %post
-    set -euo pipefail
+    set -eu
 
     pip install --no-cache-dir \
         numpy==1.26.4 \
