@@ -29,7 +29,10 @@ def _frames(dataset, indices: list[int], seen: dict | None = None):
             numbers = sorted(item["atomic_numbers"].tolist())
             seen["elements"].update(numbers)
             seen["compositions"].add(tuple(numbers))
+        smiles = item.get("smiles")
         yield {
+            # Datasets with a molecular graph (SPICE) carry an atom-mapped SMILES; the classical force-field baseline needs it per frame.
+            "tags": {"smiles": smiles} if isinstance(smiles, str) else None,
             "atomic_numbers": item["atomic_numbers"].tolist(),
             "positions": item["x"].double().numpy(),
             "energy": float(item["energy"]),

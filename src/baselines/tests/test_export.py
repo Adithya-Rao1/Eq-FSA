@@ -69,6 +69,30 @@ def test_forces_are_optional_for_qm9_style_frames(tmp_path):
     assert FORCES_KEY not in atoms.arrays
 
 
+@pytest.mark.parametrize("smiles", [
+    "[C:1]([H:2])[O:3]", "[H:3][O:1][C:2]([H:4])([H:5])[H:6]", "[C:1]#[N:2]", "[O-:1][N+:2]", "C:1(O:2)", "[C@@:1]([F:2])([Cl:3])[Br:4]",
+])
+def test_smiles_tags_round_trip_exactly(tmp_path, smiles):
+    # Regression: unquoted, ASE's reader turned "[C:1]([H:2])[O:3]" into "C:1(H:2)O:3".
+    path = tmp_path / "a.xyz"
+    write_extxyz(str(path), [{"atomic_numbers": [6, 1], "positions": np.zeros((2, 3)), "energy": 1.0, "tags": {"smiles": smiles}}])
+    assert read_extxyz(str(path))[0].info["smiles"] == smiles
+
+
+def test_tag_with_double_quote_is_refused():
+    with pytest.raises(ValueError, match="double quote"):
+        format_frame([1], np.zeros((1, 3)), 0.0, tags={"smiles": 'a"b'})
+
+
+def test_export_adds_smiles_tag_only_when_the_dataset_has_it(tmp_path, monkeypatch):
+    ds = _patch(monkeypatch)
+    for item in ds["train"].items:
+        item["smiles"] = "[C:1]([H:2])[O:3]"
+    es.export_splits("spice", "s", "root", str(tmp_path))
+    assert read_extxyz(str(tmp_path / "train.xyz"))[0].info["smiles"] == "[C:1]([H:2])[O:3]"
+    assert "smiles" not in read_extxyz(str(tmp_path / "test.xyz"))[0].info
+
+
 def test_extra_tags_are_written_to_the_header():
     text = format_frame([1], np.zeros((1, 3)), 0.0, tags={"idx": "7"})
     assert "idx=7" in text.splitlines()[1]

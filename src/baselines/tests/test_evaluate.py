@@ -97,6 +97,44 @@ def test_relative_energy_still_sees_non_constant_error():
     assert m["energy_relative_mae_meV"] == pytest.approx(1.0, abs=1e-6)
 
 
+def _grouped_frames(shifts):
+    from ase import Atoms
+
+    frames, pred = [], []
+    for label, shift, errs in shifts:
+        for e in errs:
+            a = Atoms("H", positions=[[0, 0, 0]])
+            a.info[ENERGY_KEY] = 0.0
+            a.info["smiles"] = label
+            frames.append(a)
+            pred.append(shift + e)
+    return frames, np.array(pred)
+
+
+def test_group_key_removes_one_offset_per_group():
+    # Two molecules with different zeros (+5 eV, -3 eV) and +-1 meV scatter around each.
+    frames, pred = _grouped_frames([("a", 5.0, (-0.001, 0.001, -0.001, 0.001)), ("b", -3.0, (0.001, -0.001))])
+    m = ev.score(frames, pred, None, relative=True, group_key="smiles")
+    assert m["energy_relative_mae_meV"] == pytest.approx(1.0, abs=1e-9)
+    assert m["n_relative_groups"] == 2 and m["n_relative_structures"] == 6
+    pooled = ev.score(frames, pred, None, relative=True)
+    assert pooled["energy_relative_mae_meV"] > 1000.0  # one pooled offset cannot absorb +5 and -3 eV
+
+
+def test_singleton_groups_are_excluded_from_relative_stats():
+    frames, pred = _grouped_frames([("a", 5.0, (-0.002, 0.002)), ("lonely", 9.0, (0.0,))])
+    m = ev.score(frames, pred, None, relative=True, group_key="smiles")
+    assert m["n_relative_groups"] == 1 and m["n_relative_structures"] == 2
+    assert m["energy_relative_mae_meV"] == pytest.approx(2.0, abs=1e-9)
+    assert m["n_structures"] == 3  # the absolute metrics still cover every frame
+
+
+def test_all_singleton_groups_raise():
+    frames, pred = _grouped_frames([("a", 1.0, (0.0,)), ("b", 2.0, (0.0,))])
+    with pytest.raises(ValueError, match="two or more"):
+        ev.score(frames, pred, None, relative=True, group_key="smiles")
+
+
 def test_no_reference_forces_skips_force_metrics(tmp_path):
     _, frames, truth = _frames(tmp_path, forces=False)
     assert FORCES_KEY not in frames[0].arrays

@@ -1,0 +1,45 @@
+# Singularity 3.7 definition file for the classical force-field baselines (GAFF2 and OpenFF "Sage" through OpenMM).
+# UNTESTED: not built yet. The package set below was verified together only on osx-arm64 (conda-forge, 2026-11-05): python 3.11, openmm 8.6.1,
+# openff-toolkit 0.18.0, openmmforcefields 0.16.0, ambertools 26.0, rdkit 2026.03.1, ase 3.29.0, numpy 1.26.4. A linux-64 solve may pick
+# other builds / patch versions of the unpinned packages, so check `conda list` in the built image against that list.
+#
+# Why conda and not pip like the other mlip-* images: AM1-BCC charges need antechamber + sqm from AmberTools, which is distributed on
+# conda-forge only. There is no torch in this image (the classical baseline is CPU-only and imports none of the ML code), so
+# build_and_verify.sh skips the torch/CUDA check for it. Run it on a CPU partition; no --nv.
+
+Bootstrap: docker
+From: condaforge/miniforge3:24.9.2-0
+
+%post
+    set -euo pipefail
+    mamba create -y -q -n ff -c conda-forge \
+        python=3.11 \
+        openmm=8.6.1 \
+        openff-toolkit=0.18.0 \
+        openmmforcefields=0.16.0 \
+        ambertools \
+        rdkit \
+        ase=3.29.0 \
+        "numpy<2" \
+        pyyaml \
+        pytest
+    mamba clean -y -a
+
+    mkdir -p /opt
+    echo "UNVERIFIED-BUILD" > /opt/image_digest.txt
+
+%environment
+    export LC_ALL=C
+    # antechamber / sqm must be on PATH or OpenFF silently reports that no toolkit can compute AM1-BCC charges.
+    export PATH=/opt/conda/envs/ff/bin:$PATH
+    export PYTHONPATH=/work/src:${PYTHONPATH:-}
+
+%labels
+    Project EqFSA
+    Family mlip-classical
+    Contains openmm-8.6.1 openff-toolkit-0.18.0 openmmforcefields-0.16.0 ambertools
+
+%help
+    EqFSA classical force-field baseline (GAFF2, OpenFF Sage) via OpenMM. CPU only.
+        singularity exec --bind <repo>:/repo --env PYTHONPATH=/repo/src <image>.sif \
+            python -m baselines.classical.run --data-dir <export dir> --forcefield gaff2 --out <metrics.json> --charge-cache <dir>

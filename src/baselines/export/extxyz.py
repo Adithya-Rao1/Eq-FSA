@@ -3,6 +3,7 @@ from __future__ import annotations
 # Format: https://wiki.fysik.dtu.dk/ase/ase/io/formats.html#extxyz
 
 import os
+import re
 from collections.abc import Iterable, Sequence
 
 import numpy as np
@@ -17,6 +18,19 @@ def _symbol(atomic_number: int) -> str:
     if not 0 < atomic_number < len(chemical_symbols):
         raise ValueError(f"atomic number {atomic_number} is outside the periodic table")
     return chemical_symbols[atomic_number]
+
+
+_PLAIN_TAG = re.compile(r"^[A-Za-z0-9_.+-]+$")
+
+
+def _quote(value: str) -> str:
+    # ASE's header parser reads an unquoted "[...]" as an array and silently drops the brackets
+    value = str(value)
+    if _PLAIN_TAG.match(value):
+        return value
+    if '"' in value or "\n" in value:
+        raise ValueError(f"tag value may not contain a double quote or newline: {value!r}")
+    return f'"{value}"'
 
 
 def format_frame(
@@ -35,7 +49,7 @@ def format_frame(
     # repr() of a Python float round-trips float64 exactly; fixed-point formatting would drop digits on ~1e4 eV totals.
     header = f'Properties={properties} {ENERGY_KEY}={float(energy)!r} pbc="F F F"'
     for key, value in (tags or {}).items():
-        header += f" {key}={value}"
+        header += f" {key}={_quote(value)}"
     lines = [str(n_atoms), header]
     for i in range(n_atoms):
         row = f"{_symbol(int(atomic_numbers[i]))} " + " ".join(f"{x:.10f}" for x in positions[i])

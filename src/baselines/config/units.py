@@ -2,18 +2,22 @@ from __future__ import annotations
 
 # Constants: CODATA 2018 (physics.nist.gov/cuu/Constants); 1 kcal = 4.184 J.
 
-from typing import TypeVar, Union
+from typing import TYPE_CHECKING, TypeVar, Union
 
 import numpy as np
-import torch
 
-Number = TypeVar("Number", bound=Union[float, np.ndarray, torch.Tensor])
+if TYPE_CHECKING:  # annotation only: lets torch-free environments (the classical force-field image) import the constants
+    import torch
+
+Number = TypeVar("Number", bound=Union[float, np.ndarray, "torch.Tensor"])
 
 HARTREE_TO_EV: float = 27.211386245988
 BOHR_TO_ANGSTROM: float = 0.529177210903
 _AVOGADRO_PER_MOL: float = 6.02214076e23
 _ELEMENTARY_CHARGE_C: float = 1.602176634e-19
 KCAL_PER_MOL_TO_EV: float = 4184.0 / (_AVOGADRO_PER_MOL * _ELEMENTARY_CHARGE_C)
+# 1 eV per particle = e * N_A joule per mole (exact in the 2019 SI), i.e. e * N_A / 1000 kJ/mol. OpenMM works in kJ/mol.
+EV_TO_KJ_PER_MOL: float = _AVOGADRO_PER_MOL * _ELEMENTARY_CHARGE_C / 1000.0
 
 
 def hartree_to_ev(energy: Number) -> Number:

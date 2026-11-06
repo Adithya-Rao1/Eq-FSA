@@ -277,3 +277,10 @@ def test_to_ev_angstrom_error_lists_supported_conventions():
     message = str(excinfo.value)
     for name in ("hartree_bohr", "kcal_mol_angstrom", "ev_angstrom", "bogus"):
         assert name in message
+
+
+def test_ev_to_kj_per_mol_is_exactly_avogadro_times_charge_over_1000():
+    # 1 eV per particle = e * N_A J/mol = the Faraday constant, 96485.33212... C/mol * 1 V; exact in SI-2019.
+    assert units.EV_TO_KJ_PER_MOL == pytest.approx(ELEMENTARY_CHARGE_C * AVOGADRO_PER_MOL / 1000.0, rel=RTOL_F64)
+    assert units.EV_TO_KJ_PER_MOL == pytest.approx(96.48533212331, rel=1e-12)  # CODATA 2018 F = 96485.33212... C/mol
+    assert units.EV_TO_KJ_PER_MOL / 4.184 == pytest.approx(1.0 / units.KCAL_PER_MOL_TO_EV, rel=RTOL_F64)  # same eV, kcal vs kJ
