@@ -27,6 +27,21 @@ trainer -> `evaluation/run_eval.py` scores val and test with one shared ASE eval
 | CPU partition | `stingy` is an **assumption** for the CPU-only export / classical jobs (`--cpu-partition`); its default walltime here is 5 h and may be too short for the SPICE export and the SPICE classical run (`--time`) |
 | Retired, unscheduled code | `adapters/tier0_legacy.py`, `tier1_mpnn.py`, `tier2_transformer.py` (stub), `tier3_foundation.py`, `md/`, `containers/mlip-foundation.def`: still in the tree with their tests, **not used by the campaign**. Safe to delete if you agree |
 
+## Single machine without Slurm (what is actually in use, 2026-11-06)
+
+The server in use is one Ubuntu box with an A10 and Apptainer, no Slurm. `slurm/run_local.py` runs the same jobs the campaign renders (the
+commands come from `campaign.job_commands`), sequentially, through `apptainer exec` (`--nv` for smoke / train jobs). It skips jobs whose
+`split.json` / `metrics.json` exists, so stopping and re-running is safe; it keeps going after a failure and prints a summary
+(`--fail-fast` to stop). Logs, generated scripts and `results.jsonl` (status, seconds per job) go to `$HOME/scratch/campaign/local/`.
+Run it with the host `python3` (it needs no torch), not inside an image. Add `--dry-run` to only write the scripts.
+
+```
+cd ~/scratch/Eq-FSA/src
+python3 -m baselines.slurm.run_local --phase phase0_smoke --scratch-root $HOME/scratch
+python3 -m baselines.slurm.run_local --phase phase1_export --datasets rmd17 --scratch-root $HOME/scratch
+python3 -m baselines.slurm.run_local --phase phase1_export phase2_train_calibration --models schnet --datasets rmd17 --only rmd17:aspirin --pilot --epochs 1 --scratch-root $HOME/scratch
+```
+
 ## Run order (all paths assume `$HOME/scratch`; `<EID>` is your CityU id)
 
 ### 1. Build the images (Linux machine with sudo + Singularity 3.7; not this Mac)

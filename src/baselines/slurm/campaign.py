@@ -146,21 +146,33 @@ def expand_phase(
     return jobs
 
 
-def render_job(job: Job, scratch_root: str, repo_dir: str, epochs: int, extra_adapter_args: str, time: str | None) -> str:
-    export_dir = f"{scratch_root}/exports/{job.export_name}"
-    run_dir = f"{scratch_root}/runs/{job.phase}/{job.run_name}"
-    image = f"{scratch_root}/{job.image}.sif"
-    common = dict(partition=job.partition, image=image, run_dir=run_dir, scratch_root=scratch_root, repo_dir=repo_dir, time=time)
+def job_layout(job: Job, scratch_root: str) -> tuple[str, str, str]:
+    """(export_dir, run_dir, image path) for a job; shared by the Slurm renderer and the local runner."""
+    return (f"{scratch_root}/exports/{job.export_name}", f"{scratch_root}/runs/{job.phase}/{job.run_name}", f"{scratch_root}/{job.image}.sif")
+
+
+def job_commands(job: Job, scratch_root: str, epochs: int, extra_adapter_args: str) -> list[str]:
+    export_dir, run_dir, _ = job_layout(job, scratch_root)
     if job.job_type == "smoke_test":
-        return render_sbatch(job_name=f"eqfsa_{job.run_name}", commands=smoke_commands(job.image), smoke=True, **SMOKE_RESOURCES, **common)
+        return smoke_commands(job.image)
     if job.job_type == "export":
         caps = ANI1X_CAPS if job.dataset == "ani1x" else (None, None, None)
-        commands = export_commands(job.dataset, job.split, f"{scratch_root}/data/{job.data_subpath}", export_dir, *caps, SUBSET_SEED)
+        return export_commands(job.dataset, job.split, f"{scratch_root}/data/{job.data_subpath}", export_dir, *caps, SUBSET_SEED)
+    if job.job_type == "classical":
+        return classical_commands(job.model, export_dir, run_dir, f"{scratch_root}/classical_charges")
+    return train_commands(job.model, export_dir, run_dir, job.seed, epochs, extra_adapter_args)
+
+
+def render_job(job: Job, scratch_root: str, repo_dir: str, epochs: int, extra_adapter_args: str, time: str | None) -> str:
+    _, run_dir, image = job_layout(job, scratch_root)
+    commands = job_commands(job, scratch_root, epochs, extra_adapter_args)
+    common = dict(partition=job.partition, image=image, run_dir=run_dir, scratch_root=scratch_root, repo_dir=repo_dir, time=time)
+    if job.job_type == "smoke_test":
+        return render_sbatch(job_name=f"eqfsa_{job.run_name}", commands=commands, smoke=True, **SMOKE_RESOURCES, **common)
+    if job.job_type == "export":
         return render_sbatch(job_name=f"eqfsa_{job.run_name}", commands=commands, **CPU_RESOURCES, **common)
     if job.job_type == "classical":
-        commands = classical_commands(job.model, export_dir, run_dir, f"{scratch_root}/classical_charges")
         return render_sbatch(job_name=f"eqfsa_classical_{job.run_name}", commands=commands, **CPU_RESOURCES, **common)
-    commands = train_commands(job.model, export_dir, run_dir, job.seed, epochs, extra_adapter_args)
     return render_sbatch(job_name=f"eqfsa_{job.model}_{job.phase}", commands=commands, **GPU_RESOURCES, **common)
 
 

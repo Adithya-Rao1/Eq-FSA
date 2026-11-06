@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import random
-from typing import Hashable, Sequence
+from typing import TYPE_CHECKING, Hashable, Sequence
 
-from torch.utils.data import Dataset, Subset
+if TYPE_CHECKING:  # torch stays out of the import path so slurm.campaign / run_local import this module on hosts without torch
+    from torch.utils.data import Dataset
 
 RMD17_MOLECULES: tuple[str, ...] = (
     "aspirin", "benzene", "ethanol", "malonaldehyde", "naphthalene",
@@ -40,6 +41,8 @@ RMD17_VAL_SEED = 0
 
 
 def carve_validation_frames(train: Dataset, n_val: int, seed: int = RMD17_VAL_SEED) -> tuple[Dataset, Dataset]:
+    from torch.utils.data import Subset
+
     n = len(train)
     if not 0 < n_val < n:
         raise ValueError(f"n_val must be in (0, {n}), got {n_val}")
