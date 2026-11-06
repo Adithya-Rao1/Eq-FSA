@@ -64,7 +64,7 @@ def test_every_job_names_a_dataset_the_loading_dispatch_accepts():
             name, _, molecule = job.dataset.partition(":")
             assert name in {"qm9", "spice", "rmd17", "md22", "ani1x"}
             if name == "rmd17":
-                assert molecule in RMD17_MOLECULES and re.fullmatch(r"rmd17_split_\d+", job.split)
+                assert molecule in RMD17_MOLECULES and re.fullmatch(r"rmd17_split_\d+(_val\d+)?", job.split)
             elif name == "md22":
                 assert molecule in md22.MD22_MOLECULES
             else:
