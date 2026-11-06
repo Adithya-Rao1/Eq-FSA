@@ -256,7 +256,7 @@ def test_the_rmd17_key_warning_is_attached_to_rmd17_jobs_only(capsys, tmp_path):
     assert all(j.note for j in campaign.expand_phase("phase1_export", datasets=("rmd17",)))
     assert not any(j.note for j in campaign.expand_phase("phase1_export", datasets=("md22", "qm9")))
     campaign.main(["--phase", "phase1_export", "--scratch-root", SCRATCH, "--out-dir", str(tmp_path), "--datasets", "rmd17"])
-    assert "CLAUDE.md open issue 3" in capsys.readouterr().out
+    assert "malonaldehyde" in capsys.readouterr().out
 
 
 def test_unknown_phase_is_rejected():

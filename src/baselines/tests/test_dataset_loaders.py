@@ -343,7 +343,10 @@ def test_load_rmd17_missing_archive_raises_not_implemented_with_path(tmp_path):
 def test_load_rmd17_missing_split_files_raise_not_implemented(tmp_path):
     (tmp_path / "npz_data").mkdir()
     arrays = _synthetic_trajectory(10, RMD17_N_ATOMS)
-    np.savez(tmp_path / "npz_data" / "rmd17_aspirin.npz", R=arrays["R"], z=arrays["z"], E=arrays["E"], F=arrays["F"])
+    np.savez(
+        tmp_path / "npz_data" / "rmd17_aspirin.npz",
+        nuclear_charges=arrays["z"], coords=arrays["R"], energies=arrays["E"], forces=arrays["F"],
+    )
     with pytest.raises(NotImplementedError, match="fixed split files not found"):
         rmd17.load_rmd17(str(tmp_path), "aspirin")
 
