@@ -49,13 +49,14 @@ def test_tier2_build_parser_rejects_unknown_model():
 
 
 def test_tier2_model_choices_match_spec():
-    assert tier2_transformer.TIER2_MODELS == ("equiformer", "equiformerv2")
+    assert tier2_transformer.TIER2_MODELS == ("equiformerv2",)
 
 
-def test_tier2_equiformer_v1_raises_actionable_not_implemented():
-    cfg = tier2_transformer.CommonConfig(seed=0, dataset="d", split="s", run_dir="/tmp/run")
-    with pytest.raises(NotImplementedError, match="Equiformer v1"):
-        tier2_transformer._build_equiformer(cfg)
+def test_tier2_equiformer_v1_is_no_longer_selectable():
+    parser = tier2_transformer.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--model", "equiformer", "--dataset", "d", "--split", "s", "--run-dir", "/tmp/run"])
+    assert not hasattr(tier2_transformer, "_build_equiformer")
 
 def test_tier3_build_parser_returns_argparse_parser():
     parser = tier3_foundation.build_parser()

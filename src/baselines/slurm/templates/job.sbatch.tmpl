@@ -1,0 +1,48 @@
+#!/bin/bash
+# Slurm job template for the EqFSA baselines on CityUHK Burgundy. One template serves every job type (smoke test, dataset export,
+# train + evaluate, classical force field); the job-specific work is the command list substituted for $TPL_COMMANDS.
+# Slurm sbatch directives: https://slurm.schedmd.com/sbatch.html
+# Singularity exec/bind/--nv options: https://docs.sylabs.io/guides/3.7/user-guide/cli/singularity_exec.html
+
+#SBATCH --job-name=$TPL_JOB_NAME
+#SBATCH --partition=$TPL_PARTITION
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=$TPL_CPUS_PER_TASK
+#SBATCH --mem=$TPL_MEM
+#SBATCH --time=$TPL_TIME
+#SBATCH --output=%x_%j.out
+#SBATCH --error=%x_%j.err
+$TPL_GRES_DIRECTIVE
+set -euo pipefail
+
+IMAGE="$TPL_IMAGE_PATH"
+WORKDIR="$TPL_WORKDIR"
+DIGEST_SIDECAR="$TPL_DIGEST_SIDECAR"
+
+if [[ ! -x /usr/bin/singularity ]]; then
+    echo "ERROR: /usr/bin/singularity is unavailable on $(hostname)." >&2
+    exit 1
+fi
+if [[ ! -r "$IMAGE" ]]; then
+    echo "ERROR: Cannot read container: $IMAGE" >&2
+    exit 1
+fi
+
+mkdir -p "$WORKDIR"
+cd "$WORKDIR"
+export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK"
+
+# The scratch tree is bound at the same path inside the container, so every path below means the same thing inside and outside.
+# The repo checkout is bound read-only at /repo and put on PYTHONPATH; the image only carries the third-party libraries.
+export SINGULARITYENV_PYTHONPATH="/repo/src"
+sing() {
+    srun /usr/bin/singularity exec $TPL_NV_FLAG \
+        --bind "$TPL_SCRATCH_ROOT:$TPL_SCRATCH_ROOT" \
+        --bind "$TPL_REPO_DIR:/repo:ro" \
+        --bind "$DIGEST_SIDECAR:/opt/image_digest.txt:ro" \
+        --pwd "$WORKDIR" \
+        "$IMAGE" "$@"
+}
+
+$TPL_COMMANDS

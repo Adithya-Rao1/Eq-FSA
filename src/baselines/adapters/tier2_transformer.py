@@ -1,7 +1,5 @@
 from __future__ import annotations
-# Equiformer -- Liao & Smidt, "Equiformer: Equivariant Graph Attention Transformer for 3D Atomistic Graphs," ICLR 2023. 
-# EquiformerV2 -- Liao, Wood, Das, Smidt, "EquiformerV2: Improved Equivariant Transformer for Scaling to Higher-Degree Representations," ICLR 2024, arXiv:2306.12059, 
-# dispatched through the vendored fairchem submodule at src/baselines/codebases/fairchem, pinned to tag fairchem_core-2.25.0, commit baab686053cf52c143c387580b825233419942b2 (2026-10-27).
+# EquiformerV2 -- Liao, Wood, Das, Smidt, "EquiformerV2: Improved Equivariant Transformer for Scaling to Higher-Degree Representations," ICLR 2024,
 
 import argparse
 import os
@@ -10,10 +8,7 @@ from baselines.config.schema import CommonConfig, RunPaths, add_common_args
 from baselines.provenance.env_manifest import write as write_env_manifest
 from baselines.provenance.seeding import dataloader_generator, seed_worker, set_seed
 
-_FAIRCHEM_PIN_COMMIT = "baab686053cf52c143c387580b825233419942b2"  # tag fairchem_core-2.25.0, 2026-10-27
-_FAIRCHEM_PIN_TAG = "fairchem_core-2.25.0"
-
-TIER2_MODELS = ("equiformer", "equiformerv2")
+TIER2_MODELS = ("equiformerv2",)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,41 +54,23 @@ def _build_dataloader(dataset, cfg: CommonConfig, shuffle: bool):
     )
 
 
-def _build_equiformer(cfg: CommonConfig):
-    # Original Equiformer (v1) is not pip-installable
-    raise NotImplementedError(
-        "Equiformer v1 is not pip-installable. To support --model equiformer, add `git submodule add https://github.com/atomicarchitects/"
-        "equiformer src/baselines/codebases/equiformer` and wire a dispatch path here first."
-    )
-
-
 def _build_equiformerv2(cfg: CommonConfig):
     try:
         import fairchem.core  # noqa: F401
     except ImportError as e:
         raise ImportError(
-            "fairchem is not installed. Run `pip install -e src/baselines/codebases/fairchem` "
-            "(or `pip install fairchem-core`) in the remote GPU environment before dispatching "
-            "EquiformerV2."
+            "fairchem is not installed; run this inside the mlip-transformer image (fairchem-core==1.2.0)."
         ) from e
     try:
         from fairchem.core.models.equiformer_v2.equiformer_v2 import EquiformerV2  # type: ignore
     except ImportError as e:
         raise ImportError(
-            "EquiformerV2 model code is absent at the pinned fairchem commit "
-            f"({_FAIRCHEM_PIN_COMMIT}, tag {_FAIRCHEM_PIN_TAG}): upstream deleted "
-            "src/fairchem/core/models/equiformer_v2/ when it pivoted to the UMA/eSEN model family "
-            "in the fairchem_core 2.x line (this submodule is pinned there because Tier 3's UMA "
-            "dispatch needs 2.x). To run literal EquiformerV2, use a separate fairchem checkout "
-            "pinned to tag fairchem_core-1.10.0 (the last tag confirmed to contain "
-            "models/equiformer_v2/equiformer_v2.py, pre-dating any UMA support) -- a single pinned "
-            "commit cannot serve both models at once."
+            "fairchem.core.models.equiformer_v2 is missing: it exists in fairchem-core 1.x (the image pins 1.2.0) and was removed in 2.x."
         ) from e
     return EquiformerV2
 
 
 _DISPATCH = {
-    "equiformer": _build_equiformer,
     "equiformerv2": _build_equiformerv2,
 }
 

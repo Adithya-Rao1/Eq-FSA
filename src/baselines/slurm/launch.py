@@ -1,199 +1,162 @@
 from __future__ import annotations
 
-# Renders  Slurm sbatch scripts for CityUHK Burgundy. 
-# Template mechanism: stdlib string.Template, https://docs.python.org/3/library/string.html#template-strings.
-# Sbatch directive shape and the singularity exec invocation follow fixed /usr/bin/singularity path, --nv, one node per job, srun
+# https://docs.python.org/3/library/string.html#template-strings. Every job runs through one template, slurm/templates/job.sbatch.tmpl;
+# this module builds the command list for each job type.
 
 import argparse
 import os
+import shlex
 from string import Template
 from typing import NamedTuple
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+JOB_TEMPLATE = "job.sbatch.tmpl"
 
-_TEMPLATE_FILENAMES = {
-    "smoke_test": "smoke_test.sbatch.tmpl",
-    "train": "train.sbatch.tmpl",
-    "eval": "eval.sbatch.tmpl",
+
+class ModelSpec(NamedTuple):
+    image: str  # image name without .sif
+    module: str  # native-trainer wrapper (python -m <module>)
+    takes_model_flag: bool  # SchNetPack and NequIP/Allegro wrappers serve two models and need --model
+
+
+MODEL_SPECS: dict[str, ModelSpec] = {
+    "schnet": ModelSpec("mlip-legacy", "baselines.trainers.schnetpack_wrapper", True),
+    "painn": ModelSpec("mlip-legacy", "baselines.trainers.schnetpack_wrapper", True),
+    "nequip": ModelSpec("mlip-mpnn", "baselines.trainers.nequip_wrapper", True),
+    "allegro": ModelSpec("mlip-mpnn", "baselines.trainers.nequip_wrapper", True),
+    "mace": ModelSpec("mlip-mpnn", "baselines.trainers.mace_wrapper", False),
+    "equiformerv2": ModelSpec("mlip-transformer", "baselines.trainers.fairchem_wrapper", False),
 }
+CLASSICAL_IMAGE = "mlip-classical"
+CLASSICAL_FORCEFIELDS = ("gaff2", "openff")
+EXPORT_IMAGE = "mlip-mpnn"  # torch (dataset loaders) + ase + h5py + rdkit; the export needs no GPU
+SMOKE_IMAGES = ("mlip-legacy", "mlip-mpnn", "mlip-transformer", "mlip-classical")
 
-
-class TierSpec(NamedTuple):
-    module: str
-    models: tuple[str, ...]
-    needs_mode: bool
-
-
-#   python -m baselines.adapters.tier0_legacy      --model {schnet,painn,ani2x,aimnet2} ...
-#   python -m baselines.adapters.tier1_mpnn        --model {nequip,allegro,mace} ...
-#   python -m baselines.adapters.tier2_transformer --model {equiformer,equiformerv2} ...
-#   python -m baselines.adapters.tier3_foundation  --model {mace_mp_0,mace_off23,orb_v2,orb_v3,uma} --mode {zero_shot,fine_tune} ...
-TIER_SPECS: dict[str, TierSpec] = {
-    "tier0_legacy": TierSpec("baselines.adapters.tier0_legacy", ("schnet", "painn", "ani2x", "aimnet2"), False),
-    "tier1_mpnn": TierSpec("baselines.adapters.tier1_mpnn", ("nequip", "allegro", "mace"), False),
-    "tier2_transformer": TierSpec("baselines.adapters.tier2_transformer", ("equiformer", "equiformerv2"), False),
-    "tier3_foundation": TierSpec(
-        "baselines.adapters.tier3_foundation",
-        ("mace_mp_0", "mace_off23", "orb_v2", "orb_v3", "uma"),
-        True,
-    ),
-}
-
-# Known Burgundy partitions 
+# Known Burgundy partitions
 _PARTITION_DEFAULT_TIME = {
-    "debugq": "00:30:00",        # 2h cap, no GPU -- sanity checks only
-    "gpu_a40-test": "02:00:00",  # 12h cap -- quick smoke tests
-    "stingy": "05:00:00",        # 5-8h cap -- short jobs
-    "gpu_v100s": "5-00:00:00",   # 5 day cap
-    "gpu_a100": "5-00:00:00",    # 5 day cap
+    "debugq": "00:30:00",       
+    "gpu_a40-test": "02:00:00", 
+    "stingy": "05:00:00",        
+    "gpu_v100s": "5-00:00:00",   
+    "gpu_a100": "5-00:00:00",    
 }
 _SMOKE_TEST_DEFAULT_TIME = "00:15:00"
+_SMOKE_IMPORTS = {
+    "mlip-legacy": "import torch.utils.data.dataloader as d; d.T_co = getattr(d, 'T_co', None) or d._T_co; import torch; "
+                   "print('cuda_available=', torch.cuda.is_available()); import schnetpack; import baselines.trainers.schnetpack_wrapper",
+    "mlip-mpnn": "import torch; print('cuda_available=', torch.cuda.is_available()); import nequip, allegro, mace; "
+                 "import baselines.trainers.nequip_wrapper, baselines.trainers.mace_wrapper, baselines.export.export_splits",
+    "mlip-transformer": "import torch; print('cuda_available=', torch.cuda.is_available()); import fairchem.core; "
+                        "import baselines.trainers.fairchem_wrapper",
+    "mlip-classical": "import openmm, openff.toolkit, openmmforcefields, rdkit; import baselines.classical.run",
+}
 
 
-def build_adapter_args(
-    model: str, dataset: str, split: str, run_dir: str, mode: str | None, extra_adapter_args: str,
-) -> str:
-    parts = [f"--model {model}", f"--dataset {dataset}", f"--split {split}", f"--run-dir {run_dir}"]
-    if mode:
-        parts.append(f"--mode {mode}")
-    if extra_adapter_args:
-        parts.append(extra_adapter_args)
-    return " ".join(parts)
+def q(value: object) -> str:
+    return shlex.quote(str(value))
 
 
-def _validate(tier: str, model: str, mode: str | None) -> TierSpec:
-    if tier not in TIER_SPECS:
-        raise ValueError(f"unknown tier {tier!r}; expected one of {sorted(TIER_SPECS)}")
-    spec = TIER_SPECS[tier]
-    if model not in spec.models:
-        raise ValueError(f"model {model!r} is not valid for tier {tier!r}; expected one of {spec.models}")
-    if spec.needs_mode and not mode:
-        raise ValueError(f"tier {tier!r} requires --mode {{zero_shot,fine_tune}}")
-    if mode and not spec.needs_mode:
-        raise ValueError(f"tier {tier!r} does not take --mode (only tier3_foundation does)")
-    return spec
+def _check_model(model: str) -> ModelSpec:
+    if model not in MODEL_SPECS:
+        raise ValueError(f"unknown model {model!r}; expected one of {sorted(MODEL_SPECS)}")
+    return MODEL_SPECS[model]
+
+
+def smoke_commands(image_name: str) -> list[str]:
+    if image_name not in _SMOKE_IMPORTS:
+        raise ValueError(f"no smoke test for image {image_name!r}; expected one of {sorted(_SMOKE_IMPORTS)}")
+    return [f"sing python -c {q(_SMOKE_IMPORTS[image_name])}"]
+
+
+def export_commands(dataset: str, split: str, data_root: str, out_dir: str, max_train: int | None, max_val: int | None, max_test: int | None,
+                    subset_seed: int) -> list[str]:
+    parts = ["sing", "python", "-m", "baselines.export.export_splits", "--dataset", q(dataset), "--split", q(split), "--data-root", q(data_root),
+             "--out-dir", q(out_dir), "--subset-seed", str(subset_seed)]
+    for flag, value in (("--max-train", max_train), ("--max-val", max_val), ("--max-test", max_test)):
+        if value is not None:
+            parts += [flag, str(value)]
+    # An existing split.json means a complete export (it is written last), so a re-submitted job never rewrites files other runs are reading.
+    return [f"if [[ -f {q(out_dir + '/split.json')} ]]; then echo 'export already complete: {out_dir}'; else", "    " + " ".join(parts), "fi"]
+
+
+def _require_export(export_dir: str) -> str:
+    return (f"[[ -f {q(export_dir + '/split.json')} ]] || {{ echo 'ERROR: no export at {export_dir}; run the phase1_export jobs first' >&2; exit 2; }}")
+
+
+def train_commands(model: str, export_dir: str, run_dir: str, seed: int, epochs: int, extra_args: str = "") -> list[str]:
+    # Train, then evaluate. The wrappers resume from their own checkpoints and exit at once when the run is finished, so re-running this
+    # script (a chained copy after the walltime cap) is safe; set -e keeps a failed or unfinished training from reaching the evaluation.
+    spec = _check_model(model)
+    train = ["sing", "python", "-m", spec.module]
+    if spec.takes_model_flag:
+        train += ["--model", model]
+    train += ["--data-dir", q(export_dir), "--run-dir", q(run_dir), "--seed", str(seed), "--epochs", str(epochs)]
+    if extra_args:
+        train.append(extra_args)
+    evaluate = ["sing", "python", "-m", "baselines.evaluation.run_eval", "--model", model, "--data-dir", q(export_dir), "--run-dir", q(run_dir),
+                "--out", q(run_dir + "/metrics.json"), "--seed", str(seed)]
+    return [_require_export(export_dir), " ".join(train), f"[[ -f {q(run_dir + '/metrics.json')} ]] || " + " ".join(evaluate)]
+
+
+def classical_commands(forcefield: str, export_dir: str, run_dir: str, charge_cache: str) -> list[str]:
+    if forcefield not in CLASSICAL_FORCEFIELDS:
+        raise ValueError(f"forcefield must be one of {CLASSICAL_FORCEFIELDS}, got {forcefield!r}")
+    run = ["sing", "python", "-m", "baselines.classical.run", "--data-dir", q(export_dir), "--forcefield", forcefield,
+           "--out", q(run_dir + "/metrics.json"), "--charge-cache", q(charge_cache)]
+    return [_require_export(export_dir), f"[[ -f {q(run_dir + '/metrics.json')} ]] || " + " ".join(run)]
 
 
 def render_sbatch(
-    *,
-    job_type: str,
-    tier: str,
-    model: str,
-    dataset: str,
-    split: str,
-    partition: str,
-    image: str,
-    run_dir: str,
-    digest_sidecar: str | None = None,
-    mode: str | None = None,
-    extra_adapter_args: str = "",
-    cpus_per_task: int = 4,
-    gpus: int = 1,
-    mem: str = "32G",
-    time: str | None = None,
-    extra_sbatch_directives: str = "",
-    data_dir: str | None = None,
-    repo_dir: str | None = None,
+    *, job_name: str, partition: str, image: str, run_dir: str, commands: list[str], scratch_root: str, repo_dir: str,
+    gpus: int = 1, cpus_per_task: int = 4, mem: str = "32G", time: str | None = None, smoke: bool = False, digest_sidecar: str | None = None,
 ) -> str:
-    if job_type not in _TEMPLATE_FILENAMES:
-        raise ValueError(f"unknown job_type {job_type!r}; expected one of {sorted(_TEMPLATE_FILENAMES)}")
-    spec = _validate(tier, model, mode)
-
-    resolved_time = time or (
-        _SMOKE_TEST_DEFAULT_TIME if job_type == "smoke_test" else _PARTITION_DEFAULT_TIME.get(partition)
-    )
+    resolved_time = time or (_SMOKE_TEST_DEFAULT_TIME if smoke else _PARTITION_DEFAULT_TIME.get(partition))
     if resolved_time is None:
         raise ValueError(f"--time is required for unknown partition {partition!r} (no default known)")
-
-    resolved_digest_sidecar = digest_sidecar or f"{image}.sha256"
-    job_name = f"eqfsa_{tier}_{model}_{job_type}"
-    adapter_args = build_adapter_args(model, dataset, split, run_dir, mode, extra_adapter_args)
-
-    template_path = os.path.join(TEMPLATES_DIR, _TEMPLATE_FILENAMES[job_type])
-    with open(template_path) as f:
+    with open(os.path.join(TEMPLATES_DIR, JOB_TEMPLATE)) as f:
         template_text = f.read()
-
     mapping = {
-        "TPL_JOB_NAME": job_name,
-        "TPL_PARTITION": partition,
-        "TPL_CPUS_PER_TASK": str(cpus_per_task),
-        "TPL_GPUS": str(gpus),
-        "TPL_MEM": mem,
-        "TPL_TIME": resolved_time,
-        "TPL_IMAGE_PATH": image,
-        "TPL_WORKDIR": run_dir,
-        "TPL_DIGEST_SIDECAR": resolved_digest_sidecar,
-        "TPL_ADAPTER_MODULE": spec.module,
-        "TPL_ADAPTER_ARGS": adapter_args,
-        "TPL_EXTRA_SBATCH_DIRECTIVES": extra_sbatch_directives,
-        # read-only repo checkout at /repo and dataset mount at /data; adapters are pointed at paths under /data via --data-root
-        "TPL_EXTRA_BINDS": " ".join(
-            bind for bind in (f'--bind "{repo_dir}:/repo:ro"' if repo_dir else "", f'--bind "{data_dir}:/data:ro"' if data_dir else "") if bind
-        ),
-        # the image's %environment prepends its own /work/src (the run dir, not the repo) to whatever PYTHONPATH arrives here
-        "TPL_EXTRA_ENV": 'export SINGULARITYENV_PYTHONPATH="/repo/src"' if repo_dir else "",
+        "TPL_JOB_NAME": job_name, "TPL_PARTITION": partition, "TPL_CPUS_PER_TASK": str(cpus_per_task), "TPL_MEM": mem, "TPL_TIME": resolved_time,
+        "TPL_GRES_DIRECTIVE": f"#SBATCH --gres=gpu:{gpus}" if gpus else "",
+        "TPL_NV_FLAG": "--nv" if gpus else "",
+        "TPL_IMAGE_PATH": image, "TPL_WORKDIR": run_dir, "TPL_DIGEST_SIDECAR": digest_sidecar or f"{image}.sha256",
+        "TPL_SCRATCH_ROOT": scratch_root, "TPL_REPO_DIR": repo_dir, "TPL_COMMANDS": "\n".join(commands),
     }
     return Template(template_text).safe_substitute(mapping)
 
 
 def write_script(script_text: str, out_path: str) -> str:
-    out_dir = os.path.dirname(os.path.abspath(out_path))
-    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with open(out_path, "w") as f:
         f.write(script_text)
     return out_path
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Render (never submit) an sbatch script for a baseline adapter run.")
-    p.add_argument("--job-type", choices=sorted(_TEMPLATE_FILENAMES), default="train")
-    p.add_argument("--tier", required=True, choices=sorted(TIER_SPECS))
-    p.add_argument("--model", required=True)
-    p.add_argument("--dataset", required=True)
-    p.add_argument("--split", required=True)
+    p = argparse.ArgumentParser(description="Render (never submit) one training+evaluation sbatch script. Use slurm.campaign for whole phases.")
+    p.add_argument("--model", required=True, choices=sorted(MODEL_SPECS))
+    p.add_argument("--export-dir", required=True)
+    p.add_argument("--run-dir", required=True)
+    p.add_argument("--scratch-root", required=True)
+    p.add_argument("--repo-dir", required=True)
     p.add_argument("--partition", required=True)
-    p.add_argument("--image", required=True, help="path to the .sif on the cluster, e.g. $HOME/scratch/mlip-mpnn.sif")
-    p.add_argument("--run-dir", required=True, help="bind-mounted at /work; also this run's RunPaths root")
-    p.add_argument("--digest-sidecar", default=None, help="defaults to <image>.sha256 next to --image")
-    p.add_argument("--mode", default=None, choices=["zero_shot", "fine_tune"], help="tier3_foundation only")
-    p.add_argument("--extra-adapter-args", default="", help="verbatim extra CLI text appended to the adapter invocation")
-    p.add_argument("--cpus-per-task", type=int, default=4)
-    p.add_argument("--gpus", type=int, default=1)
-    p.add_argument("--mem", default="32G")
-    p.add_argument("--time", default=None, help="overrides the partition's default walltime")
-    p.add_argument("--data-dir", default=None, help="host dataset directory, bind-mounted read-only at /data")
-    p.add_argument("--repo-dir", default=None, help="host checkout of this repo, bind-mounted read-only at /repo and put on PYTHONPATH")
-    p.add_argument("--out", default=None, help="output path for the rendered .sbatch file")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--epochs", type=int, default=1)
+    p.add_argument("--time", default=None)
+    p.add_argument("--out", required=True)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    spec = MODEL_SPECS[args.model]
     script = render_sbatch(
-        job_type=args.job_type,
-        tier=args.tier,
-        model=args.model,
-        dataset=args.dataset,
-        split=args.split,
-        partition=args.partition,
-        image=args.image,
-        run_dir=args.run_dir,
-        digest_sidecar=args.digest_sidecar,
-        mode=args.mode,
-        extra_adapter_args=args.extra_adapter_args,
-        cpus_per_task=args.cpus_per_task,
-        gpus=args.gpus,
-        mem=args.mem,
-        time=args.time,
-        data_dir=args.data_dir,
-        repo_dir=args.repo_dir,
+        job_name=f"eqfsa_{args.model}_train", partition=args.partition, image=f"{args.scratch_root}/{spec.image}.sif", run_dir=args.run_dir,
+        commands=train_commands(args.model, args.export_dir, args.run_dir, args.seed, args.epochs), scratch_root=args.scratch_root,
+        repo_dir=args.repo_dir, time=args.time,
     )
-    out_path = args.out or os.path.join(args.run_dir, "slurm", f"{args.tier}_{args.model}_{args.job_type}.sbatch")
-    write_script(script, out_path)
-    print(f"[launch] wrote {out_path}")
-    print("This project's standing rule: remote/Slurm actions are handed off, never submitted automatically.")
-    print("Run this yourself on Burgundy to submit it:")
-    print(f"  sbatch {out_path}")
+    write_script(script, args.out)
+    print(f"[launch] wrote {args.out}\nThis project's standing rule: Slurm actions are handed off, never submitted automatically.\n  sbatch {args.out}")
     return 0
 
 

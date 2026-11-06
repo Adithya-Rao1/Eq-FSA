@@ -1,102 +1,111 @@
-# Baselines hand-off (end of Wave 3, 2026-11-04)
+# Baselines hand-off (native-trainer pipeline, 2026-11-05)
 
-Nothing in this file has been run on Burgundy. Everything below the "ready" line is what you can run now; everything above it
-is why no baseline *numbers* can come out yet.
+Nothing in this file has been run on Burgundy, and no image has been built. Everything below was written and unit-tested on a Mac (CPU only).
+
+## What is being compared
+
+EqFSA against **MACE, NequIP, Allegro, SchNet, PaiNN, EquiformerV2** (each trained by its library's own trainer) and **GAFF2 / OpenFF**
+(through OpenMM), on **QM9** (energy only), **rMD17**, **MD22**, **ANI-1x** (fixed seeded subset), **SPICE**. The classical force fields run on
+rMD17, MD22 and SPICE only (they need a bond graph). Dropped: Equiformer v1, ANI-2x, AIMNet2, all tier-3 foundation models, OMol25,
+solvation free energy, MD-stability work.
+
+Pipeline: `export_splits` writes extended XYZ (eV, Angstrom) + `split.json` once per dataset instance -> a wrapper trains with the native
+trainer -> `evaluation/run_eval.py` scores val and test with one shared ASE evaluator -> `metrics.json` per run.
 
 ## Honest status
 
 | Piece | State |
 |---|---|
-| Provenance (seeding, env manifest), config (units, schema) | unit-tested locally (400 of 402 tests pass; 1 expected failure, 1 CUDA skip) |
-| Dataset loaders (QM9, rMD17, MD22, ANI-1x, SPICE split) | unit-tested on synthetic data; **rMD17 npz key names unverified** (test fails on purpose, see CLAUDE.md issue 3) |
-| Checkpoint / resume (RNG, epoch, loader order, final marker) | unit-tested; verified locally with tiny models |
-| MD analysis (RDF/MSD/VACF/drift, stability report) | unit-tested on synthetic data; LAMMPS/OpenMM runners never executed |
-| Slurm campaign generator + templates | renders and `bash -n` clean; submit scripts never run |
-| Containers (.def) | **never built**; this Mac cannot build Singularity images |
-| **Tier 0/1 adapters** | build models and loop over epochs, but **read the code and found no neighbor-list/graph construction, no per-library batch schema and no collate_fn**; datasets yield `{x, atomic_numbers, energy, forces}`, which SchNetPack/NequIP/Allegro/MACE do not accept. Expected to fail on the first batch. Never executed (libraries not installed locally). |
-| **No evaluation anywhere** | no val/test loop, no MAE/RMSE, `metrics.jsonl` is never written |
-| Tier 2/3 adapters | stubs: build a model and return; no training, zero-shot or fine-tune logic |
-| OMol25 | loader + OOD split builder exist; not wired into `adapters/dataset_loading.py` |
-| Solvation free energy (weeks 6-7) | no code exists |
-| MD vs classical FFs (week 8) | runners exist, but nothing exports a deployed/TorchScript potential for them to use |
+| Export, shared evaluator, 4 wrappers (MACE, NequIP/Allegro, SchNetPack, fairchem), classical FF, campaign/launch/templates | unit-tested locally; the wrappers also ran **tiny real CPU trainings** and calculator checks (3 conda/venv environments, not the images) |
+| Images (`containers/*.def`) | **never built**. The fairchem PyG-extension source build (`mlip-transformer`) and the conda solve (`mlip-classical`) are the riskiest steps |
+| Hyperparameters | **placeholders** (EquiformerV2 12 layers / lmax 4, NequIP / Allegro / SchNetPack sizes and learning rates). `--epochs` defaults to 1 on purpose |
+| ANI-1x subset sizes | **placeholder** 100,000 / 10,000 / 10,000 (`campaign.ANI1X_CAPS`), seeded (`SUBSET_SEED = 0`), same for every model. ANI-1x filename `ani1x-release.h5` is an assumption (`--ani1x-file`) |
+| NequIP energy-only (QM9) scaling | `global_rescale_scale: dataset_total_energy_std`; effect on accuracy untested |
+| rMD17 | **npz key names unverified** (CLAUDE.md issue 3): the loader reads `R,z,E,F`; the published files are believed to use `coords,nuclear_charges,energies,forces`. Check before any rMD17 export |
+| Classical FF on large MD22 molecules | graph is inferred from geometry (RDKit); expect the 370-atom nanotube to be **skipped** (limit 200 atoms), and AM1-BCC on stachyose / AT-AT-CG-CG / buckyball-catcher is untested. Skips are counted in `metrics.json` (`n_molecules_skipped`, `skipped_reasons`) |
+| CPU partition | `stingy` is an **assumption** for the CPU-only export / classical jobs (`--cpu-partition`); its default walltime here is 5 h and may be too short for the SPICE export and the SPICE classical run (`--time`) |
+| Retired, unscheduled code | `adapters/tier0_legacy.py`, `tier1_mpnn.py`, `tier2_transformer.py` (stub), `tier3_foundation.py`, `md/`, `containers/mlip-foundation.def`: still in the tree with their tests, **not used by the campaign**. Safe to delete if you agree |
 
-## What is ready to run now (in order)
-
-All paths assume `$HOME/scratch` on Burgundy. `<EID>` is your CityU id.
+## Run order (all paths assume `$HOME/scratch`; `<EID>` is your CityU id)
 
 ### 1. Build the images (Linux machine with sudo + Singularity 3.7; not this Mac)
 ```
-git clone <repo-url> Eq-FSA && cd Eq-FSA && git checkout new/baselines && git submodule update --init --recursive
-bash src/baselines/containers/build_and_verify.sh            # all four; or append an image name, e.g. mlip-mpnn
+git clone <repo-url> Eq-FSA && cd Eq-FSA && git checkout new/baselines
+bash src/baselines/containers/build_and_verify.sh            # all four, or append one name, e.g. mlip-classical
 ```
-Writes `src/baselines/containers/<name>.sif` and `<name>.sif.sha256`, and import-checks each image (now including h5py, rdkit, pytest).
-Not measured; budget an hour or more per image (multi-GB NGC base plus GPU libraries).
+Builds `mlip-legacy`, `mlip-mpnn`, `mlip-transformer`, `mlip-classical`, writes `<name>.sif` + `<name>.sif.sha256`, and import-checks each
+(the classical check also runs an AM1-BCC charge calculation). **Time: unmeasured, budget >= 1 h per image.** Compare
+`conda list` in `mlip-classical` with the versions listed at the top of its `.def` (verified together only on osx-arm64).
 
 ### 2. Upload
 ```
 sftp <EID>@burgundy.hpc.cityu.edu.hk
 sftp> cd scratch
-sftp> put src/baselines/containers/mlip-legacy.sif
-sftp> put src/baselines/containers/mlip-legacy.sif.sha256        # repeat for mlip-mpnn, mlip-transformer, mlip-foundation
+sftp> put src/baselines/containers/mlip-legacy.sif          # and .sif.sha256; repeat for mlip-mpnn, mlip-transformer, mlip-classical
 ```
 
-### 3. Stage the repo and data on Burgundy
+### 3. Stage the repo and data
 ```
-cd ~/scratch && git clone <repo-url> Eq-FSA && cd Eq-FSA && git checkout new/baselines && git submodule update --init --recursive
-mkdir -p ~/scratch/data/{qm9,rmd17/npz_data,rmd17/splits,md22,spice}
-# qm9/            *.xyz files from the GDB-9 release (dsgdb9nsd_*.xyz)
-# rmd17/npz_data/ rmd17_<molecule>.npz        rmd17/splits/ index_train_01.csv .. index_test_05.csv
-# md22/           md22_<molecule>.npz         spice/        SPICE-2.0.1.hdf5   (rename with --spice-file if different)
+cd ~/scratch && git clone <repo-url> Eq-FSA && cd Eq-FSA && git checkout new/baselines
+mkdir -p ~/scratch/data/{qm9,rmd17/npz_data,rmd17/splits,md22,spice,ani1x}
+# qm9/ dsgdb9nsd_*.xyz   rmd17/npz_data/ rmd17_<mol>.npz + rmd17/splits/ index_*.csv   md22/ md22_<mol>.npz
+# spice/SPICE-2.0.1.hdf5   ani1x/ani1x-release.h5   (rename with --spice-file / --ani1x-file if different)
 ```
-The repo must be at `~/scratch/Eq-FSA` (or pass `--repo-dir`); jobs bind-mount it read-only at `/repo`.
+The repo must be at `~/scratch/Eq-FSA` (or pass `--repo-dir`); jobs bind it read-only at `/repo` and the whole scratch tree at the same path.
 
-### 4. Run the test suite on the server (inside an image, so torch and the real libraries are present)
+### 4. Tests on the server (inside the images; a few tens of seconds each, CPU)
 ```
-cd ~/scratch/Eq-FSA/src
-singularity exec --nv ~/scratch/mlip-mpnn.sif python -m pytest baselines/tests -q --no-header -p no:cacheprovider
+cd ~/scratch/Eq-FSA/src && export SINGULARITYENV_PYTHONPATH=$HOME/scratch/Eq-FSA/src
+B="--bind $HOME/scratch:$HOME/scratch"
+singularity exec $B ~/scratch/mlip-mpnn.sif       python -m pytest baselines/tests/test_export.py baselines/tests/test_evaluate.py baselines/tests/test_run_eval.py baselines/tests/test_mace_wrapper.py baselines/tests/test_nequip_wrapper.py baselines/tests/test_campaign.py baselines/tests/test_slurm_launch.py baselines/tests/test_units.py -q -p no:cacheprovider
+singularity exec $B ~/scratch/mlip-legacy.sif     python -m pytest baselines/tests/test_schnetpack_wrapper.py -q -p no:cacheprovider
+singularity exec $B ~/scratch/mlip-transformer.sif python -m pytest baselines/tests/test_fairchem_wrapper.py -q -p no:cacheprovider
+singularity exec $B ~/scratch/mlip-classical.sif  python -m pytest baselines/tests/test_classical.py -q -p no:cacheprovider
 ```
-Locally it takes about 1 minute on CPU (402 tests). Expect exactly one failure, `test_load_rmd17_reads_the_published_rmd17_npz_key_names`
-(issue 3). Run it in each image; some tests need libraries only one image carries.
+Measured on a Mac: mpnn set ~2 min, schnetpack ~30 s, fairchem ~30 s, classical ~15 s. Do **not** run the whole `baselines/tests`
+directory in one go: locally, `test_seeding.py::test_seed_worker_with_real_multiprocess_dataloader_changes_with_loader_seed` (a 2-worker DataLoader test of the retired loops) never returns on macOS; every other file finishes in seconds. Cause unconfirmed (maybe macOS spawn vs Linux fork), so tell me if it also hangs on the server.
+`test_dataset_loaders.py` has one expected failure until CLAUDE.md issue 3 is resolved (`test_load_rmd17_reads_the_published_rmd17_npz_key_names`).
 
-### 5. Generate and submit the smoke tests (15 min walltime each, `gpu_a40-test`)
+### 5. Smoke test (15 min walltime each, `gpu_a40-test`)
 ```
 cd ~/scratch/Eq-FSA/src
 python3 -m baselines.slurm.campaign --phase phase0_smoke --scratch-root $HOME/scratch --out-dir $HOME/scratch/campaign
-bash $HOME/scratch/campaign/submit_phase0_smoke.sh
-squeue -u $USER                                   # then read the *.out files next to the submit script
+bash $HOME/scratch/campaign/submit_phase0_smoke.sh      # 4 jobs, one per image
 ```
-These only import each adapter and check `torch.cuda.is_available()`; they do not test a forward/backward pass.
+Imports the wrappers and checks CUDA. It does not train anything.
 
-### 6. Timing pilot (only worth running after the adapters can produce a batch; see "Not ready")
+### 6. Export every dataset instance (CPU, once; shared by all models)
 ```
-python3 -m baselines.slurm.campaign --phase phase1_calibration --pilot --epochs 1 --scratch-root $HOME/scratch --out-dir $HOME/scratch/campaign
-bash $HOME/scratch/campaign/submit_phase1_calibration.sh
+python3 -m baselines.slurm.campaign --phase phase1_export --scratch-root $HOME/scratch --out-dir $HOME/scratch/campaign
+bash $HOME/scratch/campaign/submit_phase1_export.sh     # 20 jobs
+```
+Wait for these to finish: a training job stops with `no export at ...` if its export is missing. **Check the rMD17 keys (CLAUDE.md issue 3) first.**
+Exports written by an older revision lack the `smiles` tag that the classical SPICE run needs; re-export if in doubt (delete the export dir).
+Time: unmeasured.
+
+### 7. Timing pilot (one seed, one dataset instance per model and family, `gpu_a40-test`)
+```
+python3 -m baselines.slurm.campaign --phase phase2_train_calibration --pilot --epochs 1 --scratch-root $HOME/scratch --out-dir $HOME/scratch/campaign
+bash $HOME/scratch/campaign/submit_phase2_train_calibration.sh      # 18 jobs
 sacct -j <jobid> --format=JobID,JobName%40,Elapsed,MaxRSS,State
 ```
-Pilot = seed 0, one dataset instance per model, 1 epoch, `gpu_a40-test` (2 h default; pass `--time` up to 12:00:00 for SPICE).
+Look at `runs/phase2_train_calibration/*/metrics.json` and the `.out` files. This is the first time anything trains on a GPU.
 
-## Time estimates (what can and cannot be said)
+### 8. Full runs (after choosing epochs / hyperparameters from the pilot)
+```
+python3 -m baselines.slurm.campaign --phase phase2_train_calibration --epochs <N> --chain 3 --scratch-root $HOME/scratch --out-dir $HOME/scratch/campaign
+python3 -m baselines.slurm.campaign --phase phase2_train_spice      --epochs <N> --chain 3 --scratch-root $HOME/scratch --out-dir $HOME/scratch/campaign
+python3 -m baselines.slurm.campaign --phase phase2_train_ani1x      --epochs <N> --chain 3 --scratch-root $HOME/scratch --out-dir $HOME/scratch/campaign
+python3 -m baselines.slurm.campaign --phase phase3_classical --scratch-root $HOME/scratch --out-dir $HOME/scratch/campaign
+bash $HOME/scratch/campaign/submit_<phase>.sh
+```
+Job counts: calibration **324** (6 models x 18 dataset instances x 3 seeds), SPICE 18, ANI-1x 18, classical 36. Trim with `--models`,
+`--datasets`, `--seeds`; `campaign.TRAIN_MATRIX` is the single place to drop model/dataset pairs. `--chain 3` queues dependent copies for the
+5-day cap: a finished run is a no-op and an interrupted one resumes from the trainer's own checkpoint, evaluation runs once.
+**GPU-hours cannot be estimated** until the pilot gives per-epoch timings.
 
-| Step | Estimate | Basis |
-|---|---|---|
-| Local pytest | ~1 min | measured: 56 s, CPU, 402 tests |
-| Image build | >= 1 h each | unmeasured guess |
-| Smoke jobs | <= 15 min each plus queue | template walltime |
-| Pilot, 11 jobs | <= 2 h each | partition default; real value comes from `sacct` |
-| Full calibration (249 jobs) and SPICE (15 jobs, 6 more blocked) | **cannot be estimated** | no per-epoch timing exists |
+## Not done / decisions for you
 
-After the pilot: GPU-hours for a job family ~ (pilot epoch seconds x planned epochs) / 3600 per run, times seeds. The campaign tool
-prints job counts only; multiplying 249 jobs by the 5-day cap gives 29,880 GPU-hours, which is a ceiling no real run will approach.
-Epoch counts and learning rates are not chosen anywhere (`--epochs` defaults to 1 on purpose).
-
-## Not ready: what blocks real results (needs your decision)
-
-1. **Per-library batch pipelines.** Each of SchNetPack, NequIP/Allegro, MACE needs its own graph batching (neighbor lists, library
-   key names, collate). Without it the first batch fails.
-2. **An evaluation step.** Val/test energy and force MAE/RMSE in meV, written to `metrics.jsonl`; nothing produces a baseline number
-   until this exists.
-3. **Tier 2/3 training, zero-shot and fine-tune logic**, plus OMol25 wiring.
-4. **Solvation free-energy code** and a **potential export** for the MD runners.
-
-Also from the artifact's week-1 checklist, still on you: apply for OMol25/UMA gated Hugging Face access, ask CSC about fakeroot or
-Sylabs remote build, and request a larger scratch quota before any OMol25 download.
+- Hyperparameters, epochs, ANI-1x subset sizes (placeholders above).
+- Whether to delete the retired adapters, `md/`, the `mlip-foundation` def, and the unused torchani / aimnetcentral pins in `mlip-legacy.def`.
+- Reporting: nothing aggregates the `metrics.json` files into tables yet.

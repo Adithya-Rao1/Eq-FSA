@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds, sha256-digests, and smoke-tests each of this project's 5 baseline Singularity images (mlip-legacy, mlip-mpnn, mlip-transformer, mlip-foundation, mlip-classical). 
+# Builds, sha256-digests, and smoke-tests each of this project's 4 baseline Singularity images (mlip-legacy, mlip-mpnn, mlip-transformer, mlip-classical). 
 # Singularity 3.7 build command syntax: https://docs.sylabs.io/guides/3.7/user-guide/build_a_container.html
 # Intended to run on a machine where `sudo` is available. 
 
@@ -9,7 +9,8 @@ SINGULARITY_BIN="${SINGULARITY_BIN:-singularity}"
 CONTAINER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT_DIR="${OUT_DIR:-$CONTAINER_DIR}"
 
-IMAGES=(mlip-legacy mlip-mpnn mlip-transformer mlip-foundation mlip-classical)
+# mlip-foundation (tier 3: MACE-MP/OFF, Orb, UMA) was dropped from the comparison; its .def is kept but not built.
+IMAGES=(mlip-legacy mlip-mpnn mlip-transformer mlip-classical)
 
 # One import check per library each image is supposed to carry, plus the shared torch/cuda check run separately below.
 declare -A SMOKE_IMPORTS=(
