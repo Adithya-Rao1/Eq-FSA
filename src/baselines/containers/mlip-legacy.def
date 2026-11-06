@@ -33,9 +33,7 @@ From: nvcr.io/nvidia/pytorch:24.08-py3
         h5py==3.11.0 \
         rdkit==2024.3.5 \
         pytest==8.3.3 \
-        schnetpack==2.0.4 \
-        torchani==2.2.4 \
-        aimnetcentral==0.2.1
+        schnetpack==2.0.4
 
     # ---- this project's own package (src/baselines) -------------------------------------------
     # We deliberately do NOT `pip install -e .` here. The repo (and therefore src/baselines/

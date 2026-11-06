@@ -14,7 +14,7 @@ IMAGES=(mlip-legacy mlip-mpnn mlip-transformer mlip-classical)
 
 # One import check per library each image is supposed to carry, plus the shared torch/cuda check run separately below.
 declare -A SMOKE_IMPORTS=(
-  [mlip-legacy]="import torch.utils.data.dataloader as _d; _d.T_co = getattr(_d, 'T_co', None) or _d._T_co; import schnetpack; import torchani; import aimnetcentral; import h5py; import rdkit; import pytest"
+  [mlip-legacy]="import torch.utils.data.dataloader as _d; _d.T_co = getattr(_d, 'T_co', None) or _d._T_co; import schnetpack; import h5py; import rdkit; import pytest"
   [mlip-mpnn]="import nequip; import allegro; import mace; import h5py; import rdkit; import pytest"
   [mlip-transformer]="import fairchem.core; from fairchem.core.models.equiformer_v2.equiformer_v2 import EquiformerV2Backbone; import torch_geometric, torch_scatter, torch_sparse, torch_cluster; import h5py; import rdkit; import pytest"
   [mlip-classical]="import openmm, openff.toolkit, openmmforcefields, rdkit, ase, pytest, shutil; assert shutil.which('antechamber') and shutil.which('sqm'), 'AmberTools missing from PATH'; from openff.toolkit import Molecule; m = Molecule.from_smiles('CCO'); m.generate_conformers(n_conformers=1); m.assign_partial_charges('am1bcc')"
