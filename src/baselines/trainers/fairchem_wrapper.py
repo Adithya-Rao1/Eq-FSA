@@ -223,7 +223,9 @@ def load_calculator(run_dir: str, device: str = "cpu"):
                             "forces": np.asarray(padded.get_forces(), dtype=np.float64)} if meta["has_forces"] else \
                 {"energy": float(padded.get_potential_energy())}
 
-    return PaddedCellCalculator()
+    calc = PaddedCellCalculator()
+    calc.inner = inner  # tests can inspect the underlying trainer / model dtype
+    return calc
 
 
 def build_parser() -> argparse.ArgumentParser:

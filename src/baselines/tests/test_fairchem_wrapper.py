@@ -194,22 +194,29 @@ def test_conservative_model_forces_are_the_energy_gradient(tmp_path, monkeypatch
     torch.set_default_dtype(torch.float64)
     try:
         calc = fw.load_calculator(run)
+        model_dtypes = sorted({str(p.dtype) for p in calc.inner.trainer.model.parameters()})
         atoms = read_extxyz(os.path.join(data, "val.xyz"))[0]
         atoms.calc = calc
         f = atoms.get_forces()
-        h = 1e-4
-        fd = np.zeros_like(f)
-        for i in range(len(atoms)):
-            for k in range(3):
-                e = []
-                for sgn in (+1, -1):
-                    b = atoms.copy()
-                    p = b.get_positions()
-                    p[i, k] += sgn * h
-                    b.set_positions(p)
-                    b.calc = calc
-                    e.append(b.get_potential_energy())
-                fd[i, k] = -(e[0] - e[1]) / (2 * h)
+
+        def central_difference(h):
+            fd = np.zeros_like(f)
+            for i in range(len(atoms)):
+                for k in range(3):
+                    e = []
+                    for sgn in (+1, -1):
+                        b = atoms.copy()
+                        p = b.get_positions()
+                        p[i, k] += sgn * h
+                        b.set_positions(p)
+                        b.calc = calc
+                        e.append(b.get_potential_energy())
+                    fd[i, k] = -(e[0] - e[1]) / (2 * h)
+            return fd
+
+        # truncation error shrinks with h (~h^2), float32 rounding noise grows as 1/h; the pattern tells which one dominates
+        errors = {h: float(np.abs(f - central_difference(h)).max()) for h in (1e-2, 1e-3, 1e-4)}
+        fd = central_difference(1e-4)
     finally:
         torch.set_default_dtype(prev)
-    np.testing.assert_allclose(f, fd, atol=1e-7, rtol=0, err_msg=f"max abs diff {np.abs(f - fd).max():.3e}")
+    np.testing.assert_allclose(f, fd, atol=1e-7, rtol=0, err_msg=f"max abs diff by step {errors}; model parameter dtypes {model_dtypes}")
