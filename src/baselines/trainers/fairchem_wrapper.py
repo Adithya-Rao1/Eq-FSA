@@ -24,6 +24,10 @@ def checkpoint_dir(run_dir: str) -> str:
     return os.path.join(run_dir, "checkpoints", TIMESTAMP_ID)
 
 
+def trainer_name(has_forces: bool, conservative: bool) -> str:
+    return ("forces_conservative" if conservative else "forces") if has_forces else "energy"
+
+
 def best_checkpoint_path(run_dir: str) -> str:
     return os.path.join(checkpoint_dir(run_dir), "best_checkpoint.pt")
 
@@ -95,9 +99,11 @@ def build_databases(data_dir: str, out_dir: str, cutoff: float) -> dict:
 def build_config(
     summary: dict, run_dir: str, *, device: str = "cuda", epochs: int = 1, batch_size: int = 8, lr: float = 4e-4,
     cutoff: float = 5.0, max_neighbors: int = 50, energy_coeff: float = 2.0, forces_coeff: float = 100.0, ema_decay: float = 0.999,
-    model_overrides: dict | None = None, optim_overrides: dict | None = None,
+    conservative: bool = False, model_overrides: dict | None = None, optim_overrides: dict | None = None,
 ) -> dict:
     has_forces, fixed = summary["has_forces"], summary["fixed_composition"]
+    if conservative and not has_forces:
+        raise ValueError("conservative (gradient-force) training needs force labels")
     a2g = {"r_energy": True, "r_forces": has_forces, "r_edges": False, "r_pbc": True}
     transforms: dict = {"normalizer": {"fit": {"targets": [ENERGY] + ([FORCES] if has_forces else []), "batch_size": batch_size}}}
     # override_values must always be a dict: fit_normalizers defaults it to None and then evaluates `target in override_values` (1.2.0 bug).
@@ -121,7 +127,8 @@ def build_config(
     losses = [{ENERGY: {"fn": "mae", "coefficient": energy_coeff}}]
     metrics = {ENERGY: ["mae"]}
     if has_forces:
-        heads[FORCES] = {"module": "equiformer_v2_force_head"}
+        if not conservative:  # conservative: no force head, forces = -dE/dpos in baselines.trainers.fairchem_conservative
+            heads[FORCES] = {"module": "equiformer_v2_force_head"}
         outputs[FORCES] = {"irrep_dim": 1, "level": "atom", "property": FORCES, "train_on_free_atoms": True, "eval_on_free_atoms": True}
         losses.append({FORCES: {"fn": "l2mae", "coefficient": forces_coeff}})
         metrics[FORCES] = ["mae"]
@@ -137,7 +144,7 @@ def build_config(
     if optim["eval_every"] is None:
         del optim["eval_every"]  # library default: once per epoch
     return {
-        "trainer": "forces" if has_forces else "energy",
+        "trainer": trainer_name(has_forces, conservative),
         "dataset": {"train": {**split("train"), "transforms": transforms}, "val": split("val"), "test": split("test")},
         "outputs": outputs, "loss_functions": losses,
         "evaluation_metrics": {"metrics": metrics, "primary_metric": "forces_mae" if has_forces else "energy_mae"},
@@ -158,7 +165,8 @@ def write_config(cfg: dict, run_dir: str) -> str:
 
 
 def build_command(cfg_path: str, run_dir: str, seed: int, device: str, resume: bool) -> list[str]:
-    cmd = [sys.executable, "-c", "from fairchem.core._cli import main; main()", "--mode", "train", "--config-yml", cfg_path,
+    # the import registers the "forces_conservative" trainer in this process
+    cmd = [sys.executable, "-c", "import baselines.trainers.fairchem_conservative; from fairchem.core._cli import main; main()", "--mode", "train", "--config-yml", cfg_path,
            "--run-dir", os.path.abspath(run_dir), "--identifier", "", "--timestamp-id", TIMESTAMP_ID, "--seed", str(seed),
            "--print-every", "10"]
     if not device.startswith("cuda"):
@@ -178,7 +186,7 @@ def run(data_dir: str, run_dir: str, seed: int, dry_run: bool = False, cutoff: f
     cfg = build_config(summary, run_dir, device=device, cutoff=cutoff, **kw)
     cfg_path = write_config(cfg, run_dir)
     with open(os.path.join(run_dir, "wrapper.json"), "w") as f:
-        json.dump({"cutoff": cutoff, "has_forces": summary["has_forces"]}, f)
+        json.dump({"cutoff": cutoff, "has_forces": summary["has_forces"], "conservative": bool(kw.get("conservative", False))}, f)
     resume = os.path.exists(os.path.join(checkpoint_dir(run_dir), "checkpoint.pt"))
     cmd = build_command(cfg_path, run_dir, seed, device, resume)
     print("[equiformerv2] " + " ".join(cmd))
@@ -197,8 +205,11 @@ def load_calculator(run_dir: str, device: str = "cpu"):
     with open(os.path.join(run_dir, "wrapper.json")) as f:
         meta = json.load(f)
     # The checkpoint stores a legacy trainer name ("s2ef") that this release's registry rejects, so the trainer is passed explicitly.
+    conservative = bool(meta.get("conservative", False))
+    if conservative:
+        import baselines.trainers.fairchem_conservative  # noqa: F401  registers the trainer
     inner = OCPCalculator(checkpoint_path=best_checkpoint_path(run_dir), cpu=not device.startswith("cuda"), seed=0,
-                          trainer="forces" if meta["has_forces"] else "energy", cutoff=int(np.ceil(meta["cutoff"])))
+                          trainer=trainer_name(meta["has_forces"], conservative), cutoff=int(np.ceil(meta["cutoff"])))
     pad = meta["cutoff"]
 
     class PaddedCellCalculator(Calculator):
@@ -228,6 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ema-decay", type=float, default=0.999, help="EMA weight decay; the saved/evaluated weights lag by ~1/(1-decay) steps")
     p.add_argument("--energy-coeff", type=float, default=2.0)
     p.add_argument("--forces-coeff", type=float, default=100.0)
+    p.add_argument("--conservative", action="store_true", help="forces as -dE/dpos (energy head only) instead of the direct force head")
     p.add_argument("--dry-run", action="store_true", help="build databases and config, print the command, do not train")
     return p
 
@@ -235,7 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
     return run(a.data_dir, a.run_dir, a.seed, a.dry_run, cutoff=a.cutoff, device=a.device, epochs=a.epochs, batch_size=a.batch_size, lr=a.lr,
-               ema_decay=a.ema_decay, energy_coeff=a.energy_coeff, forces_coeff=a.forces_coeff)
+               ema_decay=a.ema_decay, energy_coeff=a.energy_coeff, forces_coeff=a.forces_coeff, conservative=a.conservative)
 
 
 if __name__ == "__main__":

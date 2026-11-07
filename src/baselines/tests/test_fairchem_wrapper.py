@@ -153,3 +153,63 @@ def test_cli_exposes_ema_decay_and_loss_coefficients_with_unchanged_defaults():
     assert (a.ema_decay, a.energy_coeff, a.forces_coeff) == (0.999, 2.0, 100.0)  # the values build_config used prior to these flags
     b = fw.build_parser().parse_args(["--data-dir", "d", "--run-dir", "r", "--ema-decay", "0.99", "--energy-coeff", "20", "--forces-coeff", "10"])
     assert (b.ema_decay, b.energy_coeff, b.forces_coeff) == (0.99, 20.0, 10.0)
+
+
+def test_conservative_config_has_energy_head_only_but_still_trains_on_forces(tmp_path, monkeypatch):
+    _, s = _summary(tmp_path, monkeypatch)
+    c = fw.build_config(s, str(tmp_path / "run"), epochs=1, batch_size=3, conservative=True)
+    assert c["trainer"] == "forces_conservative" and list(c["model"]["heads"]) == ["energy"]
+    assert set(c["outputs"]) == {"energy", "forces"} and [list(l)[0] for l in c["loss_functions"]] == ["energy", "forces"]
+    assert c["dataset"]["train"]["transforms"]["normalizer"]["fit"]["targets"] == ["energy", "forces"]  # the trainer scale needs both
+    assert fw.build_config(s, str(tmp_path / "run"), epochs=1, batch_size=3)["trainer"] == "forces"  # default unchanged
+
+
+def test_conservative_requires_force_labels(tmp_path, monkeypatch):
+    _, s = _summary(tmp_path, monkeypatch, forces=False, varying=True)
+    with pytest.raises(ValueError, match="force labels"):
+        fw.build_config(s, str(tmp_path / "run"), epochs=1, batch_size=3, conservative=True)
+
+
+def test_conservative_flag_is_recorded_and_the_training_command_registers_the_trainer(tmp_path, monkeypatch):
+    data = _export(tmp_path, monkeypatch)
+    run = str(tmp_path / "run")
+    assert fw.run(data, run, 0, dry_run=True, cutoff=3.0, epochs=1, batch_size=3, conservative=True) == 0
+    import json
+    assert json.load(open(os.path.join(run, "wrapper.json")))["conservative"] is True
+    assert "baselines.trainers.fairchem_conservative" in " ".join(fw.build_command("c.yml", run, 0, "cpu", False))
+    assert fw.build_parser().parse_args(["--data-dir", "d", "--run-dir", "r", "--conservative"]).conservative is True
+
+
+def test_conservative_model_forces_are_the_energy_gradient(tmp_path, monkeypatch, capfd):
+    pytest.importorskip("fairchem.core")
+    monkeypatch.setenv("PYTHONPATH", SRC)
+    from baselines.export.extxyz import read_extxyz
+
+    data, run = _export(tmp_path, monkeypatch), str(tmp_path / "run")
+    assert fw.run(data, run, 0, device="cpu", cutoff=3.0, epochs=2, batch_size=3, model_overrides=TINY, conservative=True) == 0
+    capfd.readouterr()
+    import torch
+
+    prev = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float64)
+    try:
+        calc = fw.load_calculator(run)
+        atoms = read_extxyz(os.path.join(data, "val.xyz"))[0]
+        atoms.calc = calc
+        f = atoms.get_forces()
+        h = 1e-4
+        fd = np.zeros_like(f)
+        for i in range(len(atoms)):
+            for k in range(3):
+                e = []
+                for sgn in (+1, -1):
+                    b = atoms.copy()
+                    p = b.get_positions()
+                    p[i, k] += sgn * h
+                    b.set_positions(p)
+                    b.calc = calc
+                    e.append(b.get_potential_energy())
+                fd[i, k] = -(e[0] - e[1]) / (2 * h)
+    finally:
+        torch.set_default_dtype(prev)
+    np.testing.assert_allclose(f, fd, atol=1e-7, rtol=0, err_msg=f"max abs diff {np.abs(f - fd).max():.3e}")
