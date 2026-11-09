@@ -98,7 +98,7 @@ def build_databases(data_dir: str, out_dir: str, cutoff: float) -> dict:
 
 def build_config(
     summary: dict, run_dir: str, *, device: str = "cuda", epochs: int = 1, batch_size: int = 8, lr: float = 4e-4,
-    cutoff: float = 5.0, max_neighbors: int = 50, energy_coeff: float = 2.0, forces_coeff: float = 100.0, ema_decay: float = 0.999,
+    cutoff: float = 5.0, max_neighbors: int = 50, energy_coeff: float = 20.0, forces_coeff: float = 100.0, ema_decay: float = 0.99,
     conservative: bool = False, model_overrides: dict | None = None, optim_overrides: dict | None = None,
 ) -> dict:
     has_forces, fixed = summary["has_forces"], summary["fixed_composition"]
@@ -164,9 +164,10 @@ def write_config(cfg: dict, run_dir: str) -> str:
     return path
 
 
-def build_command(cfg_path: str, run_dir: str, seed: int, device: str, resume: bool) -> list[str]:
-    # the import registers the "forces_conservative" trainer in this process
-    cmd = [sys.executable, "-c", "import baselines.trainers.fairchem_conservative; from fairchem.core._cli import main; main()", "--mode", "train", "--config-yml", cfg_path,
+def build_command(cfg_path: str, run_dir: str, seed: int, device: str, resume: bool, conservative: bool = False) -> list[str]:
+    # Only the conservative variant imports its module
+    prelude = "import baselines.trainers.fairchem_conservative; " if conservative else ""
+    cmd = [sys.executable, "-c", prelude + "from fairchem.core._cli import main; main()", "--mode", "train", "--config-yml", cfg_path,
            "--run-dir", os.path.abspath(run_dir), "--identifier", "", "--timestamp-id", TIMESTAMP_ID, "--seed", str(seed),
            "--print-every", "10"]
     if not device.startswith("cuda"):
@@ -188,7 +189,7 @@ def run(data_dir: str, run_dir: str, seed: int, dry_run: bool = False, cutoff: f
     with open(os.path.join(run_dir, "wrapper.json"), "w") as f:
         json.dump({"cutoff": cutoff, "has_forces": summary["has_forces"], "conservative": bool(kw.get("conservative", False))}, f)
     resume = os.path.exists(os.path.join(checkpoint_dir(run_dir), "checkpoint.pt"))
-    cmd = build_command(cfg_path, run_dir, seed, device, resume)
+    cmd = build_command(cfg_path, run_dir, seed, device, resume, bool(kw.get("conservative", False)))
     print("[equiformerv2] " + " ".join(cmd))
     if dry_run:
         return 0
@@ -238,10 +239,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--lr", type=float, default=4e-4)
     p.add_argument("--cutoff", type=float, default=5.0)
-    p.add_argument("--ema-decay", type=float, default=0.999, help="EMA weight decay; the saved/evaluated weights lag by ~1/(1-decay) steps")
-    p.add_argument("--energy-coeff", type=float, default=2.0)
+    p.add_argument("--ema-decay", type=float, default=0.99, help="EMA weight decay; the saved/evaluated weights lag by ~1/(1-decay) steps (0.999 left forces at 546 meV/A after 5 epochs on rMD17 aspirin)")
+    p.add_argument("--energy-coeff", type=float, default=20.0, help="2 is the OC20 value; on rMD17 aspirin 2 left the energy at the predict-the-mean baseline, 20 learned it")
     p.add_argument("--forces-coeff", type=float, default=100.0)
-    p.add_argument("--conservative", action="store_true", help="forces as -dE/dpos (energy head only) instead of the direct force head")
+    p.add_argument("--conservative", action="store_true", help="EXPERIMENTAL, parked, not used by the campaign: forces as -dE/dpos; its finite-difference test fails (see the skipped test)")
     p.add_argument("--dry-run", action="store_true", help="build databases and config, print the command, do not train")
     return p
 
