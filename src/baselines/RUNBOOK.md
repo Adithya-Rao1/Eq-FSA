@@ -1,15 +1,12 @@
 # Runbook: first run on a Slurm cluster (two GPU nodes, shared `$HOME/scratch`)
 
-Goal of this first run: show that the pipeline runs end to end on a fresh cluster, that everything lands under `$HOME/scratch`, and that no job
-errors. It is a plumbing test on **rMD17 only** with **1 training epoch**; the numbers it produces are not results.
-
 Assumptions: only this repo exists on the cluster; `$HOME/scratch` is visible from every node; Slurm; `apptainer` or `singularity` on the compute nodes.
-Replace `GPU_PART` / `CPU_PART` with your partition names (`sinfo -s`). Never put data, images or outputs outside `$HOME/scratch`.
+Replace `GPU_PART` / `CPU_PART` with partition names (`sinfo -s`). Never put data, images or outputs outside `$HOME/scratch`.
 
 What has and has not been verified (2026-11-09):
 - Verified on a single Ubuntu GPU box (A10, apptainer, no Slurm): image builds, unit tests, rMD17 export, a 5-epoch run of all six models, via `slurm/run_local.py`.
-- **Never run on a real Slurm cluster:** the sbatch templates, the submit scripts, the partition choices (`gpu_a40-test`, `gpu_v100s`, `gpu_a100`, `stingy` are
-  Burgundy names from the original plan), and `--fakeroot` image builds. Expect to debug these; send back the `.err` files (see "If something fails").
+- Never run on a real Slurm cluster: the sbatch templates, the submit scripts, the partition choices (`gpu_a40-test`, `gpu_v100s`, `gpu_a100`, `stingy` are
+  Burgundy names from the original plan), and `--fakeroot` image builds. Need the `.err` files (see "If something fails").
 - Not exercised at all on real data: QM9, MD22, SPICE, ANI-1x, and the GAFF2 / OpenFF classical phase.
 
 ## 1. Stage the repo
@@ -17,7 +14,7 @@ What has and has not been verified (2026-11-09):
 mkdir -p $HOME/scratch && cd $HOME/scratch
 git clone <repo-url> Eq-FSA && cd Eq-FSA && git checkout new/baselines
 ```
-The repo must live at `$HOME/scratch/Eq-FSA`: jobs bind it read-only at `/repo`.
+The repo must live at `$HOME/scratch/Eq-FSA`. Jobs bind it read-only at `/repo`.
 
 ## 2. Build the four images (about an hour each or more; unmeasured on this cluster)
 Run it on a compute node, not the login node, e.g. `srun -p CPU_PART -c 8 --mem 32G -t 06:00:00 --pty bash`, then:
@@ -33,10 +30,10 @@ Expect `OK` for each of the four images. `cuda_available= False` is normal on a 
 ```bash
 bash $HOME/scratch/Eq-FSA/src/baselines/datasets/fetch_rmd17.sh
 ```
-It tries the two known hosts, checks size and sha256, and extracts to `$HOME/scratch/data/rmd17/{npz_data,splits}`. Both hosts refused automated downloads
-from the first server (HTTP 403 / 404); if it says so, download `rmd17.tar.bz2` in a browser from
+It tries the two known hosts, checks size and sha256, and extracts to `$HOME/scratch/data/rmd17/{npz_data,splits}`. If both hosts refuse automated downloads from the first server (HTTP 403 / 404), download `rmd17.tar.bz2` in a browser from
 <https://figshare.com/articles/dataset/Revised_MD17_dataset_rMD17_/12672038>, place it at `$HOME/scratch/data/rmd17.tar.bz2`, and run the script again.
-Do not upload it through a web file manager as one 1 GB file (that truncated it before); split it into 50 MB pieces and check each.
+
+Do not upload it through a web file manager as one 1 GB file (this truncated it before). Instead, split it into 50 MB pieces and check each.
 
 ## 4. Unit tests inside the images (CPU, a few minutes in total)
 ```bash
@@ -62,8 +59,7 @@ bash $O/submit_phase1_export.sh                # 10 jobs; wait until squeue is e
 python3 -m baselines.slurm.campaign --phase phase2_train_calibration --datasets rmd17 --pilot --epochs 1 --scratch-root $S --out-dir $O --gpu-partition GPU_PART --time 02:00:00
 bash $O/submit_phase2_train_calibration.sh     # 6 jobs (one per model, rMD17 aspirin); Slurm decides placement; with two GPU nodes free, two should run at once
 ```
-Job scripts and the submit scripts are only written by `campaign`; nothing is submitted until you run a `submit_*.sh`. Slurm `.out/.err` files go to
-`$O/logs/`. On the first server the six one-epoch jobs took 3 to 5 minutes each including start-up (EquiformerV2 the longest).
+Job scripts and the submit scripts are only written by `campaign`, and nothing is submitted until you run a `submit_*.sh`. Slurm `.out/.err` files go to`$O/logs/`. On the first server the six one-epoch jobs took 3 to 5 minutes each including start-up (EquiformerV2 the longest).
 
 ## 6. Check the results
 ```bash
@@ -75,13 +71,10 @@ Exit code 0 means all complete and no error text. Library `FutureWarning`s about
 To confirm nothing was written outside scratch: `du -sh $HOME/scratch/*` and `ls -la $HOME $HOME/.cache` (compare with the listing from before step 2).
 
 ## If something fails
-Send back: the failing job's `$O/logs/*.err` and `.out` (last 60 lines), `sinfo -s`, `$(command -v apptainer || command -v singularity) --version`, and the
-output of `check_outputs`. Likely first problems: partition names or missing `--time` (the renderer refuses unknown partitions without one), `--fakeroot`
-builds not permitted, GPU not visible inside the container (`--nv`), memory limits (the templates ask for 90G on training jobs; edit
-`GPU_RESOURCES` in `slurm/campaign.py` if your nodes are smaller).
+Save: the failing job's `$O/logs/*.err` and `.out` (last 60 lines), `sinfo -s`, `$(command -v apptainer || command -v singularity) --version`, and the output of `check_outputs`. 
+Likely first problems: partition names or missing `--time` (the renderer refuses unknown partitions without one), `--fakeroot`
+builds not permitted, GPU not visible inside the container (`--nv`), memory limits (the templates ask for 90G on training jobs; edit `GPU_RESOURCES` in `slurm/campaign.py` if the nodes are smaller).
 
 ## Notes on the models
-EquiformerV2 is trained with its published direct-force head, as in the paper. Its defaults here (energy weight 20, EMA 0.99) were chosen from rMD17
-aspirin runs: the OC20 values (energy weight 2, EMA 0.999) left the energy at the predict-the-mean baseline and the forces at 546 meV/Å after 5 epochs.
-All other hyperparameters and epoch counts are placeholders; `--epochs` defaults to 1 on purpose. Per-model loss weights differ between libraries
-(SchNetPack 0.01 / 0.99, NequIP 1 / 1, MACE 1 / 100, EquiformerV2 20 / 100 for energy / forces) and have not been harmonised.
+EquiformerV2 is trained with its published direct-force head, as in the paper. Its defaults here (energy weight 20, EMA 0.99) were chosen from rMD17 aspirin runs. The OC20 values (energy weight 2, EMA 0.999) left the energy at the mean baseline and the forces at 546 meV/Å after 5 epochs.
+All other hyperparameters and epoch counts are not tested. Next, `--epochs` defaults to 1 for this test run. Per-model loss weights differ between libraries (SchNetPack 0.01 / 0.99, NequIP 1 / 1, MACE 1 / 100, EquiformerV2 20 / 100 for energy / forces) and have not been empirically fit.
