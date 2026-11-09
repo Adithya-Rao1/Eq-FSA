@@ -155,88 +155,15 @@ def test_cli_exposes_ema_decay_and_loss_coefficients_with_unchanged_defaults():
     assert (b.ema_decay, b.energy_coeff, b.forces_coeff) == (0.99, 20.0, 10.0)
 
 
-def test_conservative_config_has_energy_head_only_but_still_trains_on_forces(tmp_path, monkeypatch):
-    _, s = _summary(tmp_path, monkeypatch)
-    c = fw.build_config(s, str(tmp_path / "run"), epochs=1, batch_size=3, conservative=True)
-    assert c["trainer"] == "forces_conservative" and list(c["model"]["heads"]) == ["energy"]
-    assert set(c["outputs"]) == {"energy", "forces"} and [list(l)[0] for l in c["loss_functions"]] == ["energy", "forces"]
-    assert c["dataset"]["train"]["transforms"]["normalizer"]["fit"]["targets"] == ["energy", "forces"]  # the trainer scale needs both
-    assert fw.build_config(s, str(tmp_path / "run"), epochs=1, batch_size=3)["trainer"] == "forces"  # default unchanged
-
-
-def test_conservative_requires_force_labels(tmp_path, monkeypatch):
-    _, s = _summary(tmp_path, monkeypatch, forces=False, varying=True)
-    with pytest.raises(ValueError, match="force labels"):
-        fw.build_config(s, str(tmp_path / "run"), epochs=1, batch_size=3, conservative=True)
-
-
-def test_conservative_flag_is_recorded_and_the_training_command_registers_the_trainer(tmp_path, monkeypatch):
-    data = _export(tmp_path, monkeypatch)
+def test_equiformerv2_uses_the_direct_force_head_and_the_stock_forces_trainer(tmp_path, monkeypatch):
+    # EquiformerV2 as published predicts forces with a separate head (not -dE/dx)
+    data, s = _summary(tmp_path, monkeypatch)
+    c = fw.build_config(s, str(tmp_path / "run"), epochs=1, batch_size=3)
+    assert c["model"]["heads"] == {"energy": {"module": "equiformer_v2_energy_head"}, "forces": {"module": "equiformer_v2_force_head"}}
+    assert c["trainer"] == "forces" and c["model"]["backbone"]["regress_forces"] is True
     run = str(tmp_path / "run")
-    assert fw.run(data, run, 0, dry_run=True, cutoff=3.0, epochs=1, batch_size=3, conservative=True) == 0
+    assert fw.run(data, run, 0, dry_run=True, cutoff=3.0, epochs=1, batch_size=3) == 0
     import json
-    assert json.load(open(os.path.join(run, "wrapper.json")))["conservative"] is True
-    assert "baselines.trainers.fairchem_conservative" in " ".join(fw.build_command("c.yml", run, 0, "cpu", False, conservative=True))
-    # the module patches fairchem internals at import, so the default (direct-force) command must not import it
+    assert json.load(open(os.path.join(run, "wrapper.json"))) == {"cutoff": 3.0, "has_forces": True}
     assert "fairchem_conservative" not in " ".join(fw.build_command("c.yml", run, 0, "cpu", False))
-    direct_run = str(tmp_path / "run_direct")
-    assert fw.run(data, direct_run, 0, dry_run=True, cutoff=3.0, epochs=1, batch_size=3) == 0
-    import json as _json
-    assert _json.load(open(os.path.join(direct_run, "wrapper.json")))["conservative"] is False
-    assert fw.build_parser().parse_args(["--data-dir", "d", "--run-dir", "r", "--conservative"]).conservative is True
-
-
-@pytest.mark.skip(reason="PARKED: the conservative (gradient-force) variant is not used by the campaign. Its analytic forces differ from the finite difference of "
-                         "its own energy (1.0e-3 eV/A at h=1e-4 after un-detaching the rotation frames; cause not found). Tolerance deliberately not loosened.")
-def test_conservative_model_forces_are_the_energy_gradient(tmp_path, monkeypatch, capfd):
-    pytest.importorskip("fairchem.core")
-    monkeypatch.setenv("PYTHONPATH", SRC)
-    from baselines.export.extxyz import read_extxyz
-
-    data, run = _export(tmp_path, monkeypatch), str(tmp_path / "run")
-    assert fw.run(data, run, 0, device="cpu", cutoff=3.0, epochs=2, batch_size=3, model_overrides=TINY, conservative=True) == 0
-    capfd.readouterr()
-    import torch
-
-    prev = torch.get_default_dtype()
-    torch.set_default_dtype(torch.float64)
-    try:
-        calc = fw.load_calculator(run)
-        model_dtypes = sorted({str(p.dtype) for p in calc.inner.trainer.model.parameters()})
-        atoms = read_extxyz(os.path.join(data, "val.xyz"))[0]
-        atoms.calc = calc
-
-        # making energy deterministic by reseeding each rotation frame prior to each call
-        def seeded(fn):
-            torch.manual_seed(0)
-            return fn()
-
-        def fresh_energy():
-            calc.reset()  # ASE caches results for unchanged atoms; force a new forward pass
-            return atoms.get_potential_energy()
-
-        unseeded_spread = float(np.ptp([fresh_energy() for _ in range(4)]))
-        calc.reset()  # the unseeded calls above cached their forces
-        f = seeded(atoms.get_forces)
-
-        def central_difference(h):
-            fd = np.zeros_like(f)
-            for i in range(len(atoms)):
-                for k in range(3):
-                    e = []
-                    for sgn in (+1, -1):
-                        b = atoms.copy()
-                        p = b.get_positions()
-                        p[i, k] += sgn * h
-                        b.set_positions(p)
-                        b.calc = calc
-                        e.append(seeded(b.get_potential_energy))
-                    fd[i, k] = -(e[0] - e[1]) / (2 * h)
-            return fd
-
-        # reported for diagnosis --> truncation error shrinks like h^2, rounding noise grows like 1/h
-        errors = {h: float(np.abs(f - central_difference(h)).max()) for h in (1e-2, 1e-3, 1e-4)}
-        fd = central_difference(1e-4)
-    finally:
-        torch.set_default_dtype(prev)
-    np.testing.assert_allclose(f, fd, atol=1e-7, rtol=0, err_msg=f"max abs diff by step {errors}; energy spread over repeated unseeded calls {unseeded_spread:.3e} eV; model parameter dtypes {model_dtypes}")
+    assert not hasattr(fw, "trainer_name") and "--conservative" not in fw.build_parser().format_help()

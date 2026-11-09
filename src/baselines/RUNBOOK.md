@@ -49,8 +49,7 @@ for spec in "mlip-mpnn:test_export.py test_evaluate.py test_run_eval.py test_mac
   echo "== $img"; $CT exec $B --env PYTHONPATH=/repo/src $HOME/scratch/$img.sif python -m pytest $paths -q -p no:cacheprovider 2>&1 | tail -3
 done
 ```
-Every test should pass. Do not run the whole `baselines/tests` directory at once (one retired test hangs on some platforms). One fairchem test is skipped on
-purpose (the parked conservative-force variant); any other skip or failure is worth reporting.
+Every test should pass. Do not run the whole `baselines/tests` directory at once (one retired test hangs on some platforms). Any failure or skip is worth reporting.
 
 ## 5. Smoke, export, one-epoch pilot (the two-node test)
 ```bash
