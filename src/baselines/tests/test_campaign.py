@@ -270,3 +270,17 @@ def test_the_pythonpath_the_template_sets_makes_the_wrappers_importable_from_a_b
 
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd="/", env={**os.environ, "PYTHONPATH": str(_SRC_ROOT)})
     assert result.returncode == 0 and "ok" in result.stdout, result.stderr
+
+
+def test_gpu_partition_override_replaces_every_gpu_partition_but_not_the_cpu_one():
+    smoke = campaign.expand_phase("phase0_smoke", gpu_partition="mygpu")
+    assert {j.partition for j in smoke} == {"mygpu"}
+    train = campaign.expand_phase("phase2_train_calibration", models=("schnet", "equiformerv2"), datasets=("rmd17",), gpu_partition="mygpu")
+    assert {j.partition for j in train} == {"mygpu"}  # equiformerv2 normally goes to train_large, schnet to train
+    assert {j.partition for j in campaign.expand_phase("phase1_export", datasets=("rmd17",), gpu_partition="mygpu")} == {campaign.PARTITION["cpu"]}
+    assert {j.partition for j in campaign.expand_phase("phase0_smoke")} == {campaign.PARTITION["smoke"]}  # default unchanged
+
+
+def test_submit_script_creates_the_logs_directory_the_jobs_write_to():
+    text = campaign.submit_script(["phase/a.sbatch"], 1)
+    assert "mkdir -p logs" in text and text.index("mkdir -p logs") < text.index("sbatch --parsable")

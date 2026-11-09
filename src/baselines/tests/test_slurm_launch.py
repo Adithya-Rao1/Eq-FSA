@@ -20,9 +20,11 @@ def test_template_renders_directives_binds_and_commands():
     text = launch.render_sbatch(**BASE)
     for needle in ("#SBATCH --job-name=j", "#SBATCH --partition=gpu_v100s", "#SBATCH --gres=gpu:1", "#SBATCH --time=5-00:00:00",
                    'IMAGE="/s/mlip-mpnn.sif"', '--bind "/s:/s"', '--bind "/s/Eq-FSA:/repo:ro"', "/opt/image_digest.txt:ro", "echo hi",
-                   'export SINGULARITYENV_PYTHONPATH="/repo/src"', "/usr/bin/singularity exec --nv"):
+                   'export SINGULARITYENV_PYTHONPATH="/repo/src"', 'export APPTAINERENV_PYTHONPATH="/repo/src"',
+                   'command -v apptainer || command -v singularity', 'exec --nv "${BINDS[@]}"', "#SBATCH --output=logs/%x_%j.out"):
         assert needle in text, needle
     assert "$TPL_" not in text and "/s/mlip-mpnn.sif.sha256" in text
+    assert "/usr/bin/singularity" not in text  # hard-coded path replaced by a PATH lookup
 
 
 def test_cpu_job_has_no_gres_and_no_nv_flag():
