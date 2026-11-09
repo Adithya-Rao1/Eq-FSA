@@ -197,7 +197,19 @@ def test_conservative_model_forces_are_the_energy_gradient(tmp_path, monkeypatch
         model_dtypes = sorted({str(p.dtype) for p in calc.inner.trainer.model.parameters()})
         atoms = read_extxyz(os.path.join(data, "val.xyz"))[0]
         atoms.calc = calc
-        f = atoms.get_forces()
+
+        # making energy deterministic by reseeding each rotation frame prior to each call
+        def seeded(fn):
+            torch.manual_seed(0)
+            return fn()
+
+        def fresh_energy():
+            calc.reset()  # ASE caches results for unchanged atoms; force a new forward pass
+            return atoms.get_potential_energy()
+
+        unseeded_spread = float(np.ptp([fresh_energy() for _ in range(4)]))
+        calc.reset()  # the unseeded calls above cached their forces
+        f = seeded(atoms.get_forces)
 
         def central_difference(h):
             fd = np.zeros_like(f)
@@ -210,13 +222,13 @@ def test_conservative_model_forces_are_the_energy_gradient(tmp_path, monkeypatch
                         p[i, k] += sgn * h
                         b.set_positions(p)
                         b.calc = calc
-                        e.append(b.get_potential_energy())
+                        e.append(seeded(b.get_potential_energy))
                     fd[i, k] = -(e[0] - e[1]) / (2 * h)
             return fd
 
-        # truncation error shrinks with h (~h^2), float32 rounding noise grows as 1/h; the pattern tells which one dominates
+        # reported for diagnosis --> truncation error shrinks like h^2, rounding noise grows like 1/h
         errors = {h: float(np.abs(f - central_difference(h)).max()) for h in (1e-2, 1e-3, 1e-4)}
         fd = central_difference(1e-4)
     finally:
         torch.set_default_dtype(prev)
-    np.testing.assert_allclose(f, fd, atol=1e-7, rtol=0, err_msg=f"max abs diff by step {errors}; model parameter dtypes {model_dtypes}")
+    np.testing.assert_allclose(f, fd, atol=1e-7, rtol=0, err_msg=f"max abs diff by step {errors}; energy spread over repeated unseeded calls {unseeded_spread:.3e} eV; model parameter dtypes {model_dtypes}")
