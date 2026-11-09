@@ -11,8 +11,8 @@
 #SBATCH --cpus-per-task=$TPL_CPUS_PER_TASK
 #SBATCH --mem=$TPL_MEM
 #SBATCH --time=$TPL_TIME
-#SBATCH --output=%x_%j.out
-#SBATCH --error=%x_%j.err
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
 $TPL_GRES_DIRECTIVE
 set -euo pipefail
 
@@ -20,8 +20,10 @@ IMAGE="$TPL_IMAGE_PATH"
 WORKDIR="$TPL_WORKDIR"
 DIGEST_SIDECAR="$TPL_DIGEST_SIDECAR"
 
-if [[ ! -x /usr/bin/singularity ]]; then
-    echo "ERROR: /usr/bin/singularity is unavailable on $(hostname)." >&2
+# apptainer or singularity, whichever the node provides (Slurm runs this on the compute node, so the lookup happens there)
+CONTAINER_BIN="$(command -v apptainer || command -v singularity || true)"
+if [[ -z "$CONTAINER_BIN" ]]; then
+    echo "ERROR: neither apptainer nor singularity is on PATH on $(hostname)." >&2
     exit 1
 fi
 if [[ ! -r "$IMAGE" ]]; then
@@ -36,13 +38,13 @@ export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK"
 # The scratch tree is bound at the same path inside the container, so every path below means the same thing inside and outside.
 # The repo checkout is bound read-only at /repo and put on PYTHONPATH; the image only carries the third-party libraries.
 export SINGULARITYENV_PYTHONPATH="/repo/src"
+export APPTAINERENV_PYTHONPATH="/repo/src"
+BINDS=(--bind "$TPL_SCRATCH_ROOT:$TPL_SCRATCH_ROOT" --bind "$TPL_REPO_DIR:/repo:ro")
+if [[ -r "$DIGEST_SIDECAR" ]]; then
+    BINDS+=(--bind "$DIGEST_SIDECAR:/opt/image_digest.txt:ro")
+fi
 sing() {
-    srun /usr/bin/singularity exec $TPL_NV_FLAG \
-        --bind "$TPL_SCRATCH_ROOT:$TPL_SCRATCH_ROOT" \
-        --bind "$TPL_REPO_DIR:/repo:ro" \
-        --bind "$DIGEST_SIDECAR:/opt/image_digest.txt:ro" \
-        --pwd "$WORKDIR" \
-        "$IMAGE" "$@"
+    srun "$CONTAINER_BIN" exec $TPL_NV_FLAG "${BINDS[@]}" --pwd "$WORKDIR" "$IMAGE" "$@"
 }
 
 $TPL_COMMANDS
