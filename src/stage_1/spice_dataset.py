@@ -221,7 +221,10 @@ class SPICEDataset(Dataset):
                     if allowed is not None and _h5_str(grp["subset"]) not in allowed:
                         continue
 
-                    conf_net_charge = np.asarray(grp["mbis_charges"])[..., 0].sum(axis=1)
+                    mbis_charges = np.asarray(grp["mbis_charges"])
+                    if mbis_charges.ndim != 3 or mbis_charges.size == 0:
+                        continue  # empty entry with no conformations (one such group, '54X VAL', in the 113,986-group SPICE 2 file)
+                    conf_net_charge = mbis_charges[..., 0].sum(axis=1)
                     valid_charge = np.isfinite(conf_net_charge)
                     if not valid_charge.any():
                         continue
