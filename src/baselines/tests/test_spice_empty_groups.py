@@ -42,3 +42,15 @@ def test_empty_and_mbis_less_groups_are_skipped_not_fatal(tmp_path):
     ds = SPICEDataset(path)
     assert len(ds) == 2 + 3
     assert {ds.identity_for(i)[1] for i in range(len(ds))} == {"good a", "good b"}
+
+
+def test_items_carry_atomic_numbers_positions_energy_forces_and_smiles_for_the_exporter(tmp_path):
+    # baselines.export reads these keys from every dataset; SPICE items has no 'atomic_numbers' 
+    from stage_1.spice_dataset import SPICEDataset
+
+    path = str(tmp_path / "spice.hdf5")
+    with h5py.File(path, "w") as f:
+        _write_group(f, "good a")
+    item = SPICEDataset(path)[0]
+    assert item["atomic_numbers"].tolist() == [8, 1, 1] and item["x"].shape == (3, 3) and item["forces"].shape == (3, 3)
+    assert isinstance(item["energy"], float) and item["smiles"] == "[O:1]([H:2])[H:3]"

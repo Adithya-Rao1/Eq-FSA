@@ -338,6 +338,7 @@ class SPICEDataset(Dataset):
             "idx": idx,
             "x": x,
             "types": types,
+            "atomic_numbers": torch.from_numpy(atomic_numbers.astype(np.int64)),  # raw Z; `types` is the model's type index, not Z (baselines.export)
             "is_solvent": self._solvent_mask(smiles, n_atoms),
             "energy": energy,
             "forces": forces,
