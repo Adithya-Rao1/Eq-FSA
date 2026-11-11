@@ -82,6 +82,44 @@ It lists every expected export / metrics file, flags missing or non-finite ones,
 Exit code 0 means all complete and no error text. Library `FutureWarning`s about `torch.load` are expected and do not count as errors.
 To confirm nothing was written outside scratch: `du -sh $HOME/scratch/*` and `ls -la $HOME $HOME/.cache` (compare with the listing from before step 2).
 
+## 7. The other datasets and the classical force fields (optional, after steps 1-6 pass)
+Steps 3 and 5 cover rMD17 only. Everything below was run end to end on the single GPU box with `run_local`; none of it has run through sbatch. Data layout the loaders expect:
+`$HOME/scratch/data/{qm9/*.xyz, md22/md22_<molecule>.npz, spice/<file>.hdf5, ani1x/ani1x-release.h5, rmd17/}`.
+```bash
+S=$HOME/scratch; O=$S/campaign
+mkdir -p $S/data/md22 && cd $S/data/md22
+for m in Ac-Ala3-NHMe DHA stachyose AT-AT AT-AT-CG-CG buckyball-catcher double-walled_nanotube; do curl -L -C - -O http://www.quantum-machine.org/gdml/repo/datasets/md22_$m.npz; done
+ls -la $S/data/md22
+```
+QM9 (133,885 molecules) and ANI-1x (5,590,846,027 bytes). On the first server `wget`/`curl` got HTTP 403 from figshare but Python `urllib` worked; try that first:
+```bash
+mkdir -p $S/data/qm9 $S/data/ani1x
+python3 -c "import urllib.request as u; u.urlretrieve('https://ndownloader.figshare.com/files/3195389', '$S/data/dsgdb9nsd.xyz.tar.bz2')"
+tar -xjf $S/data/dsgdb9nsd.xyz.tar.bz2 -C $S/data/qm9 && ls $S/data/qm9/*.xyz | wc -l
+python3 -c "import urllib.request as u; u.urlretrieve('https://ndownloader.figshare.com/files/18112775', '$S/data/ani1x/ani1x-release.h5')"
+ls -l $S/data/ani1x/ani1x-release.h5
+```
+SPICE is not fetched by any script here: place the SPICE 2 HDF5 (about 35 GB) at `$S/data/spice/SPICE.hdf5` and pass `--spice-file SPICE.hdf5` to every `campaign` / `run_local` command for SPICE (the default name is `SPICE-2.0.1.hdf5`).
+The full SPICE export would be about 5 GB of extxyz for training alone and every trainer ingests all of it, so build a capped one by hand (names the directory the training phase looks for):
+```bash
+CT=$(command -v apptainer || command -v singularity)
+$CT exec --bind $S:$S --bind $S/Eq-FSA:/repo:ro --env PYTHONPATH=/repo/src $S/mlip-mpnn.sif python -m baselines.export.export_splits --dataset spice --split molecule_95_5_val5 --data-root $S/data/spice/SPICE.hdf5 --out-dir $S/exports/spice_molecule_95_5_val5 --subset-seed 0 --max-train 20000 --max-val 2000 --max-test 2000
+```
+Exports and one-epoch training (seed 0, one instance per family), then the classical phase; submit scripts are written by `campaign`, same as step 5 (add `--gpu-partition GPU_PART` / `--cpu-partition CPU_PART --time ...` as there):
+```bash
+cd $S/Eq-FSA/src
+python3 -m baselines.slurm.campaign --phase phase1_export --datasets qm9 md22 ani1x --scratch-root $S --out-dir $O --cpu-partition CPU_PART --time 04:00:00
+python3 -m baselines.slurm.campaign --phase phase2_train_calibration --datasets qm9 md22 --pilot --epochs 1 --scratch-root $S --out-dir $O --gpu-partition GPU_PART --time 24:00:00
+python3 -m baselines.slurm.campaign --phase phase2_train_ani1x --pilot --epochs 1 --scratch-root $S --out-dir $O --gpu-partition GPU_PART --time 24:00:00
+python3 -m baselines.slurm.campaign --phase phase2_train_spice --pilot --epochs 1 --spice-file SPICE.hdf5 --scratch-root $S --out-dir $O --gpu-partition GPU_PART --time 24:00:00
+python3 -m baselines.slurm.campaign --phase phase3_classical --datasets rmd17 md22 --scratch-root $S --out-dir $O --cpu-partition CPU_PART --time 12:00:00
+```
+Then run the matching `submit_<phase>.sh` for each, after its export has finished. Measured on the A10 for one epoch: ANI-1x (100k frames) SchNet 17 min, PaiNN 21 min, MACE 104 min.
+Pilot caveats: QM9 does not yet exclude the 3,054 uncharacterized molecules (not the standard split); MD22 val/test sets are tens of thousands of frames, so evaluation is slow; MD22 buckyball-catcher
+hangs in antechamber (AM1-BCC, never ends) and the 370-atom nanotube is skipped by design. `campaign` has no `--only`, so after rendering `phase3_classical` delete the
+`buckyball-catcher` job lines from `$O/submit_phase3_classical.sh` (or `scancel` that job); the nanotube job ends in seconds with a recorded skip. Do not add `spice` to the classical datasets
+for a pilot: every distinct molecule needs its own AM1-BCC (about a minute each, so a capped 2,000-frame set would take many hours) and boron molecules are skipped.
+
 ## If something fails
 Save: the failing job's `$O/logs/*.err` and `.out` (last 60 lines), `sinfo -s`, `$(command -v apptainer || command -v singularity) --version`, and the output of `check_outputs`. 
 Likely first problems: partition names or missing `--time` (the renderer refuses unknown partitions without one), `--fakeroot`
