@@ -5,11 +5,15 @@ Partitions on Burgundy (from the collaborator's `sinfo`, 2026-11-10): use `GPU_P
 `batch` was fully allocated). `gpu_a100` is the fallback. Pass `--time` with `tiny` (the renderer only knows default walltimes for the partitions in `campaign.py`).
 `--fakeroot` image builds are allowed there. Never put data, images or outputs outside `$HOME/scratch`.
 
-What has and has not been verified (2026-11-09):
-- Verified on a single Ubuntu GPU box (A10, apptainer, no Slurm): image builds, unit tests, rMD17 export, a 5-epoch run of all six models, via `slurm/run_local.py`.
+What has and has not been verified (2026-11-11):
+- Verified on a single Ubuntu GPU box (A10 22 GiB, apptainer, no Slurm), via `slurm/run_local.py`: image builds, unit tests, exports for rMD17, QM9, MD22, ANI-1x and a capped SPICE
+  pilot, and one-epoch pilot trainings of all six models on one instance per dataset family. 25 of the 30 pilot jobs had finished at the time of writing (see the OOM note below).
+  GAFF2 / OpenFF classical runs on rMD17, MD22 (buckyball-catcher and the 370-atom nanotube are recorded skips) and a 100-frame SPICE sample (boron molecules are skipped).
 - Never run on a real Slurm cluster: the sbatch templates, the submit scripts and `--fakeroot` image builds (allowed on Burgundy, but not yet tried). The built-in
   partition defaults (`gpu_a40-test`, `stingy`) do not exist or are reserved there, so always pass `--gpu-partition` and `--cpu-partition`. Need the `.err` files (see "If something fails").
-- Not exercised at all on real data: QM9, MD22, SPICE, ANI-1x, and the GAFF2 / OpenFF classical phase.
+- Known limit: MACE and EquiformerV2 ran out of GPU memory on the 22 GiB A10 for MD22 Ac-Ala3-NHMe and SPICE at the default batch sizes (MACE 32, EquiformerV2 8).
+  Lower with `--batch-size` through `--extra-adapter-args` if the same happens on your GPUs. The rMD17 aspirin test in step 5 is not affected.
+- Hyperparameters, epochs and per-library loss weights are placeholders (MACE's energy did not learn beyond atom counts in one ANI-1x epoch), so pilot accuracies are not benchmark results.
 
 ## 1. Stage the repo
 ```bash
