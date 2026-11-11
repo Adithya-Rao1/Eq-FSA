@@ -3,7 +3,7 @@
 Check before running: 
 - only this repo exists on the cluster
 - `$HOME/scratch` is visible from every node
-- Slurm;
+- Slurm
 - `apptainer` or `singularity` on the compute nodes.
 - Partitions on Burgundy: use `GPU_PART=gpu_v100s` (5-day limit, one node idle) and `CPU_PART=tiny` (5-day limit, two idle nodes; `batch` was fully allocated). `gpu_a100` is the fallback. 
 - Pass `--time` with `tiny` (the renderer uses default walltimes for the partitions in `campaign.py`).
