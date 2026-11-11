@@ -1,12 +1,14 @@
 # Runbook: first run on a Slurm cluster (two GPU nodes, shared `$HOME/scratch`)
 
 Assumptions: only this repo exists on the cluster; `$HOME/scratch` is visible from every node; Slurm; `apptainer` or `singularity` on the compute nodes.
-Replace `GPU_PART` / `CPU_PART` with partition names (`sinfo -s`). Never put data, images or outputs outside `$HOME/scratch`.
+Partitions on Burgundy (from the collaborator's `sinfo`, 2026-11-10): use `GPU_PART=gpu_v100s` (5-day limit, one node idle) and `CPU_PART=tiny` (5-day limit, two idle nodes;
+`batch` was fully allocated). `gpu_a100` is the fallback. Pass `--time` with `tiny` (the renderer only knows default walltimes for the partitions in `campaign.py`).
+`--fakeroot` image builds are allowed there. Never put data, images or outputs outside `$HOME/scratch`.
 
 What has and has not been verified (2026-11-09):
 - Verified on a single Ubuntu GPU box (A10, apptainer, no Slurm): image builds, unit tests, rMD17 export, a 5-epoch run of all six models, via `slurm/run_local.py`.
-- Never run on a real Slurm cluster: the sbatch templates, the submit scripts, the partition choices (`gpu_a40-test`, `gpu_v100s`, `gpu_a100`, `stingy` are
-  Burgundy names from the original plan), and `--fakeroot` image builds. Need the `.err` files (see "If something fails").
+- Never run on a real Slurm cluster: the sbatch templates, the submit scripts and `--fakeroot` image builds (allowed on Burgundy, but not yet tried). The built-in
+  partition defaults (`gpu_a40-test`, `stingy`) do not exist or are reserved there, so always pass `--gpu-partition` and `--cpu-partition`. Need the `.err` files (see "If something fails").
 - Not exercised at all on real data: QM9, MD22, SPICE, ANI-1x, and the GAFF2 / OpenFF classical phase.
 
 ## 1. Stage the repo
@@ -60,6 +62,12 @@ python3 -m baselines.slurm.campaign --phase phase2_train_calibration --datasets 
 bash $O/submit_phase2_train_calibration.sh     # 6 jobs (one per model, rMD17 aspirin); Slurm decides placement; with two GPU nodes free, two should run at once
 ```
 Job scripts and the submit scripts are only written by `campaign`, and nothing is submitted until you run a `submit_*.sh`. Slurm `.out/.err` files go to`$O/logs/`. On the first server the six one-epoch jobs took 3 to 5 minutes each including start-up (EquiformerV2 the longest).
+
+Before submitting, check the node sizes (the templates ask for 90G of memory and 8 CPUs per GPU job, and these figures were never checked against the V100S nodes):
+```bash
+scontrol show node gpu-v100s-06 | grep -E "RealMemory|CPUTot|Gres"
+```
+If `RealMemory` is below about 92000 (MB), edit `GPU_RESOURCES` in `slurm/campaign.py` before rendering. Report the three values either way.
 
 ## 6. Check the results
 ```bash
