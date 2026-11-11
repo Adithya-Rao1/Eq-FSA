@@ -82,6 +82,12 @@ scontrol show node gpu-v100s-06 | grep -E "RealMemory|CPUTot|Gres"
 ```
 If `RealMemory` (reported in MB) is below ~92000, edit `GPU_RESOURCES` in `slurm/campaign.py` before rendering. Report the three values.
 
+The CPU jobs on `tiny` (exports and classical) ask for 64G and 8 CPUs (`CPU_RESOURCES`), and the smoke jobs ask for 40G and 4 CPUs (`SMOKE_RESOURCES`). Check the other nodes too:
+```bash
+sinfo -p tiny,gpu_v100s -o "%P %n %m %c %G"
+```
+If a `tiny` node shows `%m` less than ~64000, lower `mem` in `CPU_RESOURCES`. If a `gpu_v100s` node shows less than ~40000, lower it in `SMOKE_RESOURCES`. Report the output.
+
 ## 6. Check the results
 ```bash
 cd $HOME/scratch/Eq-FSA/src
@@ -108,6 +114,7 @@ tar -xjf $S/data/dsgdb9nsd.xyz.tar.bz2 -C $S/data/qm9 && ls $S/data/qm9/*.xyz | 
 python3 -c "import urllib.request as u; u.urlretrieve('https://ndownloader.figshare.com/files/18112775', '$S/data/ani1x/ani1x-release.h5')"
 ls -l $S/data/ani1x/ani1x-release.h5
 ```
+The QM9 count should be 133885. If it prints 0, the archive extracted into a subdirectory. To fix this, move its `.xyz` files up into `$S/data/qm9`.
 
 ### SPICE Dataset
 SPICE was pre-downloaded on the remote server, so no script downloads it here. Download the SPICE 2.0.1 HDF5 file (about 37 GB, CC0) from the official release at [Zenodo record 10975225](https://zenodo.org/records/10975225) (DOI 10.5281/zenodo.10975225), `SPICE-2.0.1.hdf5` (37,479,271,148 bytes, md5 `bfba2224b6540e1390a579569b475510`. Optionally, check with `md5sum`). Save it as `$S/data/spice/SPICE.hdf5` and pass `--spice-file SPICE.hdf5` to every `campaign` / `run_local` command for SPICE (the default name is `SPICE-2.0.1.hdf5`). 
