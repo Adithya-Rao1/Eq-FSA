@@ -86,6 +86,16 @@ def rdmol_from_mapped_smiles(smiles: str, n_atoms: int):
     return mol
 
 
+def _fragment_mol(rdmol, idx: list[int]):
+    # The sub-molecule on atoms idx (their order kept), with RDKit's own bond orders and formal charges.
+    Chem = _rdkit()
+    rw = Chem.RWMol(rdmol)
+    keep = set(idx)
+    for i in sorted((a.GetIdx() for a in rdmol.GetAtoms() if a.GetIdx() not in keep), reverse=True):
+        rw.RemoveAtom(i)
+    return rw.GetMol()
+
+
 def to_openff(rdmol, positions: np.ndarray):
     # positions in Angstrom; the conformer is what AM1-BCC is computed on.
     from openff.toolkit import Molecule
@@ -131,18 +141,32 @@ def assign_charges(off_mol, cache_dir: str | None = None) -> bool:
     return False
 
 
-def build_openmm_system(off_mol, forcefield: str):
+def split_fragments(rdmol) -> list[list[int]]:
+    # Covalently bonded components of the graph, as lists of atom indices (ordered by first atom). Non-covalent partners (the two strands of a
+    # base pair, a host and its guest) are separate fragments: they interact only through the force field's nonbonded terms.
+    Chem = _rdkit()
+    return [list(f) for f in Chem.GetMolFrags(rdmol)]
+
+
+def build_openmm_system(off_mols, forcefield: str):
+    # off_mols: one OpenFF molecule or a list of them; the system's particles are the molecules' atoms concatenated in list order.
+    from openff.toolkit import Topology
     from openmmforcefields.generators import SystemGenerator
 
     if forcefield not in FORCEFIELDS:
         raise ValueError(f"forcefield must be one of {sorted(FORCEFIELDS)}, got {forcefield!r}")
+    off_mols = [off_mols] if not isinstance(off_mols, (list, tuple)) else list(off_mols)
+    unique = []  # the generator needs each distinct molecule once; it matches repeated copies in the topology by graph
+    for m in off_mols:
+        if not any(m.is_isomorphic_with(u) for u in unique):
+            unique.append(m)
     generator = SystemGenerator(
-        small_molecule_forcefield=FORCEFIELDS[forcefield], molecules=[off_mol], cache=None,
+        small_molecule_forcefield=FORCEFIELDS[forcefield], molecules=unique, cache=None,
         # Flexible bonds and no center-of-mass removal: forces on every atom must be the plain gradient of the energy.
         forcefield_kwargs={"constraints": None, "rigidWater": False, "removeCMMotion": False},
     )
     try:
-        return generator.create_system(off_mol.to_topology().to_openmm())
+        return generator.create_system(Topology.from_molecules(off_mols).to_openmm())
     except Exception as exc:
         raise ParameterizationError(f"{forcefield} has no parameters: {str(exc).splitlines()[0]}") from exc
 
@@ -151,8 +175,10 @@ class OpenMMCalculator(Calculator):
     # Energy in eV and forces in eV/Angstrom for a fixed OpenMM system (positions are the only input).
     implemented_properties = ["energy", "forces"]
 
-    def __init__(self, system, platform: str = "Reference", **kwargs):
+    def __init__(self, system, platform: str = "Reference", order: Sequence[int] | None = None, **kwargs):
+        # order[k] = index in the ASE frame of the system's k-th particle (None: the same order).
         super().__init__(**kwargs)
+        self.order = None if order is None else np.asarray(order, dtype=int)
         from openmm import Context, Platform, VerletIntegrator
 
         # "Reference" is double precision; the single-precision CPU platform would add ~1e-4 relative noise to energies.
@@ -163,17 +189,19 @@ class OpenMMCalculator(Calculator):
         super().calculate(atoms, properties, system_changes)
         if len(atoms) != self.n_atoms:
             raise ValueError(f"system has {self.n_atoms} atoms, frame has {len(atoms)}")
-        self._context.setPositions(atoms.get_positions() * NM_PER_ANGSTROM)
+        positions = atoms.get_positions()
+        self._context.setPositions((positions if self.order is None else positions[self.order]) * NM_PER_ANGSTROM)
         state = self._context.getState(getEnergy=True, getForces=True)
         from openmm import unit
 
         energy_kj = state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
         forces_kj_nm = np.asarray(state.getForces(asNumpy=True).value_in_unit(unit.kilojoule_per_mole / unit.nanometer))
-        self.results = {
-            "energy": energy_kj / EV_TO_KJ_PER_MOL,
-            # kJ/mol/nm -> eV/Angstrom: divide by the energy factor, then by 10 Angstrom per nm.
-            "forces": forces_kj_nm / EV_TO_KJ_PER_MOL * NM_PER_ANGSTROM,
-        }
+        forces = forces_kj_nm / EV_TO_KJ_PER_MOL * NM_PER_ANGSTROM  # kJ/mol/nm -> eV/Angstrom: divide by the energy factor, then by 10 Angstrom per nm.
+        if self.order is not None:
+            back = np.empty_like(forces)
+            back[self.order] = forces
+            forces = back
+        self.results = {"energy": energy_kj / EV_TO_KJ_PER_MOL, "forces": forces}
 
 
 class ClassicalCalculator(Calculator):
@@ -209,9 +237,20 @@ class ClassicalCalculator(Calculator):
         self.graph_bonds[key] = {tuple(sorted((b.GetBeginAtomIdx(), b.GetEndAtomIdx()))) for b in rdmol.GetBonds()}
         if [a.GetAtomicNum() for a in rdmol.GetAtoms()] != [int(z) for z in numbers]:
             raise TopologyError("graph atom order does not match the frame")
-        off = to_openff(rdmol, positions)
-        self.charge_cache_hits += int(assign_charges(off, self.charge_cache))
-        return OpenMMCalculator(build_openmm_system(off, self.forcefield), self.platform)
+        # AM1-BCC is defined for one molecule: charge each covalent fragment on its own conformer, then build one system from all fragments.
+        fragments = split_fragments(rdmol)
+        offs = []
+        for idx in fragments:
+            sub = _fragment_mol(rdmol, idx)
+            off = to_openff(sub, positions[idx])
+            try:
+                self.charge_cache_hits += int(assign_charges(off, self.charge_cache))
+            except ParameterizationError as exc:  # say which fragment, so a failure on a multi-fragment system is attributable
+                raise ParameterizationError(f"fragment {len(offs) + 1} of {len(fragments)} ({off.hill_formula}, {len(idx)} atoms, net charge "
+                                            f"{off.total_charge.m:+.0f}): {exc}") from exc
+            offs.append(off)
+        order = [i for idx in fragments for i in idx]
+        return OpenMMCalculator(build_openmm_system(offs, self.forcefield), self.platform, order=None if order == sorted(order) else order)
 
     def prepare(self, atoms) -> str | None:
         # Builds (or recalls) the system for this frame's molecule. Returns None on success, else the reason it cannot be parameterized.

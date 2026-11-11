@@ -55,15 +55,14 @@ def evaluate_classical(
             kept.append(a)
         else:
             skipped[calc.key_for(a)] = reason
-    if not kept:
-        raise RuntimeError(f"no molecule could be parameterized; first reasons: {list(skipped.values())[:3]}")
-    metrics = evaluate_calculator(calc, kept, relative=True, group_key="smiles" if all(has_smiles) else None)
+    # When nothing can be parameterized the run still succeeds and records that: the skip counts and reasons are the result.
+    metrics = evaluate_calculator(calc, kept, relative=True, group_key="smiles" if all(has_smiles) else None) if kept else {"n_structures": 0}
     metrics.update({
         "model": f"classical_{forcefield}", "forcefield": FORCEFIELDS[forcefield],
         "n_structures_total": len(frames), "n_structures_skipped": len(frames) - len(kept),
         "n_molecules_parameterized": len(calc._calcs), "n_molecules_skipped": len(skipped),
         "skipped_reasons": dict(list(skipped.items())[:MAX_REPORTED_FAILURES]), "charge_cache_hits": calc.charge_cache_hits,
-        "test_file": test_xyz,
+        "all_skipped": not kept, "test_file": test_xyz,
     })
     metrics.update(topology_drift(calc, kept))
     if out_path:

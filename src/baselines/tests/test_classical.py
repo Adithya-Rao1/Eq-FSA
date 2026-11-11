@@ -129,10 +129,86 @@ def test_forces_are_the_negative_energy_gradient(tmp_path, name):
             numeric[i, d] = -(e[0] - e[1]) / (2 * h)
     err = np.abs(analytic - numeric).max()
     print(f"{name}: max |analytic - central difference| = {err:.3e} eV/A (max |F| = {np.abs(analytic).max():.3f})")
-    # The residual is central-difference truncation error, not a force error: measured for gaff2/ethanol it falls by exactly 4x per halving
-    # of h (2.1e-6, 5.3e-7, 1.3e-7, 3.3e-8, 8.2e-9, 1.3e-9 eV/A at h = 4e-4 ... 1e-5 A). At h = 1e-5 A the truncation error is 1.3e-9 and
-    # double-precision roundoff (~1e-16 * |E| / h ~ 1e-11) is negligible, so 1e-8 leaves 7x headroom over the measured value.
     assert err < 1e-8
+
+
+def _two_fragments(gap: float, perm_seed: int | None = None):
+    # Ethanol and ethylamine as two covalent fragments `gap` Angstrom apart (like the two strands of a base pair), optionally with the atom order shuffled.
+    parts = []
+    for smi, shift in (("CCO", 0.0), ("CCN", gap)):
+        mol = Chem.AddHs(Chem.MolFromSmiles(smi))
+        assert AllChem.EmbedMolecule(mol, randomSeed=1) == 0
+        AllChem.MMFFOptimizeMolecule(mol)
+        conf = mol.GetConformer()
+        for i in range(mol.GetNumAtoms()):
+            x, y, z = conf.GetAtomPosition(i)
+            conf.SetAtomPosition(i, (x + shift, y, z))
+        parts.append(mol)
+    mol = Chem.CombineMols(*parts)
+    if perm_seed is not None:
+        perm = np.random.default_rng(perm_seed).permutation(mol.GetNumAtoms()).tolist()
+        mol = Chem.RenumberAtoms(mol, perm)
+    for a in mol.GetAtoms():
+        a.SetAtomMapNum(a.GetIdx() + 1)
+    return Chem.MolToSmiles(mol), [a.GetAtomicNum() for a in mol.GetAtoms()], mol.GetConformer().GetPositions()
+
+
+def _element_charges(off_mol, cache_dir=None):
+    # Stand-in for AM1-BCC whose charge depends only on the element, so it cannot depend on atom order; neutral per molecule.
+    from openff.units import unit
+
+    q = np.array([{1: 0.1, 6: 0.0, 7: -0.4, 8: -0.5}[a.atomic_number] for a in off_mol.atoms])
+    off_mol.partial_charges = (q - q.mean()) * unit.elementary_charge
+    return False
+
+
+@needs_ambertools
+@pytest.mark.parametrize("name", ["gaff2", "openff"])
+def test_multi_fragment_molecule_is_charged_per_fragment_and_independent_of_atom_order(tmp_path, name, monkeypatch):
+    # Before the fix the whole 2-fragment system went to one AM1-BCC call (it failed on the base pairs and the host-guest MD22 systems).
+    smiles, numbers, pos = _two_fragments(8.0)
+    calc = ff.ClassicalCalculator(name, str(tmp_path / "q"))
+    atoms = Atoms(numbers=numbers, positions=pos, info={"smiles": smiles}, calculator=calc)
+    assert np.isfinite(atoms.get_potential_energy()) and np.isfinite(atoms.get_forces()).all() and calc.failures == {}  # real AM1-BCC, per fragment
+    # order mapping is checked with element-only charges. GAFF2 in OpenMM also gives amides an order-dependent energy
+    # ethanol and ethylamine have no improper.
+    monkeypatch.setattr(ff, "assign_charges", _element_charges)
+    smiles1, numbers1, pos1 = _two_fragments(8.0)
+    smiles2, numbers2, pos2 = _two_fragments(8.0, perm_seed=3)
+    a1 = Atoms(numbers=numbers1, positions=pos1, info={"smiles": smiles1}, calculator=ff.ClassicalCalculator(name))
+    a2 = Atoms(numbers=numbers2, positions=pos2, info={"smiles": smiles2}, calculator=ff.ClassicalCalculator(name))
+    assert a2.calc._calcs == {}
+    match = [int(np.argmin(np.linalg.norm(pos1 - p, axis=1))) for p in pos2]  # atom k of the shuffled frame is atom match[k] of the first
+    assert sorted(match) == list(range(len(numbers1)))
+    assert a2.get_potential_energy() == pytest.approx(a1.get_potential_energy(), abs=1e-9)
+    np.testing.assert_allclose(a2.get_forces(), a1.get_forces()[match], atol=1e-9)
+    assert a2.calc._calcs[a2.calc.key_for(a2)].order is not None  
+
+
+@needs_ambertools
+def test_multi_fragment_forces_are_the_negative_energy_gradient_and_fragments_interact(tmp_path):
+    smiles, numbers, pos = _two_fragments(8.0, perm_seed=5)
+    calc = ff.ClassicalCalculator("gaff2", str(tmp_path / "q"))
+    atoms = Atoms(numbers=numbers, positions=pos, info={"smiles": smiles}, calculator=calc)
+    analytic = atoms.get_forces()
+    h = 1e-5
+    worst = 0.0
+    for i in range(len(atoms)):
+        for d in range(3):
+            e = []
+            for sign in (+1, -1):
+                p = atoms.get_positions().copy()
+                p[i, d] += sign * h
+                e.append(Atoms(numbers=numbers, positions=p, info={"smiles": smiles}, calculator=calc).get_potential_energy())
+            worst = max(worst, abs(analytic[i, d] + (e[0] - e[1]) / (2 * h)))
+    print(f"multi-fragment: max |analytic - central difference| = {worst:.3e} eV/A")
+    assert worst < 1e-8  # same central-difference argument as test_forces_are_the_negative_energy_gradient
+    # The fragments see each other through the nonbonded terms: the energy changes when one is moved relative to the other.
+    far_s, far_n, far_p = _two_fragments(60.0)
+    near_s, near_n, near_p = _two_fragments(8.0)
+    e_far = Atoms(numbers=far_n, positions=far_p, info={"smiles": far_s}, calculator=ff.ClassicalCalculator("gaff2", str(tmp_path / "q"))).get_potential_energy()
+    e_near = Atoms(numbers=near_n, positions=near_p, info={"smiles": near_s}, calculator=ff.ClassicalCalculator("gaff2", str(tmp_path / "q"))).get_potential_energy()
+    assert abs(e_near - e_far) > 1e-3
 
 
 def _write_frames(path, rows):
@@ -203,8 +279,22 @@ def test_charge_failure_is_reported_as_a_skip(tmp_path, monkeypatch):
     monkeypatch.setattr(ff, "assign_charges", boom)
     rows = [{"atomic_numbers": numbers, "positions": pos, "energy": 0.0, "forces": np.zeros((len(numbers), 3)), "tags": {"smiles": smiles}}]
     _write_frames(tmp_path / "test.xyz", rows)
-    with pytest.raises(RuntimeError, match="no molecule could be parameterized.*SCF"):
-        crun.evaluate_classical(str(tmp_path / "test.xyz"), "gaff2")
+    m = crun.evaluate_classical(str(tmp_path / "test.xyz"), "gaff2")  # every molecule skipped: recorded, not an error
+    assert m["all_skipped"] and m["n_structures"] == 0 and m["n_structures_skipped"] == 1 and m["n_molecules_parameterized"] == 0
+    assert "SCF" in " ".join(m["skipped_reasons"].values()) and "energy_mae_meV" not in m
+
+
+@needs_ambertools
+def test_charge_failure_names_the_fragment(tmp_path, monkeypatch):
+    smiles, numbers, pos = _two_fragments(8.0)
+
+    def boom(off_mol, cache_dir=None):
+        raise ff.ParameterizationError("AM1-BCC failed: Unable to find sqm charges")
+
+    monkeypatch.setattr(ff, "assign_charges", boom)
+    calc = ff.ClassicalCalculator("gaff2")
+    reason = calc.prepare(Atoms(numbers=numbers, positions=pos, info={"smiles": smiles}))
+    assert "fragment 1 of 2" in reason and "C2H6O" in reason and "9 atoms" in reason and "net charge +0" in reason and "sqm" in reason
 
 
 @needs_ambertools
