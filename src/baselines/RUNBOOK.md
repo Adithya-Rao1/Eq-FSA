@@ -10,7 +10,7 @@ Check before running:
 - All data, images or outputs stored inside `$HOME/scratch`.
 
 Verified and pending (2026-11-11):
-- Verified on a single Ubuntu GPU box (A10 22 GiB, apptainer, no Slurm), via `slurm/run_local.py`: image builds, unit tests, exports for rMD17, QM9, MD22, ANI-1x and a capped SPICE pilot run. We also ran one-epoch pilot trainings of all six models on one instance per dataset family. 25 of the 30 pilot jobs had finished at the time of writing (5 failures due to OOM).
+- Verified on a single Ubuntu GPU box (A10 22 GiB, apptainer, no Slurm), via `slurm/run_local.py`: image builds, unit tests, exports for rMD17, QM9, MD22, ANI-1x and a capped SPICE pilot run. We also ran one-epoch pilot trainings of all six models on one instance per dataset family. 25 of the 30 pilot jobs had finished at the time of writing (due to OOM).
 - GAFF2 / OpenFF classical runs on rMD17, MD22 and a 100-frame SPICE sample. Skipped on purpose:
   - MD22 buckyball-catcher: antechamber hangs during AM1-BCC charge assignment.
   - MD22 double-walled nanotube: its 370 atoms exceed the 200-atom limit.
@@ -44,7 +44,11 @@ bash $HOME/scratch/Eq-FSA/src/baselines/datasets/fetch_rmd17.sh
 It tries the two known hosts, checks size and sha256, and extracts to `$HOME/scratch/data/rmd17/{npz_data,splits}`. If both hosts refuse automated downloads from the first server (HTTP 403 / 404), download `rmd17.tar.bz2` in a browser from
 <https://figshare.com/articles/dataset/Revised_MD17_dataset_rMD17_/12672038>, place it at `$HOME/scratch/data/rmd17.tar.bz2`, and run the script again.
 
-NOTE: I tried to upload the dataset from the web file manager as one 1 GB file which ended up truncating it. To deal with this, I split it into 50 MB pieces and uploaded/checked each which resolved the issue. Try the first method, but if it fails, the individual uploading should fix it.
+NOTE: If uploading through a web file manager fails for the full 1 GB archive (it truncated on the A10 server), the following method should fix it: 
+1. Run `split -b 50M rmd17.tar.bz2 rmd17.part_` and `sha256sum rmd17.part_*`
+2. Upload each piece
+3. Check each with sha256sum on the cluster
+4. Rebuild it with `cat rmd17.part_* > $HOME/scratch/data/rmd17.tar.bz2` and run the script again.
 
 ## 4. Unit tests inside the images (CPU, a few minutes in total)
 ```bash
@@ -105,7 +109,7 @@ python3 -c "import urllib.request as u; u.urlretrieve('https://ndownloader.figsh
 ls -l $S/data/ani1x/ani1x-release.h5
 ```
 
-## SPICE Dataset
+### SPICE Dataset
 SPICE was pre-downloaded on the remote server, so no script downloads it here. Download the SPICE 2.0.1 HDF5 file (about 37 GB, CC0) from the official release at [Zenodo record 10975225](https://zenodo.org/records/10975225) (DOI 10.5281/zenodo.10975225), `SPICE-2.0.1.hdf5` (37,479,271,148 bytes, md5 `bfba2224b6540e1390a579569b475510`. Optionally, check with `md5sum`). Save it as `$S/data/spice/SPICE.hdf5` and pass `--spice-file SPICE.hdf5` to every `campaign` / `run_local` command for SPICE (the default name is `SPICE-2.0.1.hdf5`). 
 
 The full SPICE export would be about 5 GB of extxyz for training, so build a smaller run by hand (names the directory the training phase looks for):
@@ -113,7 +117,7 @@ The full SPICE export would be about 5 GB of extxyz for training, so build a sma
 CT=$(command -v apptainer || command -v singularity)
 $CT exec --bind $S:$S --bind $S/Eq-FSA:/repo:ro --env PYTHONPATH=/repo/src $S/mlip-mpnn.sif python -m baselines.export.export_splits --dataset spice --split molecule_95_5_val5 --data-root $S/data/spice/SPICE.hdf5 --out-dir $S/exports/spice_molecule_95_5_val5 --subset-seed 0 --max-train 20000 --max-val 2000 --max-test 2000
 ```
-Below are the commands for the exports and one-epoch training (seed 0, one instance per family) for all ML models, then the classical MD models run. All submit scripts are written by `campaign`, same as step 5 (the partition variables are set in the first block of this step):
+Below are the commands for the exports and one-epoch training (seed 0, one instance per family) for all ML models, then the classical force-field evaluations. All submit scripts are written by `campaign`, same as step 5 (the partition variables are set in the first block of this step):
 ```bash
 cd $S/Eq-FSA/src
 python3 -m baselines.slurm.campaign --phase phase1_export --datasets qm9 md22 ani1x --scratch-root $S --out-dir $O --cpu-partition $CPU_PART --time 04:00:00
