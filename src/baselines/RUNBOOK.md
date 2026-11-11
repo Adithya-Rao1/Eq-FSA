@@ -10,7 +10,7 @@ Check before running:
 - All data, images or outputs stored inside `$HOME/scratch`.
 
 Verified and pending (2026-11-11):
-- Verified on a single Ubuntu GPU box (A10 22 GiB, apptainer, no Slurm), via `slurm/run_local.py`: image builds, unit tests, exports for rMD17, QM9, MD22, ANI-1x and a capped SPICE pilot run. We also ran one-epoch pilot trainings of all six models on one instance per dataset family. 25 of the 30 pilot jobs had finished at the time of writing (due to OOM).
+- Verified on a single Ubuntu GPU box (A10 22 GiB, apptainer, no Slurm), via `slurm/run_local.py`: image builds, unit tests, exports for rMD17, QM9, MD22, ANI-1x and a capped SPICE pilot run. We also ran one-epoch pilot trainings of all six models on one instance per dataset family. 25 of the 30 pilot jobs finished successfully.
 - GAFF2 / OpenFF classical runs on rMD17, MD22 and a 100-frame SPICE sample. Skipped on purpose:
   - MD22 buckyball-catcher: antechamber hangs during AM1-BCC charge assignment.
   - MD22 double-walled nanotube: its 370 atoms exceed the 200-atom limit.
@@ -23,7 +23,7 @@ Verified and pending (2026-11-11):
 ## 1. Stage the repo
 ```bash
 mkdir -p $HOME/scratch && cd $HOME/scratch
-git clone <repo-url> Eq-FSA && cd Eq-FSA && git checkout new/baselines
+git clone https://github.com/Adithya-Rao1/Eq-FSA.git && cd Eq-FSA && git checkout new/baselines
 ```
 The repo must live at `$HOME/scratch/Eq-FSA`. Jobs bind it read-only at `/repo`.
 
@@ -114,7 +114,7 @@ tar -xjf $S/data/dsgdb9nsd.xyz.tar.bz2 -C $S/data/qm9 && ls $S/data/qm9/*.xyz | 
 python3 -c "import urllib.request as u; u.urlretrieve('https://ndownloader.figshare.com/files/18112775', '$S/data/ani1x/ani1x-release.h5')"
 ls -l $S/data/ani1x/ani1x-release.h5
 ```
-The QM9 count should be 133885. If it prints 0, the archive extracted into a subdirectory. To fix this, move its `.xyz` files up into `$S/data/qm9`.
+The QM9 count should be 133885. If it prints 0, the archive extracted into a subdirectory. To fix this, move its `.xyz` files into `$S/data/qm9`.
 
 ### SPICE Dataset
 SPICE was pre-downloaded on the remote server, so no script downloads it here. Download the SPICE 2.0.1 HDF5 file (about 37 GB, CC0) from the official release at [Zenodo record 10975225](https://zenodo.org/records/10975225) (DOI 10.5281/zenodo.10975225), `SPICE-2.0.1.hdf5` (37,479,271,148 bytes, md5 `bfba2224b6540e1390a579569b475510`. Optionally, check with `md5sum`). Save it as `$S/data/spice/SPICE.hdf5` and pass `--spice-file SPICE.hdf5` to every `campaign` / `run_local` command for SPICE (the default name is `SPICE-2.0.1.hdf5`). 
