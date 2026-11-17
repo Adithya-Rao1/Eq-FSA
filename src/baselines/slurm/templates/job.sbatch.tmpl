@@ -1,6 +1,6 @@
 #!/bin/bash
 # Slurm job template for the EqFSA baselines on CityUHK Burgundy. One template serves every job type (smoke test, dataset export,
-# train + evaluate, classical force field); the job-specific work is the command list substituted for $TPL_COMMANDS.
+# train + evaluate, classical force field); the job-specific work is the command list is filled in at the TPL_COMMANDS placeholder below.
 # Slurm sbatch directives: https://slurm.schedmd.com/sbatch.html
 # Singularity exec/bind/--nv options: https://docs.sylabs.io/guides/3.7/user-guide/cli/singularity_exec.html
 

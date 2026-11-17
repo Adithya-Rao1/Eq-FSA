@@ -27,6 +27,14 @@ def test_template_renders_directives_binds_and_commands():
     assert "/usr/bin/singularity" not in text  # hard-coded path replaced by a PATH lookup
 
 
+def test_multiline_commands_appear_once_and_never_in_the_header_comment():
+    text = launch.render_sbatch(**{**BASE, "commands": ["echo first_cmd", "echo second_cmd", "echo third_cmd"]})
+    for cmd in ("echo first_cmd", "echo second_cmd", "echo third_cmd"):
+        assert text.count(cmd) == 1, cmd
+    header = text.split("set -euo pipefail")[0]
+    assert "second_cmd" not in header and "first_cmd" not in header
+
+
 def test_cpu_job_has_no_gres_and_no_nv_flag():
     text = "\n".join(ln for ln in launch.render_sbatch(**{**BASE, "gpus": 0}).splitlines() if not ln.lstrip().startswith("#") or ln.startswith("#SBATCH"))
     assert "--gres" not in text and "--nv" not in text
